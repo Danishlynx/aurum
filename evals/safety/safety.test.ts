@@ -2,7 +2,18 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+/**
+ * The demo fixture is a module under src/lib/server, which imports "server-only"
+ * and throws outside a React server environment. The mock replaces that marker
+ * package and nothing else, so the fixture the report actually serves is the one
+ * checked here.
+ */
+vi.mock("server-only", () => ({}));
+
+import { DEMO_FIXTURE_REPORT_VIEW } from "@/lib/server/profile/demo-fixture";
+import type { ReportView } from "@/lib/shared/report-view";
 
 import {
   COPY_NOT_IN_FLOW_DOC,
@@ -299,6 +310,77 @@ describe("eval:safety, no em dash or en dash anywhere in src and docs", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * docs/05-evals.md, eval:safety: "every copy string in copy.ts and every
+ * generated fixture output contains none of the banned terms".
+ *
+ * copy.ts is covered above. This block covers the other half: the fixture the
+ * report serves in AURUM_DEMO_FIXTURE mode. It is the text a judge sees on the
+ * screenshots and in the demo video, and it is assembled from three places (the
+ * concern library, the deterministic routine, and the fallback reading), so no
+ * single suite upstream sees all of it at once.
+ */
+function reportViewStrings(view: ReportView): CopyEntry[] {
+  const entries: CopyEntry[] = [
+    { path: "reading", value: view.reading },
+    { path: "goingWell", value: view.goingWell },
+  ];
+  for (const zone of ["tZone", "cheeks"] as const) {
+    const value = view.skinTypeZones[zone];
+    if (value !== null) {
+      entries.push({ path: `skinTypeZones.${zone}`, value });
+    }
+  }
+  for (const concern of view.concerns) {
+    entries.push({ path: `concerns.${concern.key}.label`, value: concern.label });
+    entries.push({
+      path: `concerns.${concern.key}.description`,
+      value: concern.description,
+    });
+  }
+  for (const period of ["morning", "night"] as const) {
+    view.routine[period].forEach((step, index) => {
+      const at = `routine.${period}[${index}]`;
+      entries.push({ path: `${at}.stepName`, value: step.stepName });
+      entries.push({ path: `${at}.concernLabel`, value: step.concernLabel });
+      entries.push({ path: `${at}.why`, value: step.why });
+      entries.push({ path: `${at}.productQuery`, value: step.productQuery });
+    });
+  }
+  return entries;
+}
+
+describe("eval:safety, lexicon over the demo fixture report", () => {
+  const FIXTURE_STRINGS = reportViewStrings(DEMO_FIXTURE_REPORT_VIEW);
+
+  it("has fixture text to check", () => {
+    expect(FIXTURE_STRINGS.length).toBeGreaterThan(20);
+  });
+
+  it("finds no banned lexicon term, exclamation, or dash in any of it", () => {
+    for (const entry of FIXTURE_STRINGS) {
+      for (const violation of checkLexicon(entry.value)) {
+        throw new Error(
+          `${entry.path}: ${describeViolation(violation)} in "${entry.value}"`,
+        );
+      }
+    }
+  });
+
+  it("shows no product, so nothing on the demo report is an invented listing", () => {
+    // docs/06-safety-privacy.md, "Grounding and honesty". No listing has ever
+    // been fetched for the fixture, so every step has to be in the empty state.
+    const steps = [
+      ...DEMO_FIXTURE_REPORT_VIEW.routine.morning,
+      ...DEMO_FIXTURE_REPORT_VIEW.routine.night,
+    ];
+    expect(steps.length).toBeGreaterThan(0);
+    for (const step of steps) {
+      expect(step.product, `${step.stepName} carries a listing`).toBeNull();
+    }
   });
 });
 
