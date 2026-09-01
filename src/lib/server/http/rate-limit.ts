@@ -35,6 +35,22 @@ export const RATE_LIMITS = {
   analyze: { bucket: "analyze", capacity: 10, refillPerHour: 10 },
   renders: { bucket: "renders", capacity: 30, refillPerHour: 30 },
   products: { bucket: "products", capacity: 60, refillPerHour: 60 },
+  /**
+   * Wardrobe writes: upload slots, classify calls, chip corrections, deletes.
+   * docs/06-safety-privacy.md names capture, analyze, render, and product
+   * routes and stops there, so this bucket is in house. Sixty an hour is a
+   * person emptying a wardrobe into the app in one sitting (the whole ceiling
+   * is sixty garments) without leaving room for a loop.
+   */
+  garments: { bucket: "garments", capacity: 60, refillPerHour: 60 },
+  /**
+   * Looks writes: saving a composed look. In house for the same reason the
+   * garments bucket is, and the same size: a person tapping through six
+   * occasions and saving what they like, without leaving room for a loop. The
+   * read is not limited here, because it spends its own budget through the
+   * product and credit caps.
+   */
+  looks: { bucket: "looks", capacity: 60, refillPerHour: 60 },
 } as const satisfies Record<string, RateLimitRule>;
 
 export type RateLimitName = keyof typeof RATE_LIMITS;

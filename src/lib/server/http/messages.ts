@@ -87,6 +87,35 @@ export const messages = {
    */
   demoProfileReadOnly:
     "The saved demo profile cannot be changed. Take your own selfie to adjust yours.",
+  /** In house. A garment id that is not this person's. */
+  garmentNotFound: "That garment is not in your wardrobe. Add it again.",
+  /**
+   * In house. A look id that is not this person's, or one that was recomposed
+   * away before the save landed. docs/01-user-flow.md section K gives the save
+   * but no line for a save that found nothing, and the two ways out are the two
+   * things the screen can do.
+   */
+  lookNotFound: "That look is no longer on this screen. Open the occasion again.",
+  /**
+   * In house. The classifier could not be reached, so no chips were filled in.
+   * docs/01-user-flow.md section J words the card ("Could not read this one. Tap
+   * to fill in details.") but not the response body, and the two say the same
+   * thing: nothing was read, and the person finishes it by hand.
+   */
+  classifierUnavailable:
+    "This photo could not be read automatically. Tap the chips to fill in the details.",
+  /** In house. The object is missing, or it is not an image we can send. */
+  garmentImageUnreadable:
+    "That photo did not upload properly. Add the garment again.",
+  /** In house. The upload is larger than the classifier accepts. */
+  garmentImageTooLarge:
+    "That photo is too large to read. Add it again from your camera roll.",
+  /**
+   * In house. The wardrobe size ceiling in src/lib/shared/wardrobe-view.ts. No
+   * doc sets one, so the line says what happened and what to do.
+   */
+  wardrobeFull:
+    "Your wardrobe is full. Remove a garment before adding more.",
 } as const;
 
 export type ServerMessages = typeof messages;
@@ -114,4 +143,10 @@ export const SERVER_MESSAGES_NOT_IN_FLOW_DOC = [
   "renderLimitReached",
   "profileNotReady",
   "demoProfileReadOnly",
+  "garmentNotFound",
+  "lookNotFound",
+  "classifierUnavailable",
+  "garmentImageUnreadable",
+  "garmentImageTooLarge",
+  "wardrobeFull",
 ] as const;

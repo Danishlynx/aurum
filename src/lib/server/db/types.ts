@@ -129,6 +129,62 @@ type JudgeSessionRow = {
   updated_at: string;
 };
 
+/**
+ * One garment photo, migration 0003.
+ *
+ * type, pattern, and colors are the classifier's answer or the person's
+ * correction; all three are nullable because a garment can exist before either
+ * has happened (docs/01-user-flow.md section J, the classifying and failed card
+ * states). The vocabulary those columns are checked against lives in
+ * src/lib/shared/wardrobe-view.ts; only formality is also a check constraint in
+ * SQL, which is why it is the one column typed to its union here.
+ *
+ * storage_path is not null: the path is computed from the id the app generates,
+ * so the row and its object in the garments bucket are written together.
+ */
+type GarmentRow = {
+  id: string;
+  user_id: string;
+  /** Object path inside the garments bucket: <user_id>/<garment_id>.<ext> */
+  storage_path: string;
+  type: string | null;
+  /** [{ name, hex }], the classifier output shape. */
+  colors: Json;
+  pattern: string | null;
+  formality: "casual" | "smart" | "formal" | null;
+  /** The full model output including confidence, or null before any call. */
+  classification: Json | null;
+  /** True once the person corrected a chip, so nothing overwrites them. */
+  user_edited: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * One composed outfit for one occasion, migration 0003.
+ *
+ * occasion is text rather than a union: the six occasions live in
+ * src/lib/shared/looks-view.ts and the column has no check constraint, so the
+ * looks layer is what narrows it on the way in and on the way out.
+ *
+ * garments is an ordered array whose members are either { garment_id } for an
+ * owned piece or a normalized listing for a gap (the column comment in the
+ * migration). It is Json here because the two shapes are the looks layer's
+ * decision, validated with zod where it is read.
+ */
+type LookRow = {
+  id: string;
+  user_id: string;
+  occasion: string | null;
+  garments: Json;
+  rationale: string | null;
+  /** Object path in the renders bucket for the hero garment try on. */
+  render_path: string | null;
+  is_saved: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 type RenderRow = {
   id: string;
   user_id: string;
@@ -288,6 +344,35 @@ export type Database = {
         Update: Partial<JudgeSessionRow>;
         Relationships: [];
       };
+      garments: {
+        Row: GarmentRow;
+        Insert: InsertOf<
+          GarmentRow,
+          | Generated
+          | "type"
+          | "colors"
+          | "pattern"
+          | "formality"
+          | "classification"
+          | "user_edited"
+        >;
+        Update: Partial<GarmentRow>;
+        Relationships: [];
+      };
+      looks: {
+        Row: LookRow;
+        Insert: InsertOf<
+          LookRow,
+          | Generated
+          | "occasion"
+          | "garments"
+          | "rationale"
+          | "render_path"
+          | "is_saved"
+        >;
+        Update: Partial<LookRow>;
+        Relationships: [];
+      };
       renders: {
         Row: RenderRow;
         Insert: InsertOf<
@@ -337,6 +422,8 @@ export type Analysis = Row<"analyses">;
 export type JobRecord = Row<"jobs">;
 export type CreditLedgerEntry = Row<"credit_ledger">;
 export type JudgeSession = Row<"judge_sessions">;
+export type Garment = Row<"garments">;
+export type Look = Row<"looks">;
 export type Render = Row<"renders">;
 export type ProductCacheEntry = Row<"product_cache">;
 export type RateLimitBucketRow = Row<"rate_limits">;
