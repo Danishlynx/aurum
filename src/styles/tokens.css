@@ -1,0 +1,54 @@
+/*
+ * AURUM design tokens.
+ * Source of truth: docs/02-design-system.md.
+ * Components never use raw values. They use the Tailwind theme names that read these.
+ */
+
+:root {
+  /* Color */
+  --canvas: #0C0A09;
+  --surface: #171310;
+  --raised: #26201B;
+  --text: #F1E9DB;
+  --text-muted: #A89C88;
+  --accent: #B7955A;
+  --accent-bright: #E2C88F;
+  --mask: rgba(183, 149, 90, 0.42);
+  --positive: #7F8A5E;
+  --caution: #B0783A;
+
+  /*
+   * Typography. next/font/google in src/app/layout.tsx sets
+   * --font-display-loaded (Cormorant Garamond) and --font-body-loaded (Manrope)
+   * on the html element. These two tokens add the fallback stack.
+   */
+  --font-display: var(--font-display-loaded), Georgia, serif;
+  --font-body: var(--font-body-loaded), system-ui, sans-serif;
+
+  /* Radius: two values only. The capture frame is an oval, handled per component. */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+
+  /* Motion */
+  --duration-reveal-bloom: 600ms;
+  --duration-reveal-settle: 300ms;
+  --duration-sheet: 280ms;
+  --duration-crossfade: 240ms;
+  --duration-toggle: 180ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Layout */
+  --column-max: 480px;
+  --column-padding: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-reveal-bloom: 0ms;
+    --duration-reveal-settle: 0ms;
+    --duration-sheet: 0ms;
+    --duration-crossfade: 0ms;
+    --duration-toggle: 0ms;
+  }
+}

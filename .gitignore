@@ -33,8 +33,9 @@ blob-report/
 playwright/.cache/
 .playwright/
 
-# evals
-evals/results/
+# evals (results are regenerated per run, the folder itself is tracked)
+evals/results/*
+!evals/results/.gitkeep
 
 # vercel
 .vercel
