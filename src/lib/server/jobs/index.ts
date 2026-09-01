@@ -439,8 +439,11 @@ export async function readCaptureJobs(
  * Claims the right to poll one job. The claim is a compare and set on
  * last_polled_at, so two polls arriving together produce one provider call, not
  * two. A job polled less than a second ago is left alone.
+ *
+ * Exported because the render poll (src/lib/server/renders) is a job poll too
+ * and must not have a second copy of this rule.
  */
-async function claimForPolling(job: JobRecord): Promise<boolean> {
+export async function claimForPolling(job: JobRecord): Promise<boolean> {
   const now = Date.now();
   if (
     job.last_polled_at !== null &&

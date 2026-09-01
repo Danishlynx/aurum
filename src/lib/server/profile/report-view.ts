@@ -65,7 +65,8 @@ const approxLocationSchema = z.object({
 
 const UNDERTONES: readonly Undertone[] = ["warm", "cool", "neutral"];
 
-function readUndertone(value: string | null): Undertone | null {
+/** Exported for the colour layer, which reads the same column. */
+export function readUndertone(value: string | null): Undertone | null {
   if (value === null) {
     return null;
   }
@@ -104,7 +105,8 @@ async function signOrNull(
   }
 }
 
-function toFacts(profile: AestheticProfile): ProfileFacts {
+/** Exported so the colour layer can rebuild the reading from the same row. */
+export function toFacts(profile: AestheticProfile): ProfileFacts {
   const zones = readZones(profile);
   const fitzpatrick =
     profile.fitzpatrick !== null && isFitzpatrickType(profile.fitzpatrick)
@@ -144,7 +146,7 @@ async function toConcernViews(profile: AestheticProfile): Promise<ConcernView[]>
   return views;
 }
 
-interface GroundingContext {
+export interface GroundingContext {
   readonly location: { city: string; lat: number; lng: number } | null;
   readonly gl: string;
   readonly hl: string;
@@ -159,7 +161,9 @@ interface GroundingContext {
  * They are read here rather than through readSerpApiConfig because that throws
  * without a key, and the report has to render without one.
  */
-async function readGroundingContext(session: AppSession): Promise<GroundingContext> {
+export async function readGroundingContext(
+  session: AppSession,
+): Promise<GroundingContext> {
   const gl = process.env.SERPAPI_DEFAULT_GL;
   const hl = process.env.SERPAPI_DEFAULT_HL;
   const context: GroundingContext = {

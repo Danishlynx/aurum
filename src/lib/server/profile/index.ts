@@ -9,16 +9,33 @@ import "server-only";
  * (cosmetic never medical, regeneration and fallback),
  * docs/09-build-order-and-demo.md (Layer 1).
  *
- * Two entry points, and nothing else outside this folder needs the rest:
+ * Four entry points, and nothing else outside this folder needs the rest:
  *   maybeBuildProfile   called by the jobs layer when analyses land
  *   buildReportView     called by the report screen
+ *   buildColorView      called by the color screen and GET /api/profile/color
+ *   buildMakeupView     called by the makeup screen and GET /api/profile/makeup
  */
 
 export { decideBuild, maybeBuildProfile, storedConcernKeys } from "./build";
 export type { BuildOutcome, BuildResult } from "./build";
+export {
+  buildColorView,
+  confirmUndertone,
+  paletteForProfile,
+} from "./color";
+export type { UndertoneUpdateOutcome } from "./color";
 export { getAestheticProfile, readStoredConcerns } from "./db";
 export type { AestheticProfile, StoredConcern } from "./db";
-export { DEMO_FIXTURE_READING, DEMO_FIXTURE_REPORT_VIEW } from "./demo-fixture";
+export {
+  DEMO_FIXTURE_COLOR_VIEW,
+  DEMO_FIXTURE_MAKEUP_VIEW,
+  DEMO_FIXTURE_PALETTE,
+  DEMO_FIXTURE_READING,
+  DEMO_FIXTURE_REPORT_VIEW,
+} from "./demo-fixture";
+export { buildMakeupView } from "./makeup";
+export type { MakeupViewOptions, ShadeSelection } from "./makeup";
+export { buildMakeupCategoryViews, selectedShade } from "./shades";
 export {
   buildFallbackNarrative,
   buildFallbackReading,

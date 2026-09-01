@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { ConcernKey } from "@/lib/shared/concerns";
+import { derivePalette, type Palette } from "@/lib/shared/palette";
 
 import { getProfile, listAnalyses } from "../db";
 import type { Analysis, Insert, Json } from "../db/types";
@@ -17,7 +18,9 @@ import {
   readProfileFacts,
   type ProfileFacts,
 } from "./facts";
+import { readUndertone } from "./report-view";
 import { runProfileSynthesis, type SynthesisOutcome } from "./synthesis";
+import type { Undertone } from "./undertone";
 
 /**
  * Building the aesthetic profile.
@@ -28,8 +31,13 @@ import { runProfileSynthesis, type SynthesisOutcome } from "./synthesis";
  * the pure mapping, and the synthesis text from one Claude call with structured
  * output. The profile row is written and the client routes to the report."
  *
- * Season and palette stay null here. They are Layer 2
- * (docs/09-build-order-and-demo.md), derived by src/lib/shared/palette.ts.
+ * The season and the palette are derived here too, by the pure mapping in
+ * src/lib/shared/palette.ts, and written to the row. Screens do not read the
+ * stored palette back: docs/03-architecture.md, "Caching", says the palette is
+ * "derived by a pure function from profile fields; not cached, it is
+ * microseconds", so src/lib/server/profile/color.ts derives it fresh on every
+ * read. The columns are written because they are in the data model and because
+ * /profile and the stylist layer read the season.
  *
  * Retention is not this file's job. src/lib/server/jobs/index.ts already deletes
  * the original object in finishCapture once every job for the capture is
@@ -69,6 +77,27 @@ function toStoredConcerns(facts: ProfileFacts): StoredConcern[] {
     rank: concern.rank,
     mask_path: facts.maskPathByKey.get(concern.key) ?? null,
   }));
+}
+
+/**
+ * The palette for one set of facts, or null when there is nothing to derive one
+ * from. No tone and no undertone means no season: docs/01-user-flow.md section G
+ * has the screen ask the person to confirm their undertone instead.
+ */
+function paletteFor(
+  facts: ProfileFacts,
+  undertone: Undertone | null,
+): Palette | null {
+  if (facts.skinToneHex === null || undertone === null) {
+    return null;
+  }
+  return derivePalette({
+    skinToneHex: facts.skinToneHex,
+    undertone,
+    eyeColorHex: facts.eyeColorHex,
+    hairColorHex: facts.hairColorHex,
+    fitzpatrick: facts.fitzpatrick,
+  });
 }
 
 function signatureOf(concerns: readonly StoredConcern[]): string {
@@ -185,6 +214,17 @@ export async function maybeBuildProfile(
     }
   }
 
+  // An undertone the person confirmed on /color outranks the one we detected
+  // (docs/01-user-flow.md section G item 2). A late arriving analysis must not
+  // quietly undo their answer, and the palette below is derived from whichever
+  // of the two wins.
+  const confirmed =
+    existing?.undertone_source === "confirmed_by_user"
+      ? readUndertone(existing.undertone)
+      : null;
+  const undertone: Undertone | null = confirmed ?? facts.undertone;
+  const palette = paletteFor(facts, undertone);
+
   const row: Insert<"aesthetic_profiles"> = {
     user_id: ownerId,
     capture_id: facts.captureId,
@@ -196,11 +236,18 @@ export async function maybeBuildProfile(
     skin_age: facts.skinAge,
     fitzpatrick: facts.fitzpatrick,
     skin_tone_hex: facts.skinToneHex,
-    undertone: facts.undertone,
-    undertone_source: facts.undertone === null ? null : "detected",
+    undertone,
+    undertone_source:
+      confirmed !== null
+        ? "confirmed_by_user"
+        : facts.undertone === null
+          ? null
+          : "detected",
     eye_color_hex: facts.eyeColorHex,
     hair_color_hex: facts.hairColorHex,
     face_shape: facts.faceShape,
+    season: palette?.season ?? null,
+    palette: palette === null ? null : (palette as unknown as Json),
     version: (existing?.version ?? 0) + 1,
   };
   if (decision.regenerateReading || existing === null) {
@@ -236,8 +283,11 @@ export async function maybeBuildProfile(
 /**
  * The person's first name, when they gave one. A judge session has no profiles
  * row and no name, which is why this returns null rather than looking one up.
+ *
+ * Exported because the undertone adjuster regenerates the same reading and has
+ * to pass the same name (src/lib/server/profile/color.ts).
  */
-async function readFirstName(session: AppSession): Promise<string | null> {
+export async function readFirstName(session: AppSession): Promise<string | null> {
   if (session.kind !== "user") {
     return null;
   }

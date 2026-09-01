@@ -279,17 +279,25 @@ export async function findReservation(args: {
       .order("created_at", { ascending: true }),
   );
 
-  const reservationRow = rows.find(
-    (row) => row.units > 0 && (row.note ?? "").startsWith("reserve"),
+  // The newest reservation that has not been refunded. A subject can carry more
+  // than one: a render that failed and was asked for again reserves a second
+  // time, and returning the first (already refunded) row would leave the second
+  // spend with nothing able to refund it.
+  const refunded = new Set(
+    rows
+      .map((row) => row.note ?? "")
+      .filter((note) => note.startsWith("refund "))
+      .map((note) => note.slice("refund ".length)),
   );
+  const reservationRow = [...rows]
+    .reverse()
+    .find(
+      (row) =>
+        row.units > 0 &&
+        (row.note ?? "").startsWith("reserve") &&
+        !refunded.has(row.id),
+    );
   if (reservationRow === undefined) {
-    return null;
-  }
-
-  const settled = rows.some(
-    (row) => (row.note ?? "") === `refund ${reservationRow.id}`,
-  );
-  if (settled) {
     return null;
   }
 

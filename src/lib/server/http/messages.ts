@@ -24,6 +24,12 @@ export const messages = {
   judgeExhausted: copy.errors.judgeExhausted,
   judgeCodeDidNotMatch: copy.judge.codeError,
   judgeSessionExhausted: copy.judge.exhausted,
+  /**
+   * The try on failed state, docs/01-user-flow.md section H. Used whenever a
+   * render cannot be produced, so the body carries the same sentence the screen
+   * shows and no substitute image is ever implied.
+   */
+  tryOnUnavailable: copy.makeup.previewUnavailable,
 
   /** In house. No session, or a session that has ended. */
   signedOut: "Your session has ended. Open the app again to continue.",
@@ -59,6 +65,28 @@ export const messages = {
   /** In house. Hair type detection needs three photos, not one selfie. */
   hairTypeNeedsThreePhotos:
     "Hair type needs three photos, front and both sides, so it is skipped for a single selfie.",
+  /**
+   * In house. Renders are sequential per person
+   * (docs/03-architecture.md, "Concurrency"), which docs/01 does not word.
+   */
+  renderInProgress:
+    "A preview is still rendering. Wait for it to finish, then pick another shade.",
+  /**
+   * In house. Six renders per judge session
+   * (docs/07-payments-and-judge-mode.md, "Caps"), which docs/01 does not word.
+   */
+  renderLimitReached:
+    "This session has used its previews. The shades below still show what suits you.",
+  /** In house. A colour or makeup request before any reading exists. */
+  profileNotReady:
+    "There is no reading on this session yet. Take a selfie to build your profile.",
+  /**
+   * In house. docs/07-payments-and-judge-mode.md: "The demo profile is read only
+   * for judge sessions." The same holds in fixture mode, where there is no
+   * database behind the demo profile at all.
+   */
+  demoProfileReadOnly:
+    "The saved demo profile cannot be changed. Take your own selfie to adjust yours.",
 } as const;
 
 export type ServerMessages = typeof messages;
@@ -82,4 +110,8 @@ export const SERVER_MESSAGES_NOT_IN_FLOW_DOC = [
   "providerRefused",
   "analysisUnavailable",
   "hairTypeNeedsThreePhotos",
+  "renderInProgress",
+  "renderLimitReached",
+  "profileNotReady",
+  "demoProfileReadOnly",
 ] as const;

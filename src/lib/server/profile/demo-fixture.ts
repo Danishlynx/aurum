@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { ColorView, MakeupView } from "@/lib/shared/color-view";
 import {
   concernDescription,
   concernDisplayName,
@@ -7,11 +8,13 @@ import {
   isConcernKey,
   type ConcernKey,
 } from "@/lib/shared/concerns";
+import { derivePalette, type Palette, type Undertone } from "@/lib/shared/palette";
 import type { ConcernView, ReportView } from "@/lib/shared/report-view";
 
 import type { StoredConcern } from "./db";
 import { buildDeterministicRoutine, buildGoingWell } from "./fallback";
 import { factsFromStoredProfile } from "./facts";
+import { buildMakeupCategoryViews } from "./shades";
 
 /**
  * The report the app serves when AURUM_DEMO_FIXTURE is "true".
@@ -56,6 +59,9 @@ export const DEMO_FIXTURE_CAPTURE_ID = "fixture-a09";
 export const DEMO_FIXTURE_FITZPATRICK = 5;
 export const DEMO_FIXTURE_SKIN_TONE_HEX = "#6b4a2f";
 export const DEMO_FIXTURE_SKIN_AGE = 31;
+export const DEMO_FIXTURE_EYE_COLOR_HEX = "#3b2b22";
+export const DEMO_FIXTURE_HAIR_COLOR_HEX = "#1e1613";
+export const DEMO_FIXTURE_UNDERTONE: Undertone = "warm";
 
 /**
  * Ranked tone first for Fitzpatrick V, which is why dark spots at 62 sit above
@@ -85,9 +91,9 @@ const facts = factsFromStoredProfile({
   skinAge: DEMO_FIXTURE_SKIN_AGE,
   fitzpatrick: DEMO_FIXTURE_FITZPATRICK,
   skinToneHex: DEMO_FIXTURE_SKIN_TONE_HEX,
-  eyeColorHex: "#3b2b22",
-  hairColorHex: "#1e1613",
-  undertone: "warm",
+  eyeColorHex: DEMO_FIXTURE_EYE_COLOR_HEX,
+  hairColorHex: DEMO_FIXTURE_HAIR_COLOR_HEX,
+  undertone: DEMO_FIXTURE_UNDERTONE,
   faceShape: "Oval",
 });
 
@@ -148,4 +154,54 @@ export const DEMO_FIXTURE_REPORT_VIEW: ReportView = Object.freeze({
       product: null,
     })),
   },
+});
+
+/**
+ * The fixture palette.
+ *
+ * Derived by the real derivePalette from the fixture's own tone, undertone, eye
+ * colour, hair colour, and Fitzpatrick type, never written out by hand. The
+ * fixture and the mapping therefore cannot drift: a change to the palette rules
+ * changes this too, and eval:palette sees the same numbers the demo screen does.
+ */
+export const DEMO_FIXTURE_PALETTE: Palette = derivePalette({
+  skinToneHex: DEMO_FIXTURE_SKIN_TONE_HEX,
+  undertone: DEMO_FIXTURE_UNDERTONE,
+  eyeColorHex: DEMO_FIXTURE_EYE_COLOR_HEX,
+  hairColorHex: DEMO_FIXTURE_HAIR_COLOR_HEX,
+  fitzpatrick: DEMO_FIXTURE_FITZPATRICK,
+});
+
+/** The fixture /color screen. undertoneSource is "detected" because it was. */
+export const DEMO_FIXTURE_COLOR_VIEW: ColorView = Object.freeze({
+  skinToneHex: DEMO_FIXTURE_SKIN_TONE_HEX,
+  undertone: DEMO_FIXTURE_UNDERTONE,
+  undertoneSource: "detected",
+  palette: DEMO_FIXTURE_PALETTE,
+});
+
+/**
+ * The fixture /makeup screen.
+ *
+ * Two absences, both honest rather than unfinished, and both the same ones the
+ * fixture report carries:
+ *
+ * 1. captureImageUrl is null. No fixture face is checked in, so there is no
+ *    selfie to put a try on on. The screen shows its "Preview unavailable for
+ *    this shade." state (docs/01-user-flow.md section H), which is the true
+ *    state: with no Perfect Corp key nothing has been rendered, and a stand in
+ *    image would be a made up try on.
+ * 2. product is null. Nothing has been fetched from SerpApi, so every row shows
+ *    "No listing found near you yet" rather than an invented product.
+ *
+ * The shade rows themselves are real: they come from the same
+ * buildMakeupCategoryViews the live screen uses, over the fixture palette.
+ */
+export const DEMO_FIXTURE_MAKEUP_VIEW: MakeupView = Object.freeze({
+  captureImageUrl: null,
+  categories: buildMakeupCategoryViews({
+    palette: DEMO_FIXTURE_PALETTE,
+    skinToneHex: DEMO_FIXTURE_SKIN_TONE_HEX,
+  }),
+  product: null,
 });
