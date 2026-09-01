@@ -9,6 +9,14 @@ import { defineConfig, devices } from "@playwright/test";
  * to a screen can take several seconds on a cold cache. Point
  * PLAYWRIGHT_BASE_URL at a built server (npm run build, then npm run start) to
  * run against production output instead.
+ *
+ * The server starts with AURUM_DEMO_FIXTURE=true, the switch documented in
+ * README.md and implemented in src/lib/server/profile/report-view.ts. It is what
+ * lets /report, /color, and /makeup render on a clean clone with no Supabase
+ * project and no provider keys: the profile layer answers from the checked in
+ * fixture and touches neither. It changes nothing the landing, consent, or
+ * health specs assert. Specs that depend on it are grouped so they skip when
+ * PLAYWRIGHT_BASE_URL points at a server whose mode this file does not set.
  */
 export default defineConfig({
   testDir: "./e2e",
@@ -39,5 +47,6 @@ export default defineConfig({
         url: "http://localhost:3000",
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
+        env: { AURUM_DEMO_FIXTURE: "true" },
       },
 });
