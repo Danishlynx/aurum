@@ -343,6 +343,13 @@ export const copy = {
     decidesLooks: "Outfit colors and combinations",
     /** Undertone unknown state, docs/01 section G states. */
     confirmUndertone: "Confirm your undertone",
+    /**
+     * In house. docs/01 section G item 2: "Choosing one updates the profile and
+     * re derives the palette." The doc gives no line for a choice that never
+     * reached the profile, and "Global states and rules" requires one that says
+     * what happened and what to do.
+     */
+    adjusterFailed: "Your undertone was not saved. Try again in a moment.",
   },
 
   /** H. Makeup (/makeup) */
@@ -357,6 +364,25 @@ export const copy = {
     /** Render pending, for example "Applying rust lip". */
     applyingTemplate: "Applying {shade} {category}",
     previewUnavailable: "Preview unavailable for this shade.",
+    /**
+     * In house. docs/01 section H item 4 has "Save this look" save the selected
+     * shades to the profile but gives no confirmation line. Toasts are one line,
+     * sentence case, no icon (docs/02-design-system.md, Toast).
+     */
+    savedToast: "Saved to your profile.",
+    /**
+     * In house, for a save that never reached the profile. Written to the same
+     * pattern as copy.errors.uploadFailed, and short enough to stay on one line
+     * in the toast at 390px (docs/02-design-system.md, Toast).
+     */
+    saveFailed: "Your look was not saved. Try again.",
+    /**
+     * In house. docs/01 section H item 3 puts a product card under each selected
+     * shade, and ProductCard names the product type when no listing came back
+     * (docs/01 section F item 6). This is what names it, for example "Rust lip",
+     * in the same two words as applyingTemplate.
+     */
+    shadeProductTypeTemplate: "{shade} {category}",
   },
 
   /** I. Hair (/hair) */
@@ -479,6 +505,10 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "capture.shutterLabel",
   "judge.exploreDemoAction",
   "productCard.distanceTemplate",
+  "color.adjusterFailed",
+  "makeup.savedToast",
+  "makeup.saveFailed",
+  "makeup.shadeProductTypeTemplate",
   "report.fallbackReadingNoSkinTypeTemplate",
   "report.fallbackSecondConcernTemplate",
   "report.fallbackGoingWellTemplate",
