@@ -1,0 +1,84 @@
+{
+  "season": "soft_autumn",
+  "seasonDisplayName": "Soft Autumn",
+  "seasonLine": "Warm, dusty colors with little contrast sit closest to your skin.",
+  "wear": [
+    {
+      "name": "Oat",
+      "hex": "#e3d8c3",
+      "why": "Oat is a warm light neutral, softer on you than a bright white."
+    },
+    {
+      "name": "Mahogany",
+      "hex": "#6e3b33",
+      "why": "Mahogany is as dark as your coloring goes without breaking it."
+    },
+    {
+      "name": "Taupe",
+      "hex": "#9c8b79",
+      "why": "A grey brown is the neutral that matches your muted warmth."
+    },
+    {
+      "name": "Clay",
+      "hex": "#b4715a",
+      "why": "Clay is a warm red brown at the softness your skin carries."
+    },
+    {
+      "name": "Soft gold",
+      "hex": "#c6a96b",
+      "why": "Soft gold picks up the warmth in your skin without shouting."
+    },
+    {
+      "name": "Olive",
+      "hex": "#7a7a4e",
+      "why": "Olive is warm and muted, which is where your coloring sits."
+    },
+    {
+      "name": "Sage",
+      "hex": "#9aa383",
+      "why": "A green with grey in it keeps your contrast low, the way it is."
+    },
+    {
+      "name": "Teal",
+      "hex": "#40706e",
+      "why": "Teal is the cool color that still holds warmth, so it works on you."
+    },
+    {
+      "name": "Denim blue",
+      "hex": "#61738c",
+      "why": "Denim blue is dusty rather than clear, which suits your coloring."
+    },
+    {
+      "name": "Dusty rose",
+      "hex": "#c39089",
+      "why": "Dusty rose is a warm pink with grey in it, close to your skin."
+    }
+  ],
+  "avoid": [
+    {
+      "name": "Icy blue",
+      "hex": "#cfe6f5",
+      "why": "Icy blue is cold and clear next to your muted warmth."
+    },
+    {
+      "name": "Pure white",
+      "hex": "#ffffff",
+      "why": "Pure white is a harder edge than your soft coloring wants."
+    },
+    {
+      "name": "Hot pink",
+      "hex": "#ff3d9e",
+      "why": "Hot pink is brighter and colder than anything in your coloring."
+    },
+    {
+      "name": "Black",
+      "hex": "#121212",
+      "why": "Black makes a contrast your face does not have on its own."
+    },
+    {
+      "name": "Bright turquoise",
+      "hex": "#17c3d6",
+      "why": "Bright turquoise is clear and cold beside your dusty warmth."
+    }
+  ]
+}

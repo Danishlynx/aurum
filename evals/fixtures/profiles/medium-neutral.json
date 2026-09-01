@@ -1,0 +1,25 @@
+{
+  "id": "medium-neutral",
+  "synthetic": true,
+  "label": "Medium neutral. Fitzpatrick IV, neutral undertone, dark hair, brown eyes.",
+  "note": "SYNTHETIC. Not a person. This one has no matching analysis fixture: the only neutral set in evals/fixtures/analyses is a12, which is Fitzpatrick VI and therefore deep. Open item: add a neutral Fitzpatrick IV analysis fixture so the two fixture sets line up, then copy its attribute hexes here.",
+  "analysisFixtureId": null,
+  "profile": {
+    "fitzpatrick": 4,
+    "skinToneHex": "#a67b5b",
+    "undertone": "neutral",
+    "undertoneSource": "detected",
+    "eyeColorHex": "#6b5b45",
+    "eyeColorName": "brown",
+    "hairColorHex": "#2e2018",
+    "hairColorName": "dark brown",
+    "faceShape": "Oval"
+  },
+  "expected": {
+    "season": "soft_autumn",
+    "depth": "medium",
+    "contrast": "medium",
+    "why": "Skin at L* 55 sits in the medium band, and neutral coloring with medium contrast takes the muted warm season rather than a clear one."
+  },
+  "golden": "goldens/medium-neutral.palette.json"
+}

@@ -1,0 +1,25 @@
+{
+  "id": "light-cool",
+  "synthetic": true,
+  "label": "Light cool. Fitzpatrick I, cool undertone, light brown hair, blue eyes.",
+  "note": "SYNTHETIC. Not a person. The coloring is copied from evals/fixtures/analyses/a01.json, so a change to that file and a change to this one are visible together.",
+  "analysisFixtureId": "a01",
+  "profile": {
+    "fitzpatrick": 1,
+    "skinToneHex": "#f0d5cf",
+    "undertone": "cool",
+    "undertoneSource": "detected",
+    "eyeColorHex": "#5b7fa6",
+    "eyeColorName": "blue",
+    "hairColorHex": "#9a7350",
+    "hairColorName": "light brown",
+    "faceShape": "Oval"
+  },
+  "expected": {
+    "season": "light_summer",
+    "depth": "light",
+    "contrast": "medium",
+    "why": "Skin at L* 87 is above the light boundary, and light brown hair keeps the contrast score under the high boundary, so the palette is the soft light cool one rather than a winter."
+  },
+  "golden": "goldens/light-cool.palette.json"
+}

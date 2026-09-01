@@ -1,0 +1,84 @@
+{
+  "season": "light_summer",
+  "seasonDisplayName": "Light Summer",
+  "seasonLine": "Cool, soft, light colors sit closest to your skin.",
+  "wear": [
+    {
+      "name": "Soft white",
+      "hex": "#f2f1ee",
+      "why": "A white with grey in it is gentler on cool skin than a bright white."
+    },
+    {
+      "name": "Soft navy",
+      "hex": "#3f4e6b",
+      "why": "Soft navy is as dark as your coloring wants to go."
+    },
+    {
+      "name": "Grey blue",
+      "hex": "#7c8ca3",
+      "why": "Grey blue is a cool neutral that stays quiet beside your skin."
+    },
+    {
+      "name": "Rose",
+      "hex": "#d98ba0",
+      "why": "Rose is a cool pink at the softness your coloring holds."
+    },
+    {
+      "name": "Dusty pink",
+      "hex": "#e0aeb6",
+      "why": "Dusty pink sits close to the coolness in your skin."
+    },
+    {
+      "name": "Powder blue",
+      "hex": "#b6cfe3",
+      "why": "Powder blue is light and cool, the same as your coloring."
+    },
+    {
+      "name": "Periwinkle",
+      "hex": "#8e9fd4",
+      "why": "Periwinkle is a blue with a little pink in it, which suits cool skin."
+    },
+    {
+      "name": "Lavender",
+      "hex": "#c3b4da",
+      "why": "Lavender is soft and cool, so it does not outweigh your face."
+    },
+    {
+      "name": "Sage",
+      "hex": "#a9bfa4",
+      "why": "A green with grey in it stays as soft as the rest of your coloring."
+    },
+    {
+      "name": "Sea green",
+      "hex": "#6fa9a0",
+      "why": "Sea green is the cool green your light coloring can carry."
+    }
+  ],
+  "avoid": [
+    {
+      "name": "Orange",
+      "hex": "#e4641b",
+      "why": "Orange is warmer and louder than your coloring."
+    },
+    {
+      "name": "Mustard",
+      "hex": "#b8860b",
+      "why": "Mustard pulls yellow into cool skin."
+    },
+    {
+      "name": "Black",
+      "hex": "#121212",
+      "why": "Black is heavier than your light coloring and it hardens your face."
+    },
+    {
+      "name": "Tomato red",
+      "hex": "#e24c33",
+      "why": "A red with orange in it fights the coolness in your skin."
+    },
+    {
+      "name": "Warm brown",
+      "hex": "#8b5e34",
+      "why": "Warm brown is a heavy warmth your skin does not share."
+    }
+  ]
+}

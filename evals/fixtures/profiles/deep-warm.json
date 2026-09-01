@@ -1,0 +1,25 @@
+{
+  "id": "deep-warm",
+  "synthetic": true,
+  "label": "Deep warm. Fitzpatrick V, warm undertone, near black hair, dark brown eyes.",
+  "note": "SYNTHETIC. Not a person. The coloring is copied from evals/fixtures/analyses/a09.json, which is the set src/lib/server/profile/demo-fixture.ts is built from, so the palette this profile produces is the palette the demo profile shows on /color.",
+  "analysisFixtureId": "a09",
+  "profile": {
+    "fitzpatrick": 5,
+    "skinToneHex": "#6b4a2f",
+    "undertone": "warm",
+    "undertoneSource": "detected",
+    "eyeColorHex": "#3b2b22",
+    "eyeColorName": "dark brown",
+    "hairColorHex": "#1e1613",
+    "hairColorName": "near black",
+    "faceShape": "Oval"
+  },
+  "expected": {
+    "season": "deep_autumn",
+    "depth": "deep",
+    "contrast": "medium",
+    "why": "Skin at L* 34 is below the deep boundary before Fitzpatrick V pulls it lower, and warm plus deep is deep autumn at every contrast."
+  },
+  "golden": "goldens/deep-warm.palette.json"
+}

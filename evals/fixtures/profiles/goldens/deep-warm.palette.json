@@ -1,0 +1,84 @@
+{
+  "season": "deep_autumn",
+  "seasonDisplayName": "Deep Autumn",
+  "seasonLine": "Rich, warm, and grounded colors sit closest to your skin.",
+  "wear": [
+    {
+      "name": "Cream",
+      "hex": "#efe3cb",
+      "why": "Cream sits easier against deep warm skin than pure white."
+    },
+    {
+      "name": "Chocolate",
+      "hex": "#4a2c1d",
+      "why": "Chocolate holds the depth of your hair without going flat."
+    },
+    {
+      "name": "Brick red",
+      "hex": "#8e3b2e",
+      "why": "A red with brown in it is the red your warm skin takes."
+    },
+    {
+      "name": "Rust",
+      "hex": "#9c4a1e",
+      "why": "Rust carries the same warmth that already sits in your skin."
+    },
+    {
+      "name": "Camel",
+      "hex": "#b08a56",
+      "why": "Camel is a warm neutral, which stays kinder on you than grey."
+    },
+    {
+      "name": "Mustard",
+      "hex": "#b8860b",
+      "why": "Mustard picks up the gold in your skin."
+    },
+    {
+      "name": "Olive",
+      "hex": "#6b6b3a",
+      "why": "Olive is warm and muted, so it reads as part of your coloring."
+    },
+    {
+      "name": "Forest green",
+      "hex": "#2f4f35",
+      "why": "Forest green is deep enough to hold its own next to your skin."
+    },
+    {
+      "name": "Deep teal",
+      "hex": "#14555a",
+      "why": "Deep teal is a cool color with warmth left in it, so it works on you."
+    },
+    {
+      "name": "Aubergine",
+      "hex": "#4b2340",
+      "why": "Aubergine gives you a very dark color that is not black."
+    }
+  ],
+  "avoid": [
+    {
+      "name": "Icy pink",
+      "hex": "#f6dde8",
+      "why": "Icy pastels wash you out."
+    },
+    {
+      "name": "Baby blue",
+      "hex": "#bbd8f0",
+      "why": "Baby blue is too cool and too pale to stand next to your depth."
+    },
+    {
+      "name": "Cool grey",
+      "hex": "#b8bcc4",
+      "why": "Cool grey pulls the warmth out of your skin."
+    },
+    {
+      "name": "Fuchsia",
+      "hex": "#e2418e",
+      "why": "Fuchsia is a cold pink, and it works against your warmth."
+    },
+    {
+      "name": "Pure white",
+      "hex": "#ffffff",
+      "why": "Pure white is a harder light on your skin than cream."
+    }
+  ]
+}
