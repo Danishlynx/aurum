@@ -1,0 +1,533 @@
+import "server-only";
+
+/**
+ * The verified surface of the Perfect Corp YouCam API.
+ *
+ * Every entry records where its facts came from and when they were checked.
+ * An entry marked "unverified" is one we could not fully read from the live
+ * docs. Calling it is refused unless PERFECTCORP_ALLOW_UNVERIFIED is set, so a
+ * guess never turns into a credit spend or a wrong request shape.
+ *
+ * Spec: docs/04-integrations.md (verify first, the call pattern, credit table).
+ *
+ * Note on sources: https://docs.perfectcorp.com was unreachable from this
+ * machine on every attempt. The same documentation is served from
+ * https://docs.makeupar.com, which is the host recorded below.
+ */
+
+export const PERFECTCORP_DEFAULT_BASE_URL = "https://yce-api-01.makeupar.com";
+
+/** Every HTTP call to the provider gets this budget. */
+export const PERFECTCORP_HTTP_TIMEOUT_MS = 15_000;
+
+/** A task that has been running longer than this is failed by the jobs layer. */
+export const PERFECTCORP_TASK_TIMEOUT_MS = 120_000;
+
+export type VerificationState = "confirmed" | "unverified";
+
+export interface Verification {
+  readonly state: VerificationState;
+  /** The page the facts were read from. */
+  readonly source: string;
+  /** ISO date the page was read. */
+  readonly checkedOn: string;
+  /** What is known, and for "unverified", exactly what is still missing. */
+  readonly note: string;
+}
+
+/**
+ * What one successful call costs. Failed tasks cost nothing: "If the engine
+ * fails to process the task, the task's status will change to 'error' and no
+ * unit will be consumed."
+ */
+export type UnitCost =
+  | { readonly kind: "fixed"; readonly units: number }
+  | {
+      readonly kind: "tiered";
+      /** What the tier boundary counts, for example "attributes requested". */
+      readonly countedBy: string;
+      readonly tiers: ReadonlyArray<{ readonly upTo: number; readonly units: number }>;
+    }
+  | { readonly kind: "unknown"; readonly note: string };
+
+export interface ImageConstraints {
+  readonly minShortSidePx: number | null;
+  readonly maxLongSidePx: number | null;
+  readonly maxBytes: number;
+  readonly formats: readonly string[];
+  /** How much of the frame the face or subject has to fill. */
+  readonly framingNote: string;
+  /** How many images one call takes. */
+  readonly imagesPerCall: number;
+}
+
+const TEN_MB = 10 * 1024 * 1024;
+
+/** The five analyses that fan out from one uploaded selfie. */
+export const CAPTURE_ANALYSIS_KEYS = [
+  "skinAnalysis",
+  "fitzpatrick",
+  "facialColorTones",
+  "faceAttributes",
+  "hairType",
+] as const;
+
+export type CaptureAnalysisKey = (typeof CAPTURE_ANALYSIS_KEYS)[number];
+
+/** The analyses.kind values in docs/03-architecture.md. */
+export type AnalysisKind =
+  | "skin"
+  | "fitzpatrick"
+  | "attributes"
+  | "face_shape"
+  | "hair_type";
+
+export const PERFECTCORP_ENDPOINT_KEYS = [
+  "skinAnalysis",
+  "fitzpatrick",
+  "facialColorTones",
+  "faceAttributes",
+  "hairType",
+  "makeupTryOn",
+  "hairstyleTryOn",
+  "hairColorTryOn",
+  "clothTryOn",
+  "skinSimulation",
+  "watchTryOn",
+  "braceletTryOn",
+  "ringTryOn",
+  "earringsTryOn",
+  "necklaceTryOn",
+  "scarfTryOn",
+  "hatTryOn",
+  "shoesTryOn",
+  "bagTryOn",
+] as const;
+
+export type PerfectCorpEndpointKey = (typeof PERFECTCORP_ENDPOINT_KEYS)[number];
+
+export interface PerfectCorpEndpoint {
+  readonly key: PerfectCorpEndpointKey;
+  /** Path we POST to in order to create a task. */
+  readonly createPath: string;
+  /** Status path is this value, a slash, then the task id. */
+  readonly statusPathPrefix: string;
+  /** Request field names that carry the uploaded file id. */
+  readonly sourceFileFields: readonly string[];
+  readonly unitCost: UnitCost;
+  readonly imageConstraints: ImageConstraints | null;
+  readonly verification: Verification;
+  /** Set for the five capture analyses, null for renders. */
+  readonly analysisKind: AnalysisKind | null;
+}
+
+const MAKEUPAR = "https://docs.makeupar.com";
+const CHECKED_ON = "2026-09-01";
+
+/**
+ * The file API. Confirmed request and response bodies, quoted on the skin
+ * analysis integration guide.
+ */
+export const PERFECTCORP_FILE_ENDPOINT = {
+  createPath: "/s2s/v2.0/file",
+  verification: {
+    state: "confirmed",
+    source: `${MAKEUPAR}/reference/ai_skin_analysis/section/overview/integration-guide`,
+    checkedOn: CHECKED_ON,
+    note:
+      "Request body is { files: [{ content_type, file_name, file_size }] }. Response is " +
+      "{ status, data: { files: [{ content_type, file_name, file_id, requests: [{ method, url, headers }] }] } }. " +
+      "The bytes go to requests[0].url with requests[0].method and the headers echoed exactly.",
+  },
+} as const satisfies { createPath: string; verification: Verification };
+
+export const PERFECTCORP_ENDPOINTS: Readonly<
+  Record<PerfectCorpEndpointKey, PerfectCorpEndpoint>
+> = {
+  skinAnalysis: {
+    key: "skinAnalysis",
+    createPath: "/s2s/v2.0/task/skin-analysis",
+    statusPathPrefix: "/s2s/v2.0/task/skin-analysis",
+    sourceFileFields: ["src_file_id"],
+    unitCost: {
+      kind: "unknown",
+      note: "Not published on the public unit consumption page. Read it from the API console.",
+    },
+    imageConstraints: {
+      minShortSidePx: 480,
+      maxLongSidePx: 2560,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg", "image/png"],
+      framingNote: "Face width greater than 60 percent of image width. SD needs a short side of 480px, HD needs 1080px.",
+      imagesPerCall: 1,
+    },
+    verification: {
+      state: "confirmed",
+      source: `${MAKEUPAR}/reference/ai_skin_analysis`,
+      checkedOn: CHECKED_ON,
+      note:
+        "Request body { src_file_id, dst_actions, miniserver_args, format }. Result is " +
+        "data.results.output[] with type, ui_score, raw_score, mask_urls. SD and HD concern " +
+        "keys cannot be mixed in one call.",
+    },
+    analysisKind: "skin",
+  },
+
+  fitzpatrick: {
+    key: "fitzpatrick",
+    createPath: "/s2s/v2.0/task/fitzpatrick-scale-analyzer",
+    statusPathPrefix: "/s2s/v2.0/task/fitzpatrick-scale-analyzer",
+    sourceFileFields: ["src_file_id"],
+    unitCost: { kind: "fixed", units: 10 },
+    imageConstraints: {
+      minShortSidePx: 320,
+      maxLongSidePx: 4096,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg"],
+      framingNote: "Front facing, evenly lit. A face that is too small or a dim frame is rejected.",
+      imagesPerCall: 1,
+    },
+    verification: {
+      state: "unverified",
+      source: `${MAKEUPAR}/reference/ai_fitzpatrick_skin_type`,
+      checkedOn: CHECKED_ON,
+      note:
+        "Paths, image limits, and the cost of 10 units are confirmed. The result payload field " +
+        "names that carry the type I to VI are not confirmed. Read them from the API playground.",
+    },
+    analysisKind: "fitzpatrick",
+  },
+
+  facialColorTones: {
+    key: "facialColorTones",
+    createPath: "/s2s/v2.0/task/skin-tone-analysis",
+    statusPathPrefix: "/s2s/v2.0/task/skin-tone-analysis",
+    sourceFileFields: ["src_file_id"],
+    unitCost: { kind: "fixed", units: 20 },
+    imageConstraints: {
+      minShortSidePx: 320,
+      maxLongSidePx: 4096,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg"],
+      framingNote: "Single person, face width greater than 60 percent of image width.",
+      imagesPerCall: 1,
+    },
+    verification: {
+      state: "unverified",
+      source: `${MAKEUPAR}/reference/ai_skin_tone_analysis`,
+      checkedOn: CHECKED_ON,
+      note:
+        "Result fields are confirmed: data.results.color with skin_color, eye_color, " +
+        "eye_color_name, lip_color, eyebrow_color, hair_color, hair_color_name. Cost of 20 units " +
+        "and the face_angle_strictness_level request field are confirmed. The docs render the task " +
+        "name as task/skin-tone-analysis without the /s2s/v2.0 prefix, so the full path is inferred " +
+        "from the other endpoints and is not confirmed.",
+    },
+    analysisKind: "attributes",
+  },
+
+  faceAttributes: {
+    key: "faceAttributes",
+    createPath: "/s2s/v2.0/task/face-attr-analysis",
+    statusPathPrefix: "/s2s/v2.0/task/face-attr-analysis",
+    sourceFileFields: ["src_file_id"],
+    unitCost: {
+      kind: "tiered",
+      countedBy: "attributes requested",
+      tiers: [
+        { upTo: 5, units: 10 },
+        { upTo: 14, units: 20 },
+        { upTo: 28, units: 30 },
+      ],
+    },
+    imageConstraints: {
+      minShortSidePx: null,
+      maxLongSidePx: 4096,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg"],
+      framingNote: "Single person, face width greater than 60 percent of image width.",
+      imagesPerCall: 1,
+    },
+    verification: {
+      state: "unverified",
+      source: `${MAKEUPAR}/reference/ai_face_analyzer`,
+      checkedOn: CHECKED_ON,
+      note:
+        "Attribute names (faceShape and the rest), the face shape value set, the image limits, " +
+        "and the 10, 20, 30 unit tiers are confirmed. The docs render the task name as " +
+        "task/face-attr-analysis without the /s2s/v2.0 prefix, and the request field that carries " +
+        "the attribute list is not confirmed. Read both from the API playground.",
+    },
+    analysisKind: "face_shape",
+  },
+
+  hairType: {
+    key: "hairType",
+    createPath: "/s2s/v2.0/task/hair-type-detection",
+    statusPathPrefix: "/s2s/v2.0/task/hair-type-detection",
+    sourceFileFields: ["src_file_ids"],
+    unitCost: { kind: "fixed", units: 2 },
+    imageConstraints: {
+      minShortSidePx: 320,
+      maxLongSidePx: 4096,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg", "image/png"],
+      framingNote:
+        "Three photos of the same size (front, right side, left side). Face fills 50 to 80 percent of image width.",
+      imagesPerCall: 3,
+    },
+    verification: {
+      state: "unverified",
+      source: `${MAKEUPAR}/reference/ai_hair_type_detection`,
+      checkedOn: CHECKED_ON,
+      note:
+        "Paths, the three image requirement, the result fields (mapping and term), and the cost of " +
+        "2 units are confirmed. The request field name that carries the three file ids is not " +
+        "confirmed. This endpoint cannot run from a single selfie, so the one selfie flow needs a " +
+        "product decision before it is wired.",
+    },
+    analysisKind: "hair_type",
+  },
+
+  makeupTryOn: {
+    key: "makeupTryOn",
+    createPath: "/s2s/v2.0/task/makeup-vto",
+    statusPathPrefix: "/s2s/v2.0/task/makeup-vto",
+    sourceFileFields: ["src_file_id", "src_file_url"],
+    unitCost: { kind: "fixed", units: 1 },
+    imageConstraints: {
+      minShortSidePx: null,
+      maxLongSidePx: 1920,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg", "image/png"],
+      framingNote: "Face fully visible and front facing, face width at least 100px, head tilt within 10 degrees.",
+      imagesPerCall: 1,
+    },
+    verification: {
+      state: "confirmed",
+      source: `${MAKEUPAR}/reference/makeup_vto`,
+      checkedOn: CHECKED_ON,
+      note:
+        "Request body { src_file_url or src_file_id, effects: [...], version: \"1.0\" }. Categories " +
+        "include foundation, blush, lip_color, eye_shadow, eye_liner, eyebrows, highlighter, " +
+        "bronzer, concealer, contour, eyelashes, lip_liner, skin_smooth. Result is " +
+        "data.results.url. Cost is 1 unit per successful call.",
+    },
+    analysisKind: null,
+  },
+
+  hairstyleTryOn: {
+    key: "hairstyleTryOn",
+    createPath: "/s2s/v2.1/task/hair-transfer",
+    statusPathPrefix: "/s2s/v2.1/task/hair-transfer",
+    sourceFileFields: ["src_file_id", "src_file_url"],
+    unitCost: { kind: "fixed", units: 2 },
+    imageConstraints: {
+      minShortSidePx: null,
+      maxLongSidePx: 1024,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg"],
+      framingNote:
+        "Single face, full face visible, face width at least 128px, pitch within 10 degrees, yaw within 45 degrees, roll within 15 degrees.",
+      imagesPerCall: 1,
+    },
+    verification: {
+      state: "confirmed",
+      source: `${MAKEUPAR}/reference/ai_hairstyle`,
+      checkedOn: CHECKED_ON,
+      note:
+        "Note the v2.1 path, not v2.0. Request takes src_file_id or src_file_url plus one of " +
+        "ref_file_id, ref_file_url, or template_id. Result carries a url. Cost is 2 units whether " +
+        "a template or a reference image is used.",
+    },
+    analysisKind: null,
+  },
+
+  hairColorTryOn: {
+    key: "hairColorTryOn",
+    createPath: "/s2s/v2.0/task/hair-color",
+    statusPathPrefix: "/s2s/v2.0/task/hair-color",
+    sourceFileFields: ["src_file_id", "src_file_url"],
+    unitCost: { kind: "fixed", units: 1 },
+    imageConstraints: {
+      minShortSidePx: 320,
+      maxLongSidePx: 1920,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg", "image/png"],
+      framingNote: "Face width at least 100px. The hair to be coloured has to be visible in the frame.",
+      imagesPerCall: 1,
+    },
+    verification: {
+      state: "unverified",
+      source: `${MAKEUPAR}/reference/ai_hair_color`,
+      checkedOn: CHECKED_ON,
+      note:
+        "Image limits, the preset versus pattern and palette choice, and the cost of 1 unit for " +
+        "both full and ombre mode are confirmed. The task path did not render on the reference " +
+        "page, so the path above is a placeholder. Read the path and the colour request fields " +
+        "from the API playground.",
+    },
+    analysisKind: null,
+  },
+
+  clothTryOn: {
+    key: "clothTryOn",
+    createPath: "/s2s/v2.0/task/cloth-v4",
+    statusPathPrefix: "/s2s/v2.0/task/cloth-v4",
+    sourceFileFields: ["src_file_id", "src_file_url"],
+    unitCost: {
+      kind: "unknown",
+      note:
+        "2 units per call is published for V2.0 and V3.0. The cloth-v4 path may cost more. Read it from the API console.",
+    },
+    imageConstraints: {
+      minShortSidePx: 384,
+      maxLongSidePx: 4096,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg", "image/png"],
+      framingNote:
+        "Single person filling at least 80 percent of the frame. 1024 by 768 is the recommended size.",
+      imagesPerCall: 1,
+    },
+    verification: {
+      state: "confirmed",
+      source: `${MAKEUPAR}/reference/ai_clothes`,
+      checkedOn: CHECKED_ON,
+      note:
+        "One garment_category per call. Categories include full_body, upper body, and lower body. " +
+        "A multi garment outfit needs one call per garment, so a Look renders as a sequence of " +
+        "renders, not a single call. Request takes src_file_id or src_file_url plus ref_file_id, " +
+        "ref_file_url, or template_id. Result is data.results.url.",
+    },
+    analysisKind: null,
+  },
+
+  skinSimulation: {
+    key: "skinSimulation",
+    createPath: "/s2s/v2.0/task/skin-simulation",
+    statusPathPrefix: "/s2s/v2.0/task/skin-simulation",
+    sourceFileFields: ["src_file_id"],
+    unitCost: {
+      kind: "tiered",
+      countedBy: "concerns simulated",
+      tiers: [
+        { upTo: 4, units: 4 },
+        { upTo: 10, units: 6 },
+      ],
+    },
+    imageConstraints: {
+      minShortSidePx: 480,
+      maxLongSidePx: 2560,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg", "image/png"],
+      framingNote:
+        "Face fills at least 60 percent of image width, frontal, evenly lit, no backlighting or coloured lights.",
+      imagesPerCall: 1,
+    },
+    verification: {
+      state: "unverified",
+      source: `${MAKEUPAR}/reference/ai_skin_simulation`,
+      checkedOn: CHECKED_ON,
+      note:
+        "Paths, image limits, the ten simulatable concerns (radiance, acne, oiliness, eye bags, " +
+        "dark circles, spots, pores, texture, wrinkles, redness), the 0.0 to 1.0 intensity scale, " +
+        "and the 4 and 6 unit tiers are confirmed. The request field that carries the concern to " +
+        "intensity map and the result field that carries the render URL are not confirmed.",
+    },
+    analysisKind: null,
+  },
+
+  watchTryOn: accessoryEndpoint("watchTryOn", "watch", {
+    state: "confirmed",
+    source: `${MAKEUPAR}/reference/ai_watch`,
+    checkedOn: CHECKED_ON,
+    note:
+      "Path is /s2s/v2.0/task/2d-vto/watch. Request takes src_file_id or src_file_url plus " +
+      "ref_file_ids or ref_file_urls, with optional watch_wearing_location, " +
+      "watch_shadow_intensity, watch_ambient_light_intensity, watch_anchor_points, and " +
+      "segmentation masks. Cost is 1 unit per single item simulation.",
+  }),
+  braceletTryOn: accessoryEndpoint("braceletTryOn", "bracelet", inferredAccessoryNote("ai_bracelet")),
+  ringTryOn: accessoryEndpoint("ringTryOn", "ring", inferredAccessoryNote("ring_vto")),
+  earringsTryOn: accessoryEndpoint("earringsTryOn", "earrings", inferredAccessoryNote("ai_earrings")),
+  necklaceTryOn: accessoryEndpoint("necklaceTryOn", "necklace", inferredAccessoryNote("ai_necklace")),
+  scarfTryOn: accessoryEndpoint("scarfTryOn", "scarf", inferredAccessoryNote("ai_scarf")),
+  hatTryOn: accessoryEndpoint("hatTryOn", "hat", inferredAccessoryNote("ai_hat")),
+  shoesTryOn: accessoryEndpoint("shoesTryOn", "shoes", inferredAccessoryNote("ai_shoes")),
+  bagTryOn: accessoryEndpoint("bagTryOn", "bag", inferredAccessoryNote("ai_bag")),
+};
+
+function inferredAccessoryNote(referenceSlug: string): Verification {
+  return {
+    state: "unverified",
+    source: `${MAKEUPAR}/reference/${referenceSlug}`,
+    checkedOn: CHECKED_ON,
+    note:
+      "The path follows the 2d-vto pattern confirmed for the watch endpoint, but this specific " +
+      "reference page was not read. Confirm the path, the reference file fields, and the unit " +
+      "cost before enabling it.",
+  };
+}
+
+function accessoryEndpoint(
+  key: PerfectCorpEndpointKey,
+  slug: string,
+  verification: Verification,
+): PerfectCorpEndpoint {
+  const path = `/s2s/v2.0/task/2d-vto/${slug}`;
+  return {
+    key,
+    createPath: path,
+    statusPathPrefix: path,
+    sourceFileFields: ["src_file_id", "src_file_url"],
+    unitCost:
+      verification.state === "confirmed"
+        ? { kind: "fixed", units: 1 }
+        : { kind: "unknown", note: "Read it from the API console." },
+    imageConstraints: {
+      minShortSidePx: null,
+      maxLongSidePx: 4096,
+      maxBytes: TEN_MB,
+      formats: ["image/jpeg", "image/png"],
+      framingNote: "The body part that wears the item has to be fully visible and unobstructed.",
+      imagesPerCall: 1,
+    },
+    verification,
+    analysisKind: null,
+  };
+}
+
+export function getEndpoint(key: PerfectCorpEndpointKey): PerfectCorpEndpoint {
+  return PERFECTCORP_ENDPOINTS[key];
+}
+
+export function statusPathFor(key: PerfectCorpEndpointKey, taskId: string): string {
+  return `${PERFECTCORP_ENDPOINTS[key].statusPathPrefix}/${encodeURIComponent(taskId)}`;
+}
+
+/** Endpoints we are allowed to call without an override. */
+export function verifiedEndpointKeys(): PerfectCorpEndpointKey[] {
+  return PERFECTCORP_ENDPOINT_KEYS.filter(
+    (key) => PERFECTCORP_ENDPOINTS[key].verification.state === "confirmed",
+  );
+}
+
+/**
+ * Units one call reserves. Returns null when the cost is still unknown, which
+ * the credits layer treats as "do not reserve, do not call".
+ */
+export function unitsForCall(key: PerfectCorpEndpointKey, itemCount = 1): number | null {
+  const cost = PERFECTCORP_ENDPOINTS[key].unitCost;
+  if (cost.kind === "fixed") {
+    return cost.units;
+  }
+  if (cost.kind === "unknown") {
+    return null;
+  }
+  for (const tier of cost.tiers) {
+    if (itemCount <= tier.upTo) {
+      return tier.units;
+    }
+  }
+  return cost.tiers.length === 0 ? null : cost.tiers[cost.tiers.length - 1].units;
+}

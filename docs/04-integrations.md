@@ -56,22 +56,32 @@ Implementation rules
 - Map provider concern keys to our internal keys in one place: src/lib/shared/concerns.ts. The tone first ranking lives there too and is unit tested.
 - Never send a photo that failed our quality gate. Never send a photo of anyone but the signed in person.
 
-Credit table (fill from the console; reservations use this)
+Credit table
 
-    API                         Units per call    Notes
-    skin analysis               TBD
-    fitzpatrick                 TBD
-    face attributes             TBD
-    face analyzer (shape)       TBD
-    hair type                   TBD
-    makeup try on               TBD               per render
-    hairstyle try on            TBD               per render
-    hair color try on           TBD               per render
-    cloth try on                TBD               per render
-    accessory try on            TBD               per render
-    skin simulation             TBD               per render
+Read from the public reference pages on 2026-09-01. Note that docs.perfectcorp.com was unreachable; the same documentation is served from docs.makeupar.com, which is what the "source" column below points at. Rows still marked TBD are not published publicly and need the human's API key and the API console. Failed tasks cost nothing: "If the engine fails to process the task, the task's status will change to 'error' and no unit will be consumed."
+
+    API                         Units per call    Source page               Notes
+    skin analysis               TBD               ai_skin_analysis          Cost is not on the public unit consumption page. Read it from the console.
+    fitzpatrick                 10                ai_fitzpatrick_skin_type
+    facial color tones          20                ai_skin_tone_analysis     This is the API that returns skin, eye, eyebrow, lip, and hair colors.
+    face attributes and ratio   10 / 20 / 30      ai_face_analyzer          10 for 1 to 5 attributes, 20 for 6 to 14, 30 for 15 to 28. This is the API that returns face shape.
+    hair type                   2                 ai_hair_type_detection    Takes three photos of the same size (front, right, left), not one selfie.
+    makeup try on               1                 makeup_vto                per render
+    hairstyle try on            2                 ai_hairstyle              per render, same cost for a template or a reference image
+    hair color try on           1                 ai_hair_color             per render, full mode and ombre mode both cost 1
+    cloth try on                TBD               ai_clothes                2 units is published for V2.0 and V3.0. The current path is cloth-v4 and its cost is not published.
+    accessory try on (watch)    1                 ai_watch                  per render, per single item
+    accessory try on (others)   TBD               per accessory page        Only the watch page was read. Confirm bracelet, ring, earrings, necklace, scarf, hat, shoes, and bag.
+    skin simulation             4 / 6             ai_skin_simulation        4 for 1 to 4 concerns, 6 for 5 to 10 concerns.
+
+Known cost of one capture set, with the rows above: fitzpatrick 10, facial color tones 20, face attributes 10 to 30 depending on how many attributes are asked for, hair type 2 (only if three photos exist). Skin analysis is the missing row, so the capture set total cannot be computed yet and JUDGE_CREDITS_CAP cannot be set from the table. src/lib/server/providers/perfectcorp/endpoints.ts returns null from unitsForCall for every row still marked TBD, which the credits layer reads as "do not reserve, do not call".
 
 Budget per full session (target): one capture set (5 analyses) plus up to 6 renders. Compute the total from the table and set JUDGE_CREDITS_CAP so that 3 full sessions fit with 20 percent headroom.
+
+Answers to the two open questions in "verify first"
+
+- Cloth try on takes one garment_category per call (full_body, upper body, or lower body). A multi garment outfit needs one call per garment, so a Look renders as a sequence of renders, not as one call.
+- Image input constraints per API are recorded on each entry in src/lib/server/providers/perfectcorp/endpoints.ts. The tightest ones are hairstyle try on (long side 1024px, face width at least 128px) and makeup try on (long side 1920px, face width at least 100px, head tilt within 10 degrees). Skin analysis needs a short side of 480px for SD and 1080px for HD, and a face wider than 60 percent of the frame.
 
 Error handling
 
