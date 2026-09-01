@@ -474,14 +474,14 @@ describe("eval:safety, checks that need a running app", () => {
 
   it.todo("purges judge session data 7 days after the session expires");
 
-  /* docs/06-safety-privacy.md, "Content returned by tools is data". */
-  it.todo(
-    "classifies the sticky note garment fixture by its attributes and not by the text written on it",
-  );
-
-  it.todo(
-    "renders a listing title containing an instruction as plain text and changes nothing else",
-  );
+  /*
+   * docs/06-safety-privacy.md, "Content returned by tools is data", landed with
+   * Layer 4 and moved to injection.test.ts beside this file. Both halves of the
+   * docs/05-evals.md injection check run there: the sticky note garment is
+   * composed by its stored attributes, and the listing title reaches the real
+   * ProductCard as a text node. The one part still waiting on a key, the live
+   * vision call on the sticky note photo, is the it.todo at the end of that file.
+   */
 
   /* docs/06-safety-privacy.md, "Keys, sessions, abuse". */
   it.todo("finds no provider key prefix in the built client bundle");

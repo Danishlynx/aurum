@@ -443,3 +443,232 @@ test.describe("hair", () => {
     await expect(page.getByText(copy.hair.savedToast)).toHaveCount(0);
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* J. Wardrobe                                                         */
+/* ------------------------------------------------------------------ */
+
+test.describe("wardrobe", () => {
+  test.skip(
+    externalServer,
+    "Needs the fixture mode server playwright.config.ts starts.",
+  );
+
+  /**
+   * docs/01-user-flow.md section J items 2 and 3: each photo becomes a card with
+   * the classification chips filled in ("type ('Shirt'), color ('Navy'), pattern
+   * ('Solid'), formality ('Smart')"), one line saying the chips are tappable, and
+   * a grid "filterable by type".
+   *
+   * The demo profile owns the six garments docs/07-payments-and-judge-mode.md
+   * names, so six cards is the fixture's own number rather than a range from the
+   * doc. Which chips each card carries is the fixture's business
+   * (src/lib/server/profile/demo-fixture-wardrobe.ts); what this asserts is that
+   * every card arrived in the chips state rather than the pending or failed one,
+   * which is what proves the wardrobe route, the view contract, and the card all
+   * line up.
+   */
+  test("shows the six garment cards with their chips and the type filter", async ({
+    page,
+  }) => {
+    await page.goto("/wardrobe");
+
+    await expect(
+      page.getByRole("heading", { name: copy.nav.wardrobe, level: 1 }),
+    ).toBeVisible();
+
+    const cards = page.getByRole("listitem");
+    await expect(cards).toHaveCount(6);
+
+    // One chip row per card, each opening the correction sheet. A card in the
+    // pending or failed state would not have one, so the count is the assertion
+    // that all six classifications are present.
+    const chipRows = page.locator('button[aria-haspopup="dialog"]');
+    await expect(chipRows).toHaveCount(6);
+
+    // Section J item 2, the line that says the chips can be corrected.
+    await expect(page.getByText(copy.wardrobe.correctChipsHint)).toBeVisible();
+
+    // The navy blazer, chip by chip, as the doc writes them.
+    const blazer = chipRows.first();
+    for (const label of ["Blazer", "Navy", "Solid", "Formal"]) {
+      await expect(blazer.getByText(label, { exact: true })).toBeVisible();
+    }
+
+    // Every card drew its garment image.
+    await expect(page.locator("ul img")).toHaveCount(6);
+
+    // Item 3, the filter: "All" plus one chip per type the wardrobe holds, and
+    // the six fixture garments are six different types.
+    const filters = page.getByRole("group", {
+      name: copy.wardrobe.filterLabel,
+    });
+    await expect(filters).toBeVisible();
+    await expect(filters.getByRole("button")).toHaveCount(7);
+    await expect(
+      filters.getByRole("button", { name: copy.wardrobe.filterAll }),
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  /**
+   * The filter does something. One type is picked and the grid narrows to the
+   * garments of that type, which is the whole of what section J item 3 asks for.
+   */
+  test("narrows the grid to one type and back", async ({ page }) => {
+    await page.goto("/wardrobe");
+
+    const filters = page.getByRole("group", {
+      name: copy.wardrobe.filterLabel,
+    });
+    const shoes = filters.getByRole("button", { name: "Shoes" });
+    await shoes.click();
+
+    await expect(shoes).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("listitem")).toHaveCount(1);
+
+    await filters.getByRole("button", { name: copy.wardrobe.filterAll }).click();
+    await expect(page.getByRole("listitem")).toHaveCount(6);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* K. Looks                                                            */
+/* ------------------------------------------------------------------ */
+
+test.describe("looks", () => {
+  test.skip(
+    externalServer,
+    "Needs the fixture mode server playwright.config.ts starts.",
+  );
+
+  /**
+   * docs/01-user-flow.md section K items 1 to 3: the occasion chips, "two to
+   * three looks, each a card with a flat lay of the garments", "a two line
+   * rationale", and "Shop the gap" for a piece the person does not own.
+   *
+   * The count is asserted as the doc's range rather than as the fixture's three,
+   * for the same reason the palette and hair counts are: the range is the rule
+   * and the fixture is one point in it. Which combinations the rules engine
+   * lands on is src/lib/shared/looks.test.ts and evals/stylist's job.
+   */
+  test("composes wedding guest looks with rationales and a flat lay", async ({
+    page,
+  }) => {
+    await page.goto("/looks");
+
+    await expect(
+      page.getByRole("heading", { name: copy.nav.looks, level: 1 }),
+    ).toBeVisible();
+
+    // Item 1. Six chips, and the screen opens on the default occasion.
+    const occasions = page.getByRole("group", {
+      name: copy.looks.occasionsLabel,
+    });
+    await expect(occasions.getByRole("button")).toHaveCount(6);
+    await expect(
+      occasions.getByRole("button", { name: copy.looks.occasionEveryday }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    const weddingGuest = occasions.getByRole("button", {
+      name: copy.looks.occasionWeddingGuest,
+    });
+    await weddingGuest.click();
+    await expect(weddingGuest).toHaveAttribute("aria-pressed", "true");
+
+    // Item 2. Each look is an article named by its own rationale.
+    const looks = page.getByRole("article");
+    await expect(looks.first()).toBeVisible();
+    const lookCount = await looks.count();
+    expect(lookCount).toBeGreaterThanOrEqual(2);
+    expect(lookCount).toBeLessThanOrEqual(3);
+
+    const top = looks.first();
+
+    /*
+     * "A two line rationale ... Never a numeric score." Two sentences, and the
+     * occasion named in the second one. The rules engine wrote this rationale,
+     * because there is no ANTHROPIC_API_KEY for the stylist to rank with, and it
+     * still has to name the occasion and the coloring
+     * (docs/09-build-order-and-demo.md Layer 4 definition of done).
+     */
+    /*
+     * The rationale is what names the card for a screen reader, so the article
+     * points at it by id. Reaching it that way rather than by position keeps the
+     * assertion off the hero status line, which sits above it whenever a try on
+     * was attempted.
+     */
+    const rationaleId = await top.getAttribute("aria-labelledby");
+    expect(rationaleId).not.toBeNull();
+    const text = (
+      await page.locator(`#${String(rationaleId)}`).innerText()
+    ).trim();
+    expect(text.split(/(?<=\.)\s+/u).filter(Boolean)).toHaveLength(2);
+    expect(text).toContain("palette");
+    expect(text).toContain(copy.looks.rationale.phraseWeddingGuest);
+
+    // The flat lay of the garments the person owns, one tile per piece.
+    const tiles = top.locator("ul img");
+    expect(await tiles.count()).toBeGreaterThanOrEqual(2);
+
+    await expect(
+      top.getByRole("button", { name: copy.looks.saveLookAction }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: copy.nav.wardrobe }),
+    ).toHaveAttribute("href", "/wardrobe");
+  });
+
+  /**
+   * Item 3, and the honest absence under it. The demo wardrobe's only shoes are
+   * casual loafers, which a wedding guest look cannot use, so every look for
+   * that occasion reports a shoes gap. Nothing was fetched from SerpApi, so the
+   * card under the line names the piece and says "No listing found near you
+   * yet" rather than showing a product nobody found
+   * (docs/06-safety-privacy.md, "Grounding and honesty").
+   */
+  test("shows the shoes gap without inventing a listing for it", async ({
+    page,
+  }) => {
+    await page.goto("/looks?occasion=wedding_guest");
+
+    const occasions = page.getByRole("group", {
+      name: copy.looks.occasionsLabel,
+    });
+    await occasions
+      .getByRole("button", { name: copy.looks.occasionWeddingGuest })
+      .click();
+
+    const top = page.getByRole("article").first();
+    await expect(
+      top.getByRole("heading", { name: copy.looks.shopTheGapHeading }),
+    ).toBeVisible();
+
+    // The gap line names the piece. With no listing carrying a distance, it is
+    // the variant that drops the "near you" claim.
+    await expect(top.getByText(/You do not own shoes yet\./u)).toBeVisible();
+
+    await expect(top.getByText(copy.productCard.noListing).first()).toBeVisible();
+    await expect(
+      top.getByRole("link", { name: copy.productCard.viewListing }),
+    ).toHaveCount(0);
+  });
+
+  /**
+   * Section K item 4. The demo profile is read only, so the save is refused with
+   * a 403 and the screen says so rather than showing the confirmation toast for
+   * a write that never landed. Same shape as the hair save above.
+   */
+  test("answers the save with the read only line, not a confirmation", async ({
+    page,
+  }) => {
+    await page.goto("/looks");
+
+    const top = page.getByRole("article").first();
+    await expect(top).toBeVisible();
+    await top.getByRole("button", { name: copy.looks.saveLookAction }).click();
+
+    const toast = page.getByRole("status");
+    await expect(toast).toHaveText(copy.looks.saveReadOnly);
+    await expect(page.getByText(copy.looks.savedToast)).toHaveCount(0);
+  });
+});

@@ -8,6 +8,18 @@ export default defineConfig({
       "@": path.resolve(process.cwd(), "src"),
     },
   },
+  /*
+   * tsconfig.json sets jsx to "preserve", because Next.js owns the transform for
+   * the application build. That leaves JSX untransformed for anything vitest
+   * imports, so a suite that renders a real component cannot load it.
+   *
+   * eval:safety has to render the real ProductCard to prove that a listing title
+   * carrying an instruction reaches the screen as a text node
+   * (docs/06-safety-privacy.md, "Content returned by tools is data"), so the
+   * transform is turned on here. This changes the test build only. next build
+   * and tsc read tsconfig.json and are untouched.
+   */
+  oxc: { jsx: { runtime: "automatic" } },
   test: {
     environment: "node",
     include: [
