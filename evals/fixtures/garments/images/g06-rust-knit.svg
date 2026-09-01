@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 260" width="200" height="260" role="img" aria-labelledby="title">
+  <title id="title">Rust sweater</title>
+  <desc>Synthetic placeholder. A flat silhouette drawn in code, not a photograph.</desc>
+  <path d="M58 54 L82 40 L100 52 L118 40 L142 54 L142 212 L58 212 Z" fill="#9c4a1e" />
+  <path d="M58 212 L142 212 L142 228 L58 228 Z" fill="#9c4a1e" />
+  <path d="M58 54 L24 78 L20 152 L46 160 L58 108 Z" fill="#9c4a1e" />
+  <path d="M142 54 L176 78 L180 152 L154 160 L142 108 Z" fill="#9c4a1e" />
+</svg>
