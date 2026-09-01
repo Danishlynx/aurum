@@ -1,0 +1,14 @@
+{
+  "_aurum_fixture": {
+    "synthetic": true,
+    "note": "Hand written to the documented google_shopping response shape. Not recorded from SerpApi. Stripped by the provider zod schema, so it cannot affect parsing. See evals/fixtures/listings/README.md.",
+    "covers": [
+      "an empty result set, which must produce no product at all rather than a stand in"
+    ]
+  },
+  "search_metadata": {
+    "id": "fixture-empty",
+    "status": "Success"
+  },
+  "shopping_results": []
+}

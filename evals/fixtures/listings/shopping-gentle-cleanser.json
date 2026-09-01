@@ -1,0 +1,48 @@
+{
+  "_aurum_fixture": {
+    "synthetic": true,
+    "note": "Hand written to the documented google_shopping response shape. Not recorded from SerpApi. Stripped by the provider zod schema, so it cannot affect parsing. See evals/fixtures/listings/README.md.",
+    "covers": [
+      "a listing with a price string but no extracted_price, which can still be shown and sorts last inside its band"
+    ]
+  },
+  "search_metadata": {
+    "id": "fixture-gentle-cleanser",
+    "status": "Success"
+  },
+  "shopping_results": [
+    {
+      "position": 1,
+      "title": "Gentle Cream Cleanser for Combination Skin 150 ml",
+      "product_link": "https://www.amazon.in/fixture/gentle-cream-cleanser-150ml",
+      "source": "Amazon.in",
+      "price": "₹425.00",
+      "extracted_price": 425,
+      "thumbnail": "https://serpapi.test/images/fixture-cleanser-amazon.jpg",
+      "rating": 4.4,
+      "reviews": 1811,
+      "product_id": "fixture-3001"
+    },
+    {
+      "position": 2,
+      "title": "Gentle Cream Cleanser, Combination Skin, Fragrance Free",
+      "product_link": "https://www.flipkart.com/fixture/gentle-cream-cleanser-fragrance-free",
+      "source": "Flipkart",
+      "price": "₹410.00",
+      "extracted_price": 410,
+      "thumbnail": "https://serpapi.test/images/fixture-cleanser-flipkart.jpg",
+      "rating": 4.2,
+      "reviews": 402,
+      "product_id": "fixture-3002"
+    },
+    {
+      "position": 3,
+      "title": "Gentle Cream Cleanser Combination Skin Refill",
+      "product_link": "https://www.nykaa.com/fixture/gentle-cream-cleanser-refill",
+      "source": "Nykaa",
+      "price": "₹390.00",
+      "thumbnail": "https://serpapi.test/images/fixture-cleanser-refill.jpg",
+      "product_id": "fixture-3003"
+    }
+  ]
+}

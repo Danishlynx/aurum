@@ -1,0 +1,93 @@
+{
+  "_aurum_fixture": {
+    "synthetic": true,
+    "note": "Hand written to the documented google_shopping response shape. Not recorded from SerpApi. Stripped by the provider zod schema, so it cannot affect parsing. See evals/fixtures/listings/README.md.",
+    "covers": [
+      "a clear winner on relevance where the cheaper of two equally relevant listings wins",
+      "a blocked aggregator host that is also the cheapest result",
+      "a result with no price",
+      "a result that shares no key token with the query",
+      "a result whose thumbnail is a base64 data URI",
+      "a partially relevant result that is cheaper than the winner and must not win"
+    ]
+  },
+  "search_metadata": {
+    "id": "fixture-niacinamide-serum",
+    "status": "Success"
+  },
+  "shopping_results": [
+    {
+      "position": 1,
+      "title": "Niacinamide 10% Serum for Uneven Tone, Combination Skin, 30 ml",
+      "product_link": "https://www.nykaa.com/fixture/niacinamide-10-serum-30ml",
+      "source": "Nykaa",
+      "price": "₹649.00",
+      "extracted_price": 649,
+      "thumbnail": "https://serpapi.test/images/fixture-niacinamide-nykaa.jpg",
+      "rating": 4.3,
+      "reviews": 1284,
+      "delivery": "Free delivery",
+      "product_id": "fixture-1001"
+    },
+    {
+      "position": 2,
+      "title": "Niacinamide Serum for Uneven Tone and Combination Skin",
+      "link": "https://www.amazon.in/fixture/niacinamide-serum-uneven-tone",
+      "source": "Amazon.in",
+      "price": "₹899.00",
+      "extracted_price": 899,
+      "thumbnail": "https://serpapi.test/images/fixture-niacinamide-amazon.jpg",
+      "rating": 4.1,
+      "reviews": 903,
+      "product_id": "fixture-1002"
+    },
+    {
+      "position": 3,
+      "title": "Niacinamide Serum Uneven Tone Combination Skin Best Price",
+      "product_link": "https://www.mysmartprice.com/fixture/niacinamide-serum-price",
+      "source": "MySmartPrice",
+      "price": "₹399.00",
+      "extracted_price": 399,
+      "thumbnail": "https://serpapi.test/images/fixture-niacinamide-aggregator.jpg",
+      "product_id": "fixture-1003"
+    },
+    {
+      "position": 4,
+      "title": "Niacinamide Serum for Uneven Tone",
+      "product_link": "https://www.flipkart.com/fixture/niacinamide-serum-no-price",
+      "source": "Flipkart",
+      "thumbnail": "https://serpapi.test/images/fixture-niacinamide-noprice.jpg",
+      "product_id": "fixture-1004"
+    },
+    {
+      "position": 5,
+      "title": "Stainless Steel Water Bottle 1 Litre",
+      "product_link": "https://www.flipkart.com/fixture/steel-water-bottle",
+      "source": "Flipkart",
+      "price": "₹299.00",
+      "extracted_price": 299,
+      "thumbnail": "https://serpapi.test/images/fixture-bottle.jpg",
+      "product_id": "fixture-1005"
+    },
+    {
+      "position": 6,
+      "title": "Vitamin C Serum for Combination Skin",
+      "product_link": "https://www.amazon.in/fixture/vitamin-c-serum-combination",
+      "source": "Amazon.in",
+      "price": "₹349.00",
+      "extracted_price": 349,
+      "thumbnail": "https://serpapi.test/images/fixture-vitamin-c.jpg",
+      "product_id": "fixture-1006"
+    },
+    {
+      "position": 7,
+      "title": "Niacinamide Serum Uneven Tone Combination Skin Travel Size",
+      "product_link": "https://www.nykaa.com/fixture/niacinamide-serum-travel-size",
+      "source": "Nykaa",
+      "price": "₹1,199.00",
+      "extracted_price": 1199,
+      "thumbnail": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAg=",
+      "product_id": "fixture-1007"
+    }
+  ]
+}

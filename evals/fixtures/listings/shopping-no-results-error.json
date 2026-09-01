@@ -1,0 +1,14 @@
+{
+  "_aurum_fixture": {
+    "synthetic": true,
+    "note": "Hand written to the documented google_shopping response shape. Not recorded from SerpApi. Stripped by the provider zod schema, so it cannot affect parsing. See evals/fixtures/listings/README.md.",
+    "covers": [
+      "SerpApi answering 200 with an error string instead of a result array, which assertNoSearchError treats as an empty result rather than a failure"
+    ]
+  },
+  "search_metadata": {
+    "id": "fixture-no-results",
+    "status": "Success"
+  },
+  "error": "Google Shopping hasn't returned any results for this query."
+}

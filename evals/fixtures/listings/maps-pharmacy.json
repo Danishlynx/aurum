@@ -1,0 +1,59 @@
+{
+  "_aurum_fixture": {
+    "synthetic": true,
+    "note": "Hand written to the documented google_maps response shape. Not recorded from SerpApi. Stripped by the provider zod schema, so it cannot affect parsing. See evals/fixtures/listings/README.md.",
+    "covers": [
+      "a place whose title matches a shopping result's store, so a distance can be attached honestly",
+      "a place with no gps_coordinates, which must leave the distance line null rather than guessing"
+    ],
+    "personLocation": {
+      "city": "Bengaluru",
+      "lat": 12.97,
+      "lng": 77.59
+    }
+  },
+  "search_metadata": {
+    "id": "fixture-maps-pharmacy",
+    "status": "Success"
+  },
+  "local_results": [
+    {
+      "position": 1,
+      "title": "Apollo Pharmacy",
+      "place_id": "fixture-place-0001",
+      "address": "100 Feet Road, Indiranagar, Bengaluru",
+      "gps_coordinates": {
+        "latitude": 12.9721,
+        "longitude": 77.6412
+      },
+      "rating": 4.2,
+      "reviews": 318,
+      "type": "Pharmacy",
+      "phone": "+91 80 4000 0000",
+      "website": "https://www.apollopharmacy.in/fixture/store-indiranagar"
+    },
+    {
+      "position": 2,
+      "title": "Nykaa Luxe, Indiranagar",
+      "place_id": "fixture-place-0002",
+      "address": "12th Main, Indiranagar, Bengaluru",
+      "gps_coordinates": {
+        "latitude": 12.9784,
+        "longitude": 77.6408
+      },
+      "rating": 4.6,
+      "reviews": 902,
+      "type": "Cosmetics store",
+      "website": "https://www.nykaa.com/fixture/store-indiranagar"
+    },
+    {
+      "position": 3,
+      "title": "Health and Glow",
+      "place_id": "fixture-place-0003",
+      "address": "Jayanagar 4th Block, Bengaluru",
+      "rating": 4.0,
+      "reviews": 154,
+      "type": "Beauty supply store"
+    }
+  ]
+}

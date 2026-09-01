@@ -1,0 +1,50 @@
+{
+  "_aurum_fixture": {
+    "synthetic": true,
+    "note": "Hand written to the documented google_shopping response shape. Not recorded from SerpApi. Stripped by the provider zod schema, so it cannot affect parsing. See evals/fixtures/listings/README.md.",
+    "covers": [
+      "a store name that also appears in the google_maps fixture, so the distance line has something honest to attach to",
+      "a partially relevant cheaper result that must stay below the band"
+    ]
+  },
+  "search_metadata": {
+    "id": "fixture-sunscreen-spf50",
+    "status": "Success"
+  },
+  "shopping_results": [
+    {
+      "position": 1,
+      "title": "Broad Spectrum Sunscreen SPF 50 Gel, 50 g",
+      "product_link": "https://www.nykaa.com/fixture/broad-spectrum-sunscreen-spf-50-gel",
+      "source": "Nykaa",
+      "price": "₹499.00",
+      "extracted_price": 499,
+      "thumbnail": "https://serpapi.test/images/fixture-sunscreen-nykaa.jpg",
+      "rating": 4.5,
+      "reviews": 2210,
+      "product_id": "fixture-2001"
+    },
+    {
+      "position": 2,
+      "title": "Sunscreen SPF 50 Broad Spectrum Gel Lotion",
+      "product_link": "https://www.apollopharmacy.in/fixture/sunscreen-spf-50-gel-lotion",
+      "source": "Apollo Pharmacy",
+      "price": "₹549.00",
+      "extracted_price": 549,
+      "thumbnail": "https://serpapi.test/images/fixture-sunscreen-apollo.jpg",
+      "rating": 4.2,
+      "reviews": 615,
+      "product_id": "fixture-2002"
+    },
+    {
+      "position": 3,
+      "title": "Sunscreen SPF 30 for oily skin",
+      "product_link": "https://www.amazon.in/fixture/sunscreen-spf-30-oily",
+      "source": "Amazon.in",
+      "price": "₹279.00",
+      "extracted_price": 279,
+      "thumbnail": "https://serpapi.test/images/fixture-sunscreen-spf30.jpg",
+      "product_id": "fixture-2003"
+    }
+  ]
+}
