@@ -1,0 +1,144 @@
+# Continuous integration.
+#
+# Spec: docs/08-git-workflow.md, "CI (GitHub Actions)" and "Protection rules".
+# The five required checks named there are five jobs here, so the check names in
+# the branch protection rules are exactly lint, typecheck, build, test and
+# eval:smoke. That costs one npm ci per job and buys a red cross that already
+# says which gate failed.
+#
+# No provider secret is used anywhere in this file, on purpose. Everything below
+# runs on the fixture path: the build needs no environment, the eval suites read
+# recorded fixtures, and the one suite that spends credits (eval:consistency) and
+# the live listing check inside eval:grounding are in nightly.yml instead. If a
+# step here ever needs a key, that is the signal that something started calling a
+# provider on a pull request.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # ESLint, plus the dash rule over src, docs and every markdown file, the no
+      # hex in components rule, and the two server only rules.
+      - run: npm run lint
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      # docs/08-git-workflow.md: "The build step verifies that no provider key
+      # prefix appears in the client bundle." docs/06-safety-privacy.md, "Keys,
+      # sessions, abuse", asks for the same grep.
+      #
+      # Only .next/static is searched, because that is what a browser downloads.
+      # .next/server is server code and is allowed to name a server variable.
+      #
+      # This job builds into an empty checkout, which matters. Run the same grep
+      # on a working copy where `npm run e2e` has been and it finds server
+      # variable names in comments: `next dev` writes its own unminified chunks
+      # into .next/static under the same route paths, and `next build` does not
+      # remove every one of them. That is a stale development artifact, not a
+      # leak. Delete .next before believing a local hit.
+      #
+      # Two kinds of marker, and both matter even though this job holds no
+      # secret: a key prefix would catch a value that reached the bundle some
+      # other way, and a server env variable name in a client chunk means a
+      # server only module was pulled into client code, which is the leak one
+      # step before it happens. NEXT_PUBLIC_SUPABASE_ANON_KEY is deliberately not
+      # on the list: it is inlined into the client by design and is safe only
+      # because row level security is on for every table.
+      - name: Check the client bundle for secret markers
+        run: |
+          set -euo pipefail
+          if [ -d .next/static ]; then
+            echo "Checking .next/static for secret markers."
+          else
+            echo "::error::No .next/static directory, so there is no client bundle to check."
+            exit 1
+          fi
+          markers='sk-ant-|SUPABASE_SERVICE_ROLE_KEY|PERFECTCORP_API_KEY|SERPAPI_API_KEY|ANTHROPIC_API_KEY|JUDGE_ACCESS_CODE_HASH|service_role|\$2[aby]\$'
+          if grep -rIEn "$markers" .next/static; then
+            echo "::error::A provider key prefix or a server only variable name appears in the client bundle. See the matches above."
+            exit 1
+          fi
+          echo "No secret marker found in .next/static."
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Unit tests and every eval suite that does not spend credits. The live
+      # listing check inside eval:grounding runs only when SERPAPI_API_KEY is
+      # set, and it is not set here.
+      - run: npm run test
+
+  eval-smoke:
+    name: eval:smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run eval:smoke
+      # docs/05-evals.md, "Reporting": a pull request pastes the suite results.
+      # The suites write them to evals/results, which git ignores, so the run
+      # keeps them as an artifact instead.
+      - name: Upload the eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-smoke-results
+          path: evals/results/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,106 @@
+# Nightly checks that spend provider credits.
+#
+# THIS WORKFLOW SPENDS MONEY. Every run of eval:consistency sends the fixture
+# faces to Perfect Corp, and the live listing check inside eval:grounding sends
+# one search to SerpApi and then makes a HEAD request to each returned listing.
+# That is why none of it runs on a pull request (docs/08-git-workflow.md, "CI":
+# "These spend credits, so they never run on PRs") and why the repository
+# secrets below should hold a dedicated low quota key, not the key the live
+# deployment uses. Before judging opens, disable the schedule or clear the
+# secrets: a nightly run that eats the balance is worse than no nightly run.
+#
+# Spec: docs/08-git-workflow.md, "CI"; docs/05-evals.md, suites eval:consistency
+# and eval:grounding.
+#
+# Requires these GitHub Actions secrets (Settings, Secrets and variables,
+# Actions). Every step is skipped, not failed, when its secret is absent, so a
+# fork and a repository without keys stay green:
+#
+#   PERFECTCORP_API_KEY    eval:consistency
+#   PERFECTCORP_BASE_URL   eval:consistency, optional, the client has a default
+#   SERPAPI_API_KEY        the live listing check in eval:grounding
+#
+# Two honest notes about what a green run means today:
+#
+#   1. evals/consistency/consistency.test.ts is still the Layer 0 placeholder,
+#      four it.todo lines. Until it is written it spends nothing and proves
+#      nothing.
+#   2. It needs evals/fixtures/faces, which is empty because no consented face
+#      is in the repository yet (evals/fixtures/README.md). Both are steps in
+#      docs/SUBMISSION-RUNBOOK.md.
+
+name: Nightly
+
+on:
+  schedule:
+    # 02:00 UTC. A scheduled workflow only ever runs on the default branch.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  credits:
+    name: eval:consistency and the live grounding check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Check which credit spending secrets are configured
+        id: secrets
+        env:
+          PERFECTCORP_API_KEY: ${{ secrets.PERFECTCORP_API_KEY }}
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+        run: |
+          set -euo pipefail
+          perfectcorp=false
+          serpapi=false
+          if [ -n "${PERFECTCORP_API_KEY}" ]; then
+            perfectcorp=true
+          else
+            echo "PERFECTCORP_API_KEY is not configured, so eval:consistency is skipped."
+          fi
+          if [ -n "${SERPAPI_API_KEY}" ]; then
+            serpapi=true
+          else
+            echo "SERPAPI_API_KEY is not configured, so the live listing check is skipped."
+          fi
+          echo "perfectcorp=$perfectcorp" >> "$GITHUB_OUTPUT"
+          echo "serpapi=$serpapi" >> "$GITHUB_OUTPUT"
+
+      # Spends Perfect Corp units: one full capture analysis per fixture face,
+      # in both lighting conditions.
+      - name: Run eval:consistency
+        if: steps.secrets.outputs.perfectcorp == 'true'
+        env:
+          PERFECTCORP_API_KEY: ${{ secrets.PERFECTCORP_API_KEY }}
+          PERFECTCORP_BASE_URL: ${{ secrets.PERFECTCORP_BASE_URL }}
+        run: npm run eval:consistency
+
+      # Spends one SerpApi search, then makes a HEAD request to each of the top
+      # listing URLs it returns. The rest of eval:grounding runs on recorded
+      # fixtures and is already covered by eval:smoke on every pull request.
+      - name: Run the live listing check in eval:grounding
+        if: steps.secrets.outputs.serpapi == 'true'
+        env:
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+        run: npm run eval:grounding
+
+      # docs/08-git-workflow.md: "with results uploaded as artifacts".
+      - name: Upload the eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-eval-results
+          path: evals/results/
+          if-no-files-found: ignore
+          retention-days: 30
