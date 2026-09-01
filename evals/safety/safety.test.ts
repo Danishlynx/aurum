@@ -463,9 +463,21 @@ describe("eval:safety, checks that need a running app", () => {
 
   it.todo("returns 401 for a judge session past its expiry");
 
-  it.todo(
-    "hides the delete everything control from a judge session on the demo profile",
-  );
+  /*
+   * docs/01-user-flow.md, "Judge mode across the flow": "Judge sessions never
+   * see the Delete everything control on the demo profile", and
+   * docs/06-safety-privacy.md, "Keys, sessions, abuse": "Judge sessions cannot
+   * delete the demo profile and cannot download data". Landed with Layer 5 and
+   * no longer waiting on anything, in the two halves it actually has:
+   *
+   * - the server half, in data-controls.test.ts beside this file, where
+   *   deleteEverything refuses a judge session and fixture mode without touching
+   *   an object or a row, and buildProfileView reports isJudgeSession,
+   * - the screen half, in e2e/smoke.spec.ts ("profile"), where the running app
+   *   in fixture mode renders no delete control at all, answers the download and
+   *   the retention toggle with the read only line, and gets 403 from all three
+   *   routes when they are asked directly.
+   */
 
   /* docs/06-safety-privacy.md, "Retention". */
   it.todo(

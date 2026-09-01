@@ -131,6 +131,27 @@ test.describe("health", () => {
   });
 });
 
+test.describe("judge stats", () => {
+  /**
+   * docs/07-payments-and-judge-mode.md: "A tiny /api/judge/stats route
+   * (protected by the same code) shows sessions created, analyses used, credits
+   * used." The numbers themselves need a Supabase project and a judge code, so
+   * what a clean clone can prove is the half that matters most: they are not
+   * public. Without the code the route refuses before it counts anything.
+   */
+  test("does not hand the numbers to a request with no code", async ({
+    request,
+  }) => {
+    const response = await request.get("/api/judge/stats");
+    expect(response.status()).toBe(401);
+
+    const body = await response.text();
+    for (const field of ["sessionsCreated", "analysesUsed", "creditsUsed"]) {
+      expect(body).not.toContain(field);
+    }
+  });
+});
+
 /* ------------------------------------------------------------------ */
 /* G. Color identity                                                   */
 /* ------------------------------------------------------------------ */
@@ -670,5 +691,179 @@ test.describe("looks", () => {
     const toast = page.getByRole("status");
     await expect(toast).toHaveText(copy.looks.saveReadOnly);
     await expect(page.getByText(copy.looks.savedToast)).toHaveCount(0);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* L. Profile                                                          */
+/* ------------------------------------------------------------------ */
+
+test.describe("profile", () => {
+  test.skip(
+    externalServer,
+    "Needs the fixture mode server playwright.config.ts starts.",
+  );
+
+  /**
+   * docs/01-user-flow.md section L items 1 and 2: the summary rows with their
+   * "Retake" and "Adjust" affordances, and what the person has saved.
+   *
+   * The six row labels are asserted by name and in order, because the order is
+   * the doc's own and the contract in src/lib/shared/profile-view.ts fixes it.
+   * The values are the fixture's business (evals/safety/data-controls.test.ts
+   * checks them against the same checked in constants the report and /color are
+   * built from); what this proves is that the route, the contract, and the
+   * screen agree end to end.
+   *
+   * The hair type row carries no value on any profile this build writes, because
+   * hair type detection needs three photos and is skipped in the one selfie fan
+   * out. It shows the honest line rather than a dash, which is the one row that
+   * proves the missing value state renders.
+   */
+  test("shows the six summary rows with their affordances", async ({ page }) => {
+    await page.goto("/profile");
+
+    await expect(
+      page.getByRole("heading", { name: copy.nav.profile, level: 1 }),
+    ).toBeVisible();
+
+    const rows = page.locator("main ul").first().locator("li");
+    await expect(rows).toHaveCount(6);
+
+    for (const [index, label] of [
+      copy.profile.rowSkinType,
+      copy.profile.rowTopConcern,
+      copy.profile.rowToneAndUndertone,
+      copy.profile.rowSeason,
+      copy.profile.rowFaceShape,
+      copy.profile.rowHairType,
+    ].entries()) {
+      await expect(rows.nth(index).getByText(label, { exact: true })).toBeVisible();
+    }
+
+    // Item 1, the affordances: a retake on the five rows a photo decides, and
+    // the adjuster on the undertone. The season row has neither, because a
+    // season is derived rather than chosen.
+    await expect(
+      page.getByRole("link", { name: copy.profile.retakeAffordance }),
+    ).toHaveCount(4);
+    const adjust = page.getByRole("link", {
+      name: copy.profile.adjustAffordance,
+    });
+    await expect(adjust).toHaveCount(1);
+    await expect(adjust).toHaveAttribute("href", /\/color\?/u);
+
+    // The one row with no reading behind it says so rather than showing a dash.
+    await expect(page.getByText(copy.profile.valueUnavailable)).toBeVisible();
+  });
+
+  /**
+   * Item 2. The demo profile has two saved looks
+   * (docs/07-payments-and-judge-mode.md), so the section is present and not
+   * empty, and it never claims a saved makeup look, because no column stores one.
+   */
+  test("lists what the demo profile has saved", async ({ page }) => {
+    await page.goto("/profile");
+
+    await expect(
+      page.getByRole("heading", { name: copy.profile.savedHeading, level: 2 }),
+    ).toBeVisible();
+    await expect(page.getByText(copy.profile.savedEmpty)).toHaveCount(0);
+
+    const saved = page
+      .locator("section", {
+        has: page.getByRole("heading", { name: copy.profile.savedHeading }),
+      })
+      .locator("li");
+    await expect(saved).toHaveCount(2);
+    await expect(
+      saved.getByText(copy.looks.occasionWeddingGuest, { exact: true }),
+    ).toBeVisible();
+  });
+
+  /**
+   * Item 3, the data controls, and the two rules that govern them on the demo
+   * profile.
+   *
+   * The download link is rendered where docs/01 section L item 3 puts it, and
+   * tapping it on the demo profile says why rather than saving a file: the
+   * server refuses the route with 403 (docs/06-safety-privacy.md, "Keys,
+   * sessions, abuse": "Judge sessions cannot delete the demo profile and cannot
+   * download data"), and following the link would hand the person a file holding
+   * that refusal where their data should be.
+   *
+   * The delete control is absent, not merely disabled: docs/01-user-flow.md
+   * "Judge mode across the flow" says "Judge sessions never see the Delete
+   * everything control on the demo profile", and fixture mode is that session.
+   */
+  test("shows the data controls without the delete control", async ({
+    page,
+  }) => {
+    await page.goto("/profile");
+
+    await expect(
+      page.getByRole("heading", { name: copy.profile.dataHeading, level: 2 }),
+    ).toBeVisible();
+
+    const keepOriginals = page.getByRole("switch", {
+      name: copy.profile.keepOriginalsToggle,
+    });
+    await expect(keepOriginals).toBeVisible();
+    await expect(keepOriginals).not.toBeChecked();
+
+    const download = page.getByRole("link", {
+      name: copy.profile.downloadAction,
+    });
+    await expect(download).toHaveAttribute("href", "/api/profile/download");
+    await download.click();
+    await expect(page.getByRole("status")).toHaveText(
+      copy.profile.downloadReadOnly,
+    );
+    // The tap was answered on the screen, so the browser never left it.
+    await expect(page).toHaveURL(/\/profile$/u);
+
+    await expect(
+      page.getByRole("button", { name: copy.profile.deleteAction }),
+    ).toHaveCount(0);
+  });
+
+  /**
+   * The toggle answers with the read only line rather than moving, which is the
+   * same refusal the hair and looks saves get. The demo profile has no database
+   * behind it, so a toggle that moved would be showing a retention setting
+   * nothing stored.
+   */
+  test("answers the retention toggle with the read only line", async ({
+    page,
+  }) => {
+    await page.goto("/profile");
+
+    const keepOriginals = page.getByRole("switch", {
+      name: copy.profile.keepOriginalsToggle,
+    });
+    await keepOriginals.click();
+
+    const toast = page.getByRole("status");
+    await expect(toast).toHaveText(copy.profile.readOnly);
+    await expect(keepOriginals).not.toBeChecked();
+  });
+
+  /**
+   * The two writes and the download, refused at the route rather than only in
+   * the screen. A hidden control is not a permission check, so each one is asked
+   * for directly and each one answers 403.
+   */
+  test("refuses the download, the toggle, and the delete at the route", async ({
+    request,
+  }) => {
+    for (const response of [
+      await request.get("/api/profile/download"),
+      await request.patch("/api/profile", { data: { keepOriginals: true } }),
+      await request.post("/api/profile/delete", {
+        data: { confirmation: copy.profile.deleteConfirmWord },
+      }),
+    ]) {
+      expect(response.status()).toBe(403);
+    }
   });
 });
