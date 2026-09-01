@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
+    "shots": "node scripts/screenshots.mjs",
     "eval:capture": "vitest run evals/capture",
     "eval:consistency": "vitest run evals/consistency",
     "eval:palette": "vitest run evals/palette",
