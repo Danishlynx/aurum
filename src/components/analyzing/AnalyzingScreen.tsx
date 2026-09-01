@@ -3,71 +3,39 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { RevealMask } from "@/components/analyzing/RevealMask";
+import { revealStateFor, type StatusKey } from "@/components/analyzing/reveal";
 import { Column } from "@/components/layout/Column";
 import { ButtonLink } from "@/components/ui/Button";
 import { fetchJobs } from "@/lib/client/api";
-import type { ClientJob } from "@/lib/client/api";
 import {
   forgetCapturePreview,
   readCapturePreview,
 } from "@/lib/client/capture-handoff";
 import { copy } from "@/lib/shared/copy";
-import { TERMINAL_JOB_STATUSES } from "@/lib/shared/schemas";
 
 /**
  * E. Analyzing, docs/01-user-flow.md section E.
  *
  * The selfie fills the screen, darkened at the edges by a single radial
- * vignette, which is the one gradient the design system allows. Below it, one
- * line of status.
+ * vignette, which is the one gradient the design system allows. As the skin
+ * analysis returns, its mask blooms over the face in translucent Leaf gold and
+ * settles. Below it, one line of status.
  *
- * The steps are driven by job completion, never by timers: if a job is slow the
- * status line stays and nothing fakes progress. The masks that bloom over the
- * face belong to Layer 1, together with the mask data they draw; until then the
- * status lines advance on their own, which is what reduced motion sees anyway.
+ * Every step is driven by job completion, never by a timer: the poll is the only
+ * clock, the status line for a set of jobs is a pure function of that set
+ * (src/components/analyzing/reveal.ts), and a failed job has its step skipped
+ * rather than waited for.
+ *
+ * The screen leaves for /report when every job for the capture is terminal and
+ * the core set succeeded. It waits for the stragglers on purpose: this poll is
+ * what advances the provider tasks, so leaving as soon as the core set lands
+ * would strand the face shape and hair type results that Layer 3 reads.
  */
 
 const POLL_INTERVAL_MS = 1500;
 /** After this many polls in a row that never reached the server, stop and say so. */
 const FAILURES_BEFORE_GIVING_UP = 3;
-
-type StatusKey = keyof typeof copy.analyzing;
-
-function isTerminal(job: ClientJob): boolean {
-  return (TERMINAL_JOB_STATUSES as readonly string[]).includes(job.status);
-}
-
-/**
- * The status line for a set of jobs, in the sequence docs/01 section E gives.
- * A kind with no job is nothing to wait for, so it does not hold the line.
- */
-export function statusKeyFor(jobs: readonly ClientJob[]): StatusKey {
-  const waitingOn = (kinds: readonly string[]): boolean =>
-    jobs.some(
-      (job) => job.kind !== null && kinds.includes(job.kind) && !isTerminal(job),
-    );
-
-  if (jobs.length === 0 || waitingOn(["skin"])) {
-    return "readingSkin";
-  }
-  if (waitingOn(["fitzpatrick", "attributes"])) {
-    return "readingTone";
-  }
-  if (waitingOn(["face_shape", "hair_type"])) {
-    return "readingFaceShapeAndHair";
-  }
-  return "buildingProfile";
-}
-
-/**
- * docs/03-architecture.md step 6: the profile is built when the core set is
- * complete, which is skin plus at least one of Fitzpatrick or attributes.
- */
-export function coreSetSucceeded(jobs: readonly ClientJob[]): boolean {
-  const succeeded = (kind: string): boolean =>
-    jobs.some((job) => job.kind === kind && job.status === "succeeded");
-  return succeeded("skin") && (succeeded("fitzpatrick") || succeeded("attributes"));
-}
 
 export function AnalyzingScreen() {
   const router = useRouter();
@@ -76,6 +44,7 @@ export function AnalyzingScreen() {
 
   const [preview, setPreview] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusKey>("readingSkin");
+  const [masksBloom, setMasksBloom] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const failuresRef = useRef(0);
   const finishedRef = useRef(false);
@@ -110,16 +79,18 @@ export function AnalyzingScreen() {
 
     failuresRef.current = 0;
     const jobs = result.data.jobs;
-    setStatus(statusKeyFor(jobs));
+    const state = revealStateFor(jobs);
+    setStatus(state.status);
+    // Once a mask has bloomed it stays: the analysis behind it does not un happen.
+    setMasksBloom((bloomed) => bloomed || state.masksBloom);
 
-    const complete =
-      result.data.complete ?? (jobs.length > 0 && jobs.every(isTerminal));
+    const complete = result.data.complete ?? state.settled;
     if (!complete) {
       return;
     }
 
     finishedRef.current = true;
-    if (coreSetSucceeded(jobs)) {
+    if (state.coreSucceeded) {
       forgetCapturePreview();
       router.replace("/report");
       return;
@@ -152,6 +123,7 @@ export function AnalyzingScreen() {
           className="absolute inset-0 h-full w-full object-cover"
         />
       ) : null}
+      {masksBloom ? <RevealMask /> : null}
       <div
         aria-hidden="true"
         className="absolute inset-0"
