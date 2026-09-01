@@ -182,6 +182,10 @@ type AestheticProfileRow = {
   hair_color_hex: string | null;
   face_shape: string | null;
   hair_type: Json | null;
+  /** Migration 0009. The catalog style id behind "Save this" on /hair. */
+  saved_hair_style_id: string | null;
+  /** Migration 0009. The catalog color name saved with it, or null for none. */
+  saved_hair_color_name: string | null;
   season: string | null;
   palette: Json | null;
   reading: string | null;

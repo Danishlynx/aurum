@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import {
+  canonicalHairColorParams,
+  canonicalHairstyleParams,
   canonicalJson,
   canonicalMakeupParams,
   paramsHash,
@@ -119,5 +121,102 @@ describe("render params, the hash", () => {
     const stored = makeup([LIP]);
     expect(stored.categories[0]?.shadeName).toBe("Rust");
     expect(stored.categories[0]?.shadeHex).toBe("#9c4a1e");
+  });
+});
+
+/*
+ * The hair kinds, Layer 3. A hairstyle render costs 2 units, twice a makeup one
+ * (docs/04-integrations.md), so the cache key matters twice as much here: four
+ * styles and two colours is a whole judge session's six renders.
+ */
+
+function hairstyle(styleId: string, captureId = CAPTURE) {
+  return canonicalHairstyleParams({ captureId, params: { styleId } });
+}
+
+function hairColor(
+  params: { styleId: string; colorHex: string; colorName: string },
+  captureId = CAPTURE,
+) {
+  return canonicalHairColorParams({ captureId, params });
+}
+
+const CHESTNUT = {
+  styleId: "textured-crop",
+  colorHex: "#6b3f24",
+  colorName: "Warm chestnut",
+} as const;
+
+describe("render params, hairstyle", () => {
+  it("is a 64 character lowercase hex digest, as migration 0003 expects", () => {
+    expect(paramsHash("hairstyle", hairstyle("textured-crop"))).toMatch(
+      /^[0-9a-f]{64}$/u,
+    );
+  });
+
+  it("gives the same hash for the same style, so a second look is free", () => {
+    expect(paramsHash("hairstyle", hairstyle("textured-crop"))).toBe(
+      paramsHash("hairstyle", hairstyle("  Textured-Crop ")),
+    );
+  });
+
+  it("changes with the style", () => {
+    expect(paramsHash("hairstyle", hairstyle("textured-crop"))).not.toBe(
+      paramsHash("hairstyle", hairstyle("curtain-fringe")),
+    );
+  });
+
+  it("changes with the capture, so a new selfie never serves the old face", () => {
+    expect(paramsHash("hairstyle", hairstyle("textured-crop"))).not.toBe(
+      paramsHash(
+        "hairstyle",
+        hairstyle("textured-crop", "b3f1e0c2-1111-4a2b-8c3d-000000000002"),
+      ),
+    );
+  });
+});
+
+describe("render params, hair color", () => {
+  it("is a 64 character lowercase hex digest", () => {
+    expect(paramsHash("hair_color", hairColor(CHESTNUT))).toMatch(
+      /^[0-9a-f]{64}$/u,
+    );
+  });
+
+  it("ignores the case of a hex and the colour name, the same as a shade", () => {
+    expect(paramsHash("hair_color", hairColor(CHESTNUT))).toBe(
+      paramsHash(
+        "hair_color",
+        hairColor({ ...CHESTNUT, colorHex: "#6B3F24", colorName: "Chestnut" }),
+      ),
+    );
+  });
+
+  it("changes with the style, because a colour is rendered on a style", () => {
+    expect(paramsHash("hair_color", hairColor(CHESTNUT))).not.toBe(
+      paramsHash(
+        "hair_color",
+        hairColor({ ...CHESTNUT, styleId: "curtain-fringe" }),
+      ),
+    );
+  });
+
+  it("changes with the colour", () => {
+    expect(paramsHash("hair_color", hairColor(CHESTNUT))).not.toBe(
+      paramsHash("hair_color", hairColor({ ...CHESTNUT, colorHex: "#8a3c1f" })),
+    );
+  });
+
+  it("never collides with the hairstyle render of the same style", () => {
+    expect(paramsHash("hair_color", hairColor(CHESTNUT))).not.toBe(
+      paramsHash("hairstyle", hairstyle(CHESTNUT.styleId)),
+    );
+  });
+
+  it("stores the colour name it does not hash, for the pending line", () => {
+    const stored = hairColor(CHESTNUT);
+    expect(stored.colorName).toBe("Warm chestnut");
+    expect(stored.colorHex).toBe("#6b3f24");
+    expect(stored.styleId).toBe("textured-crop");
   });
 });

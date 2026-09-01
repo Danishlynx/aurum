@@ -258,6 +258,8 @@ describe("eval:synthesis, the rebuild decision", () => {
     hair_color_hex: "#1e1613",
     face_shape: "Oval",
     hair_type: null,
+    saved_hair_style_id: null,
+    saved_hair_color_name: null,
     season: null,
     palette: null,
     reading: DEMO_FIXTURE_READING,

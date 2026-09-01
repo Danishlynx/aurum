@@ -28,10 +28,13 @@ import { createRender } from "@/lib/server/renders";
 /**
  * POST /api/renders
  *
- * Starts one makeup try on on the person's own capture, or returns the render
- * the same shades produced before (docs/03-architecture.md, "Caching":
- * "(user_id, kind, params_hash) is unique. Re selecting a shade or style returns
- * the stored render").
+ * Starts one try on on the person's own capture, or returns the render the same
+ * parameters produced before (docs/03-architecture.md, "Caching": "(user_id,
+ * kind, params_hash) is unique. Re selecting a shade or style returns the stored
+ * render").
+ *
+ * Three kinds today, all through the same body, the same caps, and the same
+ * refusals: makeup (docs/01 section H), hairstyle and hair color (section I).
  *
  * The order of the gates, and why:
  * 1. fixture mode, which has no database and no key, so it is answered first
@@ -85,8 +88,7 @@ export async function POST(request: NextRequest): Promise<Response> {
 
     const outcome = await createRender({
       session,
-      kind: parsed.data.kind,
-      params: parsed.data.params,
+      request: parsed.data,
       onProviderCall: (count) => {
         route.metrics.countProviderCall(count);
       },
@@ -198,6 +200,29 @@ export async function POST(request: NextRequest): Promise<Response> {
           message: messages.tryOnUnavailable,
           outcome: "server_error",
           code: "provider_not_configured",
+        });
+      case "endpoint_unverified":
+        // The endpoint behind this kind has not been verified against the live
+        // docs, and PERFECTCORP_ALLOW_UNVERIFIED is not set. Hair color is the
+        // one this refuses today. Same answer as a missing key, because from the
+        // person's side it is the same thing: there is no preview, and nothing
+        // was invented in its place.
+        throw new HttpError({
+          status: 503,
+          message: messages.tryOnUnavailable,
+          outcome: "server_error",
+          code: "provider_endpoint_unverified",
+        });
+      case "style_not_renderable":
+        // The hairstyle endpoint is confirmed, but no provider template id has
+        // been recorded for this style yet
+        // (src/lib/server/renders/hair.ts). Nothing was reserved and nothing
+        // was called.
+        throw new HttpError({
+          status: 503,
+          message: messages.tryOnUnavailable,
+          outcome: "server_error",
+          code: "hairstyle_template_missing",
         });
     }
 

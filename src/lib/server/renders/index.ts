@@ -1,7 +1,7 @@
 import "server-only";
 
 import type {
-  MakeupRenderParams,
+  RenderRequest,
   RenderStatus,
   RenderView,
 } from "@/lib/shared/color-view";
@@ -28,10 +28,12 @@ import { getAestheticProfile } from "../profile/db";
 import {
   createTask,
   downloadResultAssets,
+  getEndpoint,
   getTaskSnapshot,
   isPerfectCorpConfigured,
   parseRenderUrls,
   uploadImage,
+  type PerfectCorpEndpointKey,
 } from "../providers/perfectcorp";
 import type { AppSession } from "../session";
 import {
@@ -42,21 +44,29 @@ import {
   insertRender,
   updateRender,
 } from "./db";
+import { hairColorTaskBody, hairstyleTaskBody, hairstyleTemplateFor } from "./hair";
 import { makeupTaskBody } from "./makeup";
 import {
+  canonicalHairColorParams,
+  canonicalHairstyleParams,
   canonicalMakeupParams,
   paramsHash,
+  type StoredHairColorParams,
+  type StoredHairstyleParams,
   type StoredMakeupParams,
+  type StoredRenderParams,
 } from "./params";
 
 /**
- * Try on renders: one shade set in, one image of the person's own face out, or
- * nothing.
+ * Try on renders: one shade set, one hairstyle, or one hair colour in, one image
+ * of the person's own face out, or nothing.
  *
- * docs/01-user-flow.md section H is the screen. docs/03-architecture.md is the
- * machinery: renders are cached by (user_id, kind, params_hash), they are
+ * docs/01-user-flow.md sections H and I are the screens. docs/03-architecture.md
+ * is the machinery: renders are cached by (user_id, kind, params_hash), they are
  * sequential per person, and every provider call reserves credits first.
- * docs/07-payments-and-judge-mode.md caps a judge session at six of them.
+ * docs/07-payments-and-judge-mode.md caps a judge session at six of them, and
+ * that cap counts every kind together: four hairstyles and two hair colours is a
+ * whole judge session's worth of renders (docs/09, Layer 3 definition of done).
  *
  * The rule that shapes every path in this file: a try on cannot be faked. With
  * no key, with the kill switch off, with the original photo already deleted, or
@@ -81,9 +91,57 @@ export function renderPath(
   return `${ownerId}/${renderId}.${extension}`;
 }
 
+/** The render kinds this build can produce. Layer 4 adds cloth and accessory. */
+export type SupportedRenderKind = RenderRequest["kind"];
+
+/**
+ * The endpoint behind each kind, and with it the price: makeup try on is 1 unit,
+ * hairstyle try on is 2, hair colour try on is 1 (docs/04-integrations.md).
+ */
+export const ENDPOINT_FOR_RENDER_KIND: Readonly<
+  Record<SupportedRenderKind, PerfectCorpEndpointKey>
+> = {
+  makeup: "makeupTryOn",
+  hairstyle: "hairstyleTryOn",
+  hair_color: "hairColorTryOn",
+};
+
+/** The endpoint a stored render polls against, or null for a kind we cannot. */
+export function endpointForRenderKind(
+  kind: RenderKind,
+): PerfectCorpEndpointKey | null {
+  return kind === "makeup" || kind === "hairstyle" || kind === "hair_color"
+    ? ENDPOINT_FOR_RENDER_KIND[kind]
+    : null;
+}
+
+/** Units one render of this kind reserves. */
+export function renderUnits(kind: SupportedRenderKind): number {
+  return perfectCorpUnits(ENDPOINT_FOR_RENDER_KIND[kind]);
+}
+
 /** Units one makeup try on reserves. One per render, per docs/04. */
 export function makeupRenderUnits(): number {
-  return perfectCorpUnits("makeupTryOn");
+  return renderUnits("makeup");
+}
+
+/**
+ * Whether we are allowed to call the endpoint behind a kind at all.
+ *
+ * This mirrors assertEndpointVerified in the Perfect Corp client, which is still
+ * the gate at the call site. It is repeated here so an unverified endpoint is a
+ * typed refusal the screen can render, taken before a credit is reserved and a
+ * row is written, rather than a provider exception after both.
+ *
+ * Today this is what stops a hair colour render: the hair colour task path did
+ * not render on the reference page, so its entry in endpoints.ts is unverified
+ * and calling it needs PERFECTCORP_ALLOW_UNVERIFIED=true.
+ */
+export function isRenderEndpointCallable(key: PerfectCorpEndpointKey): boolean {
+  return (
+    getEndpoint(key).verification.state === "confirmed" ||
+    process.env.PERFECTCORP_ALLOW_UNVERIFIED === "true"
+  );
 }
 
 export type CreateRenderRefusal =
@@ -92,6 +150,8 @@ export type CreateRenderRefusal =
   | "render_in_progress"
   | "judge_render_limit"
   | "not_configured"
+  | "endpoint_unverified"
+  | "style_not_renderable"
   | "kill_switch"
   | "daily_cap"
   | "session_cap"
@@ -116,10 +176,99 @@ export type CreateRenderOutcome =
 
 export interface CreateRenderInput {
   readonly session: AppSession;
-  readonly kind: Extract<RenderKind, "makeup">;
-  readonly params: MakeupRenderParams;
+  /**
+   * The parsed body of POST /api/renders: one of the kinds in
+   * src/lib/shared/color-view.ts, with its own parameters. It is passed whole
+   * rather than as a kind and a params pair so the two cannot come apart.
+   */
+  readonly request: RenderRequest;
   readonly onProviderCall?: (count: number) => void;
   readonly onCredits?: (units: number) => void;
+}
+
+/**
+ * One render, worked out from the request before anything is spent: which
+ * endpoint, what the parameters canonically are, and what feeds the tiered cost
+ * table. Pure.
+ */
+type RenderPlan =
+  | {
+      readonly kind: "makeup";
+      readonly endpointKey: "makeupTryOn";
+      readonly stored: StoredMakeupParams;
+      readonly itemCount: number;
+    }
+  | {
+      readonly kind: "hairstyle";
+      readonly endpointKey: "hairstyleTryOn";
+      readonly stored: StoredHairstyleParams;
+      readonly itemCount: number;
+    }
+  | {
+      readonly kind: "hair_color";
+      readonly endpointKey: "hairColorTryOn";
+      readonly stored: StoredHairColorParams;
+      readonly itemCount: number;
+    };
+
+function planRender(args: {
+  readonly captureId: string;
+  readonly request: RenderRequest;
+}): RenderPlan {
+  const request = args.request;
+  switch (request.kind) {
+    case "makeup": {
+      const stored = canonicalMakeupParams({
+        captureId: args.captureId,
+        params: request.params,
+      });
+      return {
+        kind: "makeup",
+        endpointKey: "makeupTryOn",
+        stored,
+        itemCount: stored.categories.length,
+      };
+    }
+    case "hairstyle":
+      return {
+        kind: "hairstyle",
+        endpointKey: "hairstyleTryOn",
+        stored: canonicalHairstyleParams({
+          captureId: args.captureId,
+          params: request.params,
+        }),
+        itemCount: 1,
+      };
+    case "hair_color":
+      return {
+        kind: "hair_color",
+        endpointKey: "hairColorTryOn",
+        stored: canonicalHairColorParams({
+          captureId: args.captureId,
+          params: request.params,
+        }),
+        itemCount: 1,
+      };
+  }
+}
+
+/**
+ * The request body for a plan, or null when there is nothing to render: no
+ * makeup category survived the mapping, or the style has no provider template
+ * (src/lib/server/renders/hair.ts).
+ */
+function taskBodyFor(
+  plan: RenderPlan,
+  fileId: string,
+): Record<string, unknown> | null {
+  switch (plan.kind) {
+    case "makeup":
+      return makeupTaskBody({ fileId, params: plan.stored });
+    case "hairstyle":
+      return hairstyleTaskBody({ fileId, params: plan.stored });
+    case "hair_color":
+      return hairColorTaskBody({ fileId, params: plan.stored });
+  }
 }
 
 async function signRender(render: Render): Promise<string | null> {
@@ -139,10 +288,10 @@ async function signRender(render: Render): Promise<string | null> {
  * The order of the gates, and why:
  * 1. the profile and the original photo, so a request with nothing to render on
  *    costs nothing
- * 2. the params hash, so a shade the person has already seen never spends a
- *    second credit (docs/03-architecture.md, "Caching")
- * 3. the key and the kill switch, which are answered from cache above and
- *    refused here
+ * 2. the params hash, so a shade or a style the person has already seen never
+ *    spends a second credit (docs/03-architecture.md, "Caching")
+ * 3. the key, the endpoint verification, and the kill switch, which are all
+ *    answered from cache above and refused here
  * 4. one open render per person, then the judge render cap
  * 5. the credit reservation, last, immediately before the provider call
  */
@@ -150,6 +299,7 @@ export async function createRender(
   input: CreateRenderInput,
 ): Promise<CreateRenderOutcome> {
   const ownerId = input.session.id;
+  const kind = input.request.kind;
 
   const profile = await getAestheticProfile(ownerId);
   if (profile === null || profile.capture_id === null) {
@@ -163,15 +313,13 @@ export async function createRender(
     return { ok: false, reason: "no_capture_image" };
   }
 
-  const stored = canonicalMakeupParams({
-    captureId: capture.id,
-    params: input.params,
-  });
-  const hash = paramsHash(input.kind, stored);
+  const plan = planRender({ captureId: capture.id, request: input.request });
+  const stored: StoredRenderParams = plan.stored;
+  const hash = paramsHash(kind, stored);
 
   const existing = await findRenderByHash({
     ownerId,
-    kind: input.kind,
+    kind,
     paramsHash: hash,
   });
 
@@ -206,6 +354,20 @@ export async function createRender(
   if (!isPerfectCorpConfigured()) {
     return { ok: false, reason: "not_configured" };
   }
+  if (!isRenderEndpointCallable(plan.endpointKey)) {
+    // A guessed path or a guessed payload is not a try on. The screen shows the
+    // unedited selfie and says the preview is unavailable, which is true.
+    return { ok: false, reason: "endpoint_unverified" };
+  }
+  if (
+    plan.kind === "hairstyle" &&
+    hairstyleTemplateFor(plan.stored.styleId) === null
+  ) {
+    // The endpoint is confirmed but the template catalog is not, so there is no
+    // id to send. Refused here rather than after a reservation, because nothing
+    // was ever going to be rendered.
+    return { ok: false, reason: "style_not_renderable" };
+  }
   if (!providerCallsEnabled()) {
     return { ok: false, reason: "kill_switch" };
   }
@@ -231,7 +393,7 @@ export async function createRender(
     existing ??
     (await insertRender({
       user_id: ownerId,
-      kind: input.kind,
+      kind,
       params: stored as unknown as Json,
       params_hash: hash,
       status: "pending",
@@ -245,13 +407,13 @@ export async function createRender(
     });
   }
 
-  const units = makeupRenderUnits();
+  const units = renderUnits(plan.kind);
   const reservation = await reserve({
     session: input.session,
     provider: "perfectcorp",
     units,
     subjectId: render.id,
-    note: `reserve ${input.kind} render`,
+    note: `reserve ${kind} render`,
   });
   if (!reservation.ok) {
     if (existing === null) {
@@ -274,7 +436,7 @@ export async function createRender(
     });
     input.onProviderCall?.(1);
 
-    const body = makeupTaskBody({ fileId: uploaded.fileId, params: stored });
+    const body = taskBodyFor(plan, uploaded.fileId);
     if (body === null) {
       await refund({ session: input.session, reservation: reservation.reservation });
       if (existing === null) {
@@ -284,9 +446,9 @@ export async function createRender(
     }
 
     const task = await createTask({
-      endpointKey: "makeupTryOn",
+      endpointKey: plan.endpointKey,
       body,
-      itemCount: stored.categories.length,
+      itemCount: plan.itemCount,
     });
     input.onProviderCall?.(1);
 
@@ -321,9 +483,11 @@ export async function createRender(
         event: "aurum.render_started",
         ownerType: input.session.ownerType,
         ownerId,
-        kind: input.kind,
+        kind,
         renderId: render.id,
-        categories: stored.categories.length,
+        // How much was asked for, in the terms of the kind. No shade name, no
+        // colour name, no style name: a log line is not a place for copy.
+        items: plan.itemCount,
         units: reservation.reservation.units,
       }),
     );
@@ -452,13 +616,21 @@ export async function pollRender(
     return viewOf(render, null, job);
   }
 
+  // A stored render of a kind this build cannot poll (cloth and accessory, which
+  // land in Layer 4) is left exactly as it is rather than failed on a guess. The
+  // job lifetime check above still ends it, so nothing runs forever.
+  const endpointKey = endpointForRenderKind(render.kind);
+  if (endpointKey === null) {
+    return viewOf(render, null, job);
+  }
+
   if (!(await claimForPolling(job))) {
     return viewOf(render, null, job);
   }
 
   try {
     const snapshot = await getTaskSnapshot({
-      endpointKey: "makeupTryOn",
+      endpointKey,
       taskId: job.provider_task_id,
     });
     input.onProviderCall?.(1);
@@ -625,4 +797,9 @@ async function failRender(args: {
   });
 }
 
-export type { StoredMakeupParams };
+export type {
+  StoredHairColorParams,
+  StoredHairstyleParams,
+  StoredMakeupParams,
+  StoredRenderParams,
+};

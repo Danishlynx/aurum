@@ -33,6 +33,33 @@ export async function findRenderByHash(args: {
   return unwrapNullable("find render by params hash", result);
 }
 
+/**
+ * Every render of one kind whose params hash is in the list.
+ *
+ * One query instead of one per option: /hair asks for four styles and three
+ * colours at once, and a screen that reads which of them have already been
+ * rendered should not cost seven round trips (docs/03-architecture.md,
+ * "Caching": re selecting a style returns the stored render).
+ *
+ * An empty list of hashes never reaches the database.
+ */
+export async function findRendersByHashes(args: {
+  readonly ownerId: string;
+  readonly kind: RenderKind;
+  readonly paramsHashes: readonly string[];
+}): Promise<Render[]> {
+  if (args.paramsHashes.length === 0) {
+    return [];
+  }
+  const result = await serviceClient()
+    .from("renders")
+    .select("*")
+    .eq("user_id", args.ownerId)
+    .eq("kind", args.kind)
+    .in("params_hash", [...args.paramsHashes]);
+  return unwrap("find renders by params hashes", result);
+}
+
 export async function getRender(
   ownerId: string,
   renderId: string,

@@ -3,6 +3,10 @@ import "server-only";
 import { createHash } from "node:crypto";
 
 import type { MakeupRenderParams } from "@/lib/shared/color-view";
+import type {
+  HairColorRenderParams,
+  HairstyleRenderParams,
+} from "@/lib/shared/hair-view";
 
 import type { RenderKind } from "../db/types";
 
@@ -34,6 +38,30 @@ export interface StoredMakeupParams {
     readonly shadeName: string;
   }>;
 }
+
+/** One hairstyle try on: a catalog style id on one capture. */
+export interface StoredHairstyleParams {
+  readonly captureId: string;
+  readonly styleId: string;
+}
+
+/**
+ * One hair colour try on. The style travels with the colour because
+ * docs/01-user-flow.md section I item 3 renders the colour "on the selected
+ * style": the same colour on a different style is a different picture.
+ */
+export interface StoredHairColorParams {
+  readonly captureId: string;
+  readonly styleId: string;
+  readonly colorHex: string;
+  /** For the pending line. Not hashed, the same as a makeup shade name. */
+  readonly colorName: string;
+}
+
+export type StoredRenderParams =
+  | StoredMakeupParams
+  | StoredHairstyleParams
+  | StoredHairColorParams;
 
 /**
  * JSON with the object keys in sorted order, so two objects that differ only in
@@ -77,19 +105,76 @@ export function canonicalMakeupParams(args: {
 }
 
 /**
+ * The canonical form of one hairstyle render's parameters.
+ *
+ * There is nothing to sort: a hairstyle render is one style on one capture. The
+ * id is trimmed and lower cased so the same style asked for in a different case
+ * is the same render rather than a second credit.
+ */
+export function canonicalHairstyleParams(args: {
+  readonly captureId: string;
+  readonly params: HairstyleRenderParams;
+}): StoredHairstyleParams {
+  return {
+    captureId: args.captureId,
+    styleId: args.params.styleId.trim().toLowerCase(),
+  };
+}
+
+/**
+ * The canonical form of one hair colour render's parameters. Same rules as the
+ * makeup shades: the hex is lower cased, and the name is stored but not hashed.
+ */
+export function canonicalHairColorParams(args: {
+  readonly captureId: string;
+  readonly params: HairColorRenderParams;
+}): StoredHairColorParams {
+  return {
+    captureId: args.captureId,
+    styleId: args.params.styleId.trim().toLowerCase(),
+    colorHex: args.params.colorHex.trim().toLowerCase(),
+    colorName: args.params.colorName.trim(),
+  };
+}
+
+/**
+ * What a hash covers, per kind of parameters.
+ *
+ * The branch is on the shape of the parameters rather than on the kind, so a
+ * caller that hashes one shape under another kind (which is what a change of
+ * kind is meant to do: produce a different hash for the same picture) still gets
+ * a stable digest instead of an exception.
+ *
+ * The names, which the pending line reads, are left out of every branch:
+ * renaming a swatch or a style must not cost a credit.
+ */
+function hashableOf(params: StoredRenderParams): Record<string, unknown> {
+  if ("categories" in params) {
+    return {
+      captureId: params.captureId,
+      categories: params.categories.map((entry) => ({
+        category: entry.category,
+        shadeHex: entry.shadeHex,
+      })),
+    };
+  }
+  if ("colorHex" in params) {
+    return {
+      captureId: params.captureId,
+      styleId: params.styleId,
+      colorHex: params.colorHex,
+    };
+  }
+  return { captureId: params.captureId, styleId: params.styleId };
+}
+
+/**
  * The stored hash. The version prefix means a change to what a hash covers
  * invalidates old rows instead of silently serving a render made under
  * different rules.
  */
-export function paramsHash(kind: RenderKind, params: StoredMakeupParams): string {
-  const hashable = {
-    captureId: params.captureId,
-    categories: params.categories.map((entry) => ({
-      category: entry.category,
-      shadeHex: entry.shadeHex,
-    })),
-  };
+export function paramsHash(kind: RenderKind, params: StoredRenderParams): string {
   return createHash("sha256")
-    .update(`v1 ${kind} ${canonicalJson(hashable)}`, "utf8")
+    .update(`v1 ${kind} ${canonicalJson(hashableOf(params))}`, "utf8")
     .digest("hex");
 }

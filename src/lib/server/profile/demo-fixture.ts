@@ -8,6 +8,17 @@ import {
   isConcernKey,
   type ConcernKey,
 } from "@/lib/shared/concerns";
+import {
+  faceShapeLine,
+  hairColorsFor,
+  hairStylesFor,
+  normalizeFaceShape,
+} from "@/lib/shared/hair-rules";
+import type {
+  HairColorOption,
+  HairStyleOption,
+  HairView,
+} from "@/lib/shared/hair-view";
 import { derivePalette, type Palette, type Undertone } from "@/lib/shared/palette";
 import type { ConcernView, ReportView } from "@/lib/shared/report-view";
 
@@ -84,6 +95,9 @@ export const DEMO_FIXTURE_CONCERNS: readonly StoredConcern[] = [
 
 const DEMO_FIXTURE_ZONES = { tZone: "oily", cheeks: "dry" } as const;
 
+/** The face shape the fixture analyses carry, as a09 records it. */
+export const DEMO_FIXTURE_FACE_SHAPE = "Oval";
+
 const facts = factsFromStoredProfile({
   captureId: DEMO_FIXTURE_CAPTURE_ID,
   concerns: DEMO_FIXTURE_CONCERNS,
@@ -94,7 +108,7 @@ const facts = factsFromStoredProfile({
   eyeColorHex: DEMO_FIXTURE_EYE_COLOR_HEX,
   hairColorHex: DEMO_FIXTURE_HAIR_COLOR_HEX,
   undertone: DEMO_FIXTURE_UNDERTONE,
-  faceShape: "Oval",
+  faceShape: DEMO_FIXTURE_FACE_SHAPE,
 });
 
 function concernViews(): ConcernView[] {
@@ -204,4 +218,63 @@ export const DEMO_FIXTURE_MAKEUP_VIEW: MakeupView = Object.freeze({
     skinToneHex: DEMO_FIXTURE_SKIN_TONE_HEX,
   }),
   product: null,
+});
+
+/** The face shape as the hair rules read it: "Oval" becomes "oval". */
+const DEMO_FIXTURE_HAIR_FACE_SHAPE = normalizeFaceShape(DEMO_FIXTURE_FACE_SHAPE);
+
+/**
+ * The fixture /hair screen.
+ *
+ * The styles and the colors are real: they come from the same hairStylesFor and
+ * hairColorsFor the live screen uses, over the fixture's own face shape, palette,
+ * and skin tone. A change to the rules changes this too, so the demo screen and
+ * the unit tests can never drift apart.
+ *
+ * The hair type is null, which is not an omission: hair type detection needs
+ * three photos of the same size and is skipped in the one selfie fan out
+ * (docs/04-integrations.md), so it is null on every profile this build writes.
+ * The styles read the face shape alone, which is exactly what a real profile
+ * does today.
+ *
+ * Every renderUrl is null and every status is "none", for the same reason the
+ * fixture report has no products: nothing has been rendered. There is no Perfect
+ * Corp key, the hairstyle template catalog is not recorded yet, and the hair
+ * color endpoint is unverified (src/lib/server/renders/hair.ts). A stand in
+ * image would be a made up try on, so the screen shows its documented pending
+ * and failed patterns instead.
+ *
+ * captureImageUrl is null: no fixture face is checked in, because every face in
+ * this repository needs a written consent record (evals/fixtures/README.md).
+ */
+export const DEMO_FIXTURE_HAIR_VIEW: HairView = Object.freeze({
+  captureImageUrl: null,
+  faceShape: DEMO_FIXTURE_HAIR_FACE_SHAPE,
+  faceShapeLine: faceShapeLine(DEMO_FIXTURE_HAIR_FACE_SHAPE),
+  styles: hairStylesFor({
+    faceShape: DEMO_FIXTURE_HAIR_FACE_SHAPE,
+    hairType: null,
+  }).map(
+    (style): HairStyleOption => ({
+      id: style.id,
+      name: style.name,
+      why: style.why,
+      renderUrl: null,
+      renderStatus: "none",
+    }),
+  ),
+  colors: hairColorsFor({
+    palette: DEMO_FIXTURE_PALETTE,
+    skinToneHex: DEMO_FIXTURE_SKIN_TONE_HEX,
+  }).map(
+    (color): HairColorOption => ({
+      name: color.name,
+      hex: color.hex,
+      why: color.why,
+      renderUrl: null,
+      renderStatus: "none",
+    }),
+  ),
+  savedStyleId: null,
+  savedColorName: null,
 });
