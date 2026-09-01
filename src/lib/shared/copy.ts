@@ -280,6 +280,25 @@ export const copy = {
      */
     fallbackReadingTemplate:
       "Main concern: {concern} on the {location}. Skin type: {skinType}.",
+    /**
+     * The three lines below finish the fallback reading. In house.
+     *
+     * docs/03-architecture.md gives the first two sentences above and stops
+     * there, but docs/01-user-flow.md section F item 2 sets the standard the
+     * block has to meet: name the top concern and where it sits, describe the
+     * skin type, and say one thing that is going well. docs/05-evals.md then
+     * requires 3 to 5 sentences. These templates are what carries the fallback
+     * from two sentences to that standard, in the same plain voice.
+     *
+     * The no skin type variant exists because copy.fill refuses to render a
+     * template with a missing value, and the skin type is unknown when neither
+     * oiliness nor moisture came back.
+     */
+    fallbackReadingNoSkinTypeTemplate: "Main concern: {concern} on the {location}.",
+    fallbackSecondConcernTemplate:
+      "Also worth attention: {concern} on the {location}.",
+    fallbackGoingWellTemplate: "Your {concerns} are in good shape.",
+    fallbackGoingWellSingularTemplate: "Your {concern} is in good shape.",
   },
 
   /** Product card, used on /report, /makeup, /hair, and /looks. */
@@ -289,6 +308,15 @@ export const copy = {
     noListing: "No listing found near you yet",
     /** Location not allowed, docs/01 section K states. */
     onlineListing: "Online listing",
+    /**
+     * In house. docs/01 section F item 6 lists "distance if local" on the
+     * product card and docs/02 ProductCard says "distance in Sand small when
+     * known", but neither doc writes the sentence. Filled by the grounding
+     * layer only when a nearby store carrying the listing was actually found,
+     * from the person's approximate location (docs/04-integrations.md: "We show
+     * distance computed from the person's approximate location").
+     */
+    distanceTemplate: "{distance} km away",
   },
 
   /** G. Color identity (/color) */
@@ -450,6 +478,11 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "capture.cameraUnavailable",
   "capture.shutterLabel",
   "judge.exploreDemoAction",
+  "productCard.distanceTemplate",
+  "report.fallbackReadingNoSkinTypeTemplate",
+  "report.fallbackSecondConcernTemplate",
+  "report.fallbackGoingWellTemplate",
+  "report.fallbackGoingWellSingularTemplate",
   "profile.deleteConfirmLabel",
   "errors.requestFailed",
   "common.close",

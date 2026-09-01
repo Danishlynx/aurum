@@ -1,0 +1,45 @@
+{
+  "id": "a06",
+  "synthetic": true,
+  "label": "Fitzpatrick III, warm undertone, pigmentation led, combination",
+  "note": "SYNTHETIC. Not a person, and not a recorded provider response. Hand written to the shape src/lib/server/jobs/analysis.ts stores on analyses.summary.",
+  "expected": {
+    "fitzpatrick": 3,
+    "undertone": "warm",
+    "topConcernKey": "pigmentation",
+    "skinType": "combination"
+  },
+  "summaries": {
+    "skin": {
+      "concerns": [
+        { "providerType": "pigmentation_cheek", "key": "pigmentation", "uiScore": 66, "rawScore": 0.66 },
+        { "providerType": "oiliness", "key": "oiliness", "uiScore": 60, "rawScore": 0.6 },
+        { "providerType": "age_spot", "key": "dark_spots", "uiScore": 58, "rawScore": 0.58 },
+        { "providerType": "texture", "key": "texture", "uiScore": 50, "rawScore": 0.5 },
+        { "providerType": "pore_nose", "key": "pores", "uiScore": 46, "rawScore": 0.46 },
+        { "providerType": "wrinkle_forehead", "key": "wrinkles", "uiScore": 44, "rawScore": 0.44 },
+        { "providerType": "acne", "key": "acne", "uiScore": 40, "rawScore": 0.4 },
+        { "providerType": "redness", "key": "redness", "uiScore": 34, "rawScore": 0.34 },
+        { "providerType": "dark_circle", "key": "dark_circles", "uiScore": 32, "rawScore": 0.32 },
+        { "providerType": "eye_bag", "key": "eye_bags", "uiScore": 26, "rawScore": 0.26 },
+        { "providerType": "firmness", "key": "firmness", "uiScore": 24, "rawScore": 0.24 },
+        { "providerType": "moisture", "key": "moisture", "uiScore": 38, "rawScore": 0.38 },
+        { "providerType": "radiance", "key": "radiance", "uiScore": 46, "rawScore": 0.46 }
+      ],
+      "skinAge": 31,
+      "overallScore": 63
+    },
+    "fitzpatrick": { "fitzpatrick": 3 },
+    "attributes": {
+      "skinColor": "#d7a86e",
+      "eyeColor": "#5b4026",
+      "eyeColorName": "brown",
+      "lipColor": "#b5705a",
+      "eyebrowColor": "#3f2a1c",
+      "hairColor": "#33231a",
+      "hairColorName": "dark brown"
+    },
+    "face_shape": { "faceShape": "Oval" },
+    "hair_type": null
+  }
+}

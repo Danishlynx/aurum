@@ -1,0 +1,47 @@
+{
+  "id": "a12",
+  "synthetic": true,
+  "label": "Fitzpatrick VI, neutral undertone, dark spots led, with an unmappable provider name and the skin type output",
+  "note": "SYNTHETIC. Not a person, and not a recorded provider response. Hand written to the shape src/lib/server/jobs/analysis.ts stores on analyses.summary. Two entries here are deliberately awkward: droopy_lower_eyelid is a name the UNVERIFIED map in src/lib/shared/concerns.ts does not carry, and skin_type is the provider's skin type output, which that same map currently sends to uneven_tone. The profile layer has to drop both rather than show them as concerns.",
+  "expected": {
+    "fitzpatrick": 6,
+    "undertone": "neutral",
+    "topConcernKey": "dark_spots",
+    "skinType": "balanced"
+  },
+  "summaries": {
+    "skin": {
+      "concerns": [
+        { "providerType": "age_spot", "key": "dark_spots", "uiScore": 58, "rawScore": 0.58 },
+        { "providerType": "texture", "key": "texture", "uiScore": 54, "rawScore": 0.54 },
+        { "providerType": "pigmentation_cheek", "key": "pigmentation", "uiScore": 50, "rawScore": 0.5 },
+        { "providerType": "wrinkle_forehead", "key": "wrinkles", "uiScore": 46, "rawScore": 0.46 },
+        { "providerType": "pore_nose", "key": "pores", "uiScore": 44, "rawScore": 0.44 },
+        { "providerType": "oiliness", "key": "oiliness", "uiScore": 40, "rawScore": 0.4 },
+        { "providerType": "dark_circle", "key": "dark_circles", "uiScore": 38, "rawScore": 0.38 },
+        { "providerType": "redness", "key": "redness", "uiScore": 30, "rawScore": 0.3 },
+        { "providerType": "acne", "key": "acne", "uiScore": 26, "rawScore": 0.26 },
+        { "providerType": "eye_bag", "key": "eye_bags", "uiScore": 24, "rawScore": 0.24 },
+        { "providerType": "firmness", "key": "firmness", "uiScore": 22, "rawScore": 0.22 },
+        { "providerType": "droopy_lower_eyelid", "key": null, "uiScore": 33, "rawScore": 0.33 },
+        { "providerType": "skin_type", "key": "uneven_tone", "uiScore": 64, "rawScore": 0.64 },
+        { "providerType": "moisture", "key": "moisture", "uiScore": 44, "rawScore": 0.44 },
+        { "providerType": "radiance", "key": "radiance", "uiScore": 46, "rawScore": 0.46 }
+      ],
+      "skinAge": 44,
+      "overallScore": 57
+    },
+    "fitzpatrick": { "fitzpatrick": 6 },
+    "attributes": {
+      "skinColor": "#4f3b30",
+      "eyeColor": "#2d221c",
+      "eyeColorName": "dark brown",
+      "lipColor": "#6b4438",
+      "eyebrowColor": "#1b1512",
+      "hairColor": "#171211",
+      "hairColorName": "black"
+    },
+    "face_shape": { "faceShape": "Oblong" },
+    "hair_type": null
+  }
+}

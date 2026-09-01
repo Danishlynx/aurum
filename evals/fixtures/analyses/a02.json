@@ -1,0 +1,45 @@
+{
+  "id": "a02",
+  "synthetic": true,
+  "label": "Fitzpatrick I, warm undertone, dark spots led, dry",
+  "note": "SYNTHETIC. Not a person, and not a recorded provider response. Hand written to the shape src/lib/server/jobs/analysis.ts stores on analyses.summary.",
+  "expected": {
+    "fitzpatrick": 1,
+    "undertone": "warm",
+    "topConcernKey": "dark_spots",
+    "skinType": "dry"
+  },
+  "summaries": {
+    "skin": {
+      "concerns": [
+        { "providerType": "age_spot", "key": "dark_spots", "uiScore": 68, "rawScore": 0.68 },
+        { "providerType": "wrinkle_forehead", "key": "wrinkles", "uiScore": 61, "rawScore": 0.61 },
+        { "providerType": "texture", "key": "texture", "uiScore": 52, "rawScore": 0.52 },
+        { "providerType": "pigmentation_cheek", "key": "pigmentation", "uiScore": 44, "rawScore": 0.44 },
+        { "providerType": "redness", "key": "redness", "uiScore": 40, "rawScore": 0.4 },
+        { "providerType": "pore_nose", "key": "pores", "uiScore": 38, "rawScore": 0.38 },
+        { "providerType": "dark_circle", "key": "dark_circles", "uiScore": 33, "rawScore": 0.33 },
+        { "providerType": "eye_bag", "key": "eye_bags", "uiScore": 30, "rawScore": 0.3 },
+        { "providerType": "acne", "key": "acne", "uiScore": 24, "rawScore": 0.24 },
+        { "providerType": "firmness", "key": "firmness", "uiScore": 22, "rawScore": 0.22 },
+        { "providerType": "oiliness", "key": "oiliness", "uiScore": 22, "rawScore": 0.22 },
+        { "providerType": "moisture", "key": "moisture", "uiScore": 35, "rawScore": 0.35 },
+        { "providerType": "radiance", "key": "radiance", "uiScore": 58, "rawScore": 0.58 }
+      ],
+      "skinAge": 34,
+      "overallScore": 66
+    },
+    "fitzpatrick": { "fitzpatrick": 1 },
+    "attributes": {
+      "skinColor": "#f6dcb4",
+      "eyeColor": "#6b8f5e",
+      "eyeColorName": "green",
+      "lipColor": "#cf8f79",
+      "eyebrowColor": "#a3743d",
+      "hairColor": "#b3803c",
+      "hairColorName": "golden blonde"
+    },
+    "face_shape": { "faceShape": "Heart" },
+    "hair_type": null
+  }
+}

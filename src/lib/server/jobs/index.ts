@@ -26,6 +26,7 @@ import { ANALYSIS_KINDS } from "../db/types";
 import { findReservation, refund, reconcile, reserve } from "../credits";
 import { messages } from "../http/messages";
 import { HttpError } from "../http/responses";
+import { maybeBuildProfile } from "../profile";
 import { isProviderError } from "../providers/errors";
 import { PERFECTCORP_TASK_TIMEOUT_MS } from "../providers/perfectcorp";
 import type { AppSession } from "../session";
@@ -637,6 +638,24 @@ export async function pollCaptureJobs(
   }
 
   const view = await readCaptureJobs(ownerId, captureId, "live");
+
+  // docs/03-architecture.md step 6: the profile is built once the core set is in
+  // (skin plus at least one of Fitzpatrick or attributes), which is usually
+  // before every job is terminal. maybeBuildProfile makes that decision itself
+  // and does nothing when the set is short or when nothing has changed, so this
+  // is safe to call on every poll. A failure here must not stop the reveal: the
+  // person keeps polling, and the next poll tries again.
+  try {
+    await maybeBuildProfile({ session: input.session, captureId });
+  } catch (thrown) {
+    console.warn(
+      JSON.stringify({
+        event: "aurum.profile_build_failed",
+        captureId,
+        reason: thrown instanceof Error ? thrown.name : "unknown",
+      }),
+    );
+  }
 
   if (view.complete) {
     await finishCapture({

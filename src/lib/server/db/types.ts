@@ -143,6 +143,22 @@ type RenderRow = {
   updated_at: string;
 };
 
+/**
+ * Server owned cache of normalized provider search results, migration 0004.
+ * Freshness is a read time rule, not a column constraint: 24 hours for shopping,
+ * 6 hours for local (docs/03-architecture.md, "Caching"). fetched_at is when the
+ * provider was actually called; created_at is not a freshness signal.
+ */
+type ProductCacheRow = {
+  query_hash: string;
+  engine: string;
+  query: Json;
+  results: Json;
+  fetched_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
 type RateLimitRow = {
   bucket: string;
   subject: string;
@@ -282,6 +298,15 @@ export type Database = {
         Update: Partial<RenderRow>;
         Relationships: [];
       };
+      product_cache: {
+        Row: ProductCacheRow;
+        Insert: InsertOf<
+          ProductCacheRow,
+          "created_at" | "updated_at" | "fetched_at" | "results"
+        >;
+        Update: Partial<ProductCacheRow>;
+        Relationships: [];
+      };
       rate_limits: {
         Row: RateLimitRow;
         Insert: InsertOf<RateLimitRow, "created_at" | "updated_at">;
@@ -309,6 +334,7 @@ export type JobRecord = Row<"jobs">;
 export type CreditLedgerEntry = Row<"credit_ledger">;
 export type JudgeSession = Row<"judge_sessions">;
 export type Render = Row<"renders">;
+export type ProductCacheEntry = Row<"product_cache">;
 export type RateLimitBucketRow = Row<"rate_limits">;
 
 /** The five analyses that fan out from one capture, in reveal order. */

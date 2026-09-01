@@ -1,0 +1,44 @@
+{
+  "id": "a01",
+  "synthetic": true,
+  "label": "Fitzpatrick I, cool undertone, redness led",
+  "note": "SYNTHETIC. Not a person, and not a recorded provider response. Hand written to the shape src/lib/server/jobs/analysis.ts stores on analyses.summary.",
+  "expected": {
+    "fitzpatrick": 1,
+    "undertone": "cool",
+    "topConcernKey": "redness",
+    "skinType": "balanced"
+  },
+  "summaries": {
+    "skin": {
+      "concerns": [
+        { "providerType": "redness", "key": "redness", "uiScore": 74, "rawScore": 0.74 },
+        { "providerType": "texture", "key": "texture", "uiScore": 55, "rawScore": 0.55 },
+        { "providerType": "pore_nose", "key": "pores", "uiScore": 48, "rawScore": 0.48 },
+        { "providerType": "wrinkle_forehead", "key": "wrinkles", "uiScore": 44, "rawScore": 0.44 },
+        { "providerType": "dark_circle", "key": "dark_circles", "uiScore": 40, "rawScore": 0.4 },
+        { "providerType": "oiliness", "key": "oiliness", "uiScore": 30, "rawScore": 0.3 },
+        { "providerType": "pigmentation", "key": "pigmentation", "uiScore": 26, "rawScore": 0.26 },
+        { "providerType": "acne", "key": "acne", "uiScore": 22, "rawScore": 0.22 },
+        { "providerType": "eye_bag", "key": "eye_bags", "uiScore": 20, "rawScore": 0.2 },
+        { "providerType": "firmness", "key": "firmness", "uiScore": 18, "rawScore": 0.18 },
+        { "providerType": "moisture", "key": "moisture", "uiScore": 42, "rawScore": 0.42 },
+        { "providerType": "radiance", "key": "radiance", "uiScore": 60, "rawScore": 0.6 }
+      ],
+      "skinAge": 26,
+      "overallScore": 72
+    },
+    "fitzpatrick": { "fitzpatrick": 1 },
+    "attributes": {
+      "skinColor": "#f0d5cf",
+      "eyeColor": "#5b7fa6",
+      "eyeColorName": "blue",
+      "lipColor": "#c98b86",
+      "eyebrowColor": "#8a6440",
+      "hairColor": "#9a7350",
+      "hairColorName": "light brown"
+    },
+    "face_shape": { "faceShape": "Oval" },
+    "hair_type": null
+  }
+}

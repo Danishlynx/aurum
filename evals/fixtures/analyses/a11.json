@@ -1,0 +1,45 @@
+{
+  "id": "a11",
+  "synthetic": true,
+  "label": "Fitzpatrick VI, warm undertone, tone first promotes two concerns above wrinkles, dry",
+  "note": "SYNTHETIC. Not a person, and not a recorded provider response. Hand written to the shape src/lib/server/jobs/analysis.ts stores on analyses.summary. Two tone concerns sit inside the comparable band below wrinkles here, so both move above it.",
+  "expected": {
+    "fitzpatrick": 6,
+    "undertone": "warm",
+    "topConcernKey": "pigmentation",
+    "skinType": "dry"
+  },
+  "summaries": {
+    "skin": {
+      "concerns": [
+        { "providerType": "wrinkle_forehead", "key": "wrinkles", "uiScore": 64, "rawScore": 0.64 },
+        { "providerType": "dark_circle", "key": "dark_circles", "uiScore": 58, "rawScore": 0.58 },
+        { "providerType": "pigmentation_cheek", "key": "pigmentation", "uiScore": 56, "rawScore": 0.56 },
+        { "providerType": "age_spot", "key": "dark_spots", "uiScore": 52, "rawScore": 0.52 },
+        { "providerType": "texture", "key": "texture", "uiScore": 46, "rawScore": 0.46 },
+        { "providerType": "pore_nose", "key": "pores", "uiScore": 42, "rawScore": 0.42 },
+        { "providerType": "redness", "key": "redness", "uiScore": 32, "rawScore": 0.32 },
+        { "providerType": "eye_bag", "key": "eye_bags", "uiScore": 30, "rawScore": 0.3 },
+        { "providerType": "acne", "key": "acne", "uiScore": 28, "rawScore": 0.28 },
+        { "providerType": "firmness", "key": "firmness", "uiScore": 26, "rawScore": 0.26 },
+        { "providerType": "oiliness", "key": "oiliness", "uiScore": 24, "rawScore": 0.24 },
+        { "providerType": "moisture", "key": "moisture", "uiScore": 30, "rawScore": 0.3 },
+        { "providerType": "radiance", "key": "radiance", "uiScore": 40, "rawScore": 0.4 }
+      ],
+      "skinAge": 41,
+      "overallScore": 56
+    },
+    "fitzpatrick": { "fitzpatrick": 6 },
+    "attributes": {
+      "skinColor": "#573a22",
+      "eyeColor": "#2b201a",
+      "eyeColorName": "dark brown",
+      "lipColor": "#6d4030",
+      "eyebrowColor": "#1c1512",
+      "hairColor": "#181211",
+      "hairColorName": "black"
+    },
+    "face_shape": { "faceShape": "Square" },
+    "hair_type": null
+  }
+}

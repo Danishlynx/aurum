@@ -1,0 +1,46 @@
+{
+  "id": "a10",
+  "synthetic": true,
+  "label": "Fitzpatrick V, cool undertone, uneven tone led",
+  "note": "SYNTHETIC. Not a person, and not a recorded provider response. Hand written to the shape src/lib/server/jobs/analysis.ts stores on analyses.summary.",
+  "expected": {
+    "fitzpatrick": 5,
+    "undertone": "cool",
+    "topConcernKey": "uneven_tone",
+    "skinType": "balanced"
+  },
+  "summaries": {
+    "skin": {
+      "concerns": [
+        { "providerType": "uneven_tone", "key": "uneven_tone", "uiScore": 69, "rawScore": 0.69 },
+        { "providerType": "dark_circle", "key": "dark_circles", "uiScore": 64, "rawScore": 0.64 },
+        { "providerType": "pigmentation_cheek", "key": "pigmentation", "uiScore": 60, "rawScore": 0.6 },
+        { "providerType": "age_spot", "key": "dark_spots", "uiScore": 55, "rawScore": 0.55 },
+        { "providerType": "wrinkle_forehead", "key": "wrinkles", "uiScore": 52, "rawScore": 0.52 },
+        { "providerType": "texture", "key": "texture", "uiScore": 48, "rawScore": 0.48 },
+        { "providerType": "pore_nose", "key": "pores", "uiScore": 44, "rawScore": 0.44 },
+        { "providerType": "oiliness", "key": "oiliness", "uiScore": 42, "rawScore": 0.42 },
+        { "providerType": "redness", "key": "redness", "uiScore": 38, "rawScore": 0.38 },
+        { "providerType": "eye_bag", "key": "eye_bags", "uiScore": 34, "rawScore": 0.34 },
+        { "providerType": "acne", "key": "acne", "uiScore": 30, "rawScore": 0.3 },
+        { "providerType": "firmness", "key": "firmness", "uiScore": 28, "rawScore": 0.28 },
+        { "providerType": "moisture", "key": "moisture", "uiScore": 50, "rawScore": 0.5 },
+        { "providerType": "radiance", "key": "radiance", "uiScore": 42, "rawScore": 0.42 }
+      ],
+      "skinAge": 35,
+      "overallScore": 59
+    },
+    "fitzpatrick": { "fitzpatrick": 5 },
+    "attributes": {
+      "skinColor": "#4b3a35",
+      "eyeColor": "#2f241f",
+      "eyeColorName": "dark brown",
+      "lipColor": "#6a413c",
+      "eyebrowColor": "#1d1613",
+      "hairColor": "#191312",
+      "hairColorName": "black"
+    },
+    "face_shape": { "faceShape": "Heart" },
+    "hair_type": null
+  }
+}

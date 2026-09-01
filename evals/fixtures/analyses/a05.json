@@ -1,0 +1,45 @@
+{
+  "id": "a05",
+  "synthetic": true,
+  "label": "Fitzpatrick III, cool undertone, texture led",
+  "note": "SYNTHETIC. Not a person, and not a recorded provider response. Hand written to the shape src/lib/server/jobs/analysis.ts stores on analyses.summary.",
+  "expected": {
+    "fitzpatrick": 3,
+    "undertone": "cool",
+    "topConcernKey": "texture",
+    "skinType": "balanced"
+  },
+  "summaries": {
+    "skin": {
+      "concerns": [
+        { "providerType": "texture", "key": "texture", "uiScore": 69, "rawScore": 0.69 },
+        { "providerType": "pore_nose", "key": "pores", "uiScore": 60, "rawScore": 0.6 },
+        { "providerType": "pigmentation_cheek", "key": "pigmentation", "uiScore": 57, "rawScore": 0.57 },
+        { "providerType": "oiliness", "key": "oiliness", "uiScore": 52, "rawScore": 0.52 },
+        { "providerType": "wrinkle_forehead", "key": "wrinkles", "uiScore": 48, "rawScore": 0.48 },
+        { "providerType": "redness", "key": "redness", "uiScore": 44, "rawScore": 0.44 },
+        { "providerType": "dark_circle", "key": "dark_circles", "uiScore": 40, "rawScore": 0.4 },
+        { "providerType": "acne", "key": "acne", "uiScore": 36, "rawScore": 0.36 },
+        { "providerType": "age_spot", "key": "dark_spots", "uiScore": 33, "rawScore": 0.33 },
+        { "providerType": "eye_bag", "key": "eye_bags", "uiScore": 30, "rawScore": 0.3 },
+        { "providerType": "firmness", "key": "firmness", "uiScore": 28, "rawScore": 0.28 },
+        { "providerType": "moisture", "key": "moisture", "uiScore": 44, "rawScore": 0.44 },
+        { "providerType": "radiance", "key": "radiance", "uiScore": 48, "rawScore": 0.48 }
+      ],
+      "skinAge": 29,
+      "overallScore": 64
+    },
+    "fitzpatrick": { "fitzpatrick": 3 },
+    "attributes": {
+      "skinColor": "#e0bcb0",
+      "eyeColor": "#4a4a55",
+      "eyeColorName": "grey",
+      "lipColor": "#bb7b78",
+      "eyebrowColor": "#4f3a2e",
+      "hairColor": "#43302a",
+      "hairColorName": "cool brown"
+    },
+    "face_shape": { "faceShape": "Oblong" },
+    "hair_type": null
+  }
+}
