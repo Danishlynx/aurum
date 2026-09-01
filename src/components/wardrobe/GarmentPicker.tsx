@@ -70,7 +70,17 @@ function ChipGroup<TValue extends string>({
       <h3 className="font-body text-small font-medium text-text-muted">
         {heading}
       </h3>
-      <div role="group" aria-label={heading} className="flex flex-wrap gap-2">
+      {/*
+        gap-y-3 rather than gap-2, for the reason the occasion row on /looks uses
+        it: a chip claims 6px above and below itself as tap area
+        (src/components/ui/Chip.tsx), so 8px between two wrapped rows would let
+        the row above answer a tap meant for the row below.
+      */}
+      <div
+        role="group"
+        aria-label={heading}
+        className="flex flex-wrap gap-x-2 gap-y-3"
+      >
         {options.map((option) => (
           <Chip
             key={option.value}

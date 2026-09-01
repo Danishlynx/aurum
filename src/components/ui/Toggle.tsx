@@ -8,6 +8,15 @@ import type { ReactNode } from "react";
  * docs/02-design-system.md allows exactly two radii plus the capture oval, so
  * the track and the knob are radius-sm rectangles rather than a pill. Movement
  * is 180ms from --duration-toggle, which prefers-reduced-motion drops to 0.
+ *
+ * The drawn track is 52 by 28, which is under the 44px tap target
+ * docs/06-safety-privacy.md requires. The label beside it flips the switch too,
+ * so the row was always large enough to hit, but the switch itself has to be:
+ * the pseudo element takes it to 44 high without changing what is drawn. The
+ * 8px it claims above and below is the gap to the row on either side, so two
+ * stacked toggles never share a pixel. The offset is 9 rather than 8 because an
+ * absolutely positioned pseudo element is placed against the padding box and
+ * the track has a 1px hairline.
  */
 
 type ToggleProps = {
@@ -36,7 +45,7 @@ export function Toggle({
         onClick={() => {
           onCheckedChange(!checked);
         }}
-        className={`relative h-7 w-[52px] shrink-0 rounded-sm border bg-surface ${
+        className={`relative h-7 w-[52px] shrink-0 rounded-sm border bg-surface before:absolute before:inset-x-0 before:-top-[9px] before:-bottom-[9px] before:content-[''] ${
           checked ? "border-accent" : "border-raised"
         }`}
       >

@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { Chip } from "@/components/ui/Chip";
 import { cssImageUrl } from "@/components/ui/remote-image";
+import { copy } from "@/lib/shared/copy";
 import type { ConcernView } from "@/lib/shared/report-view";
 
 import {
@@ -66,6 +67,7 @@ export function ReportHero({ captureImageUrl, concerns }: ReportHeroProps) {
          */
         <div
           role="group"
+          aria-label={copy.report.maskTogglesLabel}
           // py-1.5 leaves room for the 44px tap area the chip extends above and
           // below itself, so scrolling sideways never scrolls anything upward.
           className="flex gap-2 overflow-x-auto py-1.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"

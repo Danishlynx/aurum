@@ -42,7 +42,11 @@ export function MakeupHero({
   return (
     <div className="flex flex-col gap-3">
       {holdable ? (
-        <div role="group" className="flex gap-2 py-1.5">
+        <div
+          role="group"
+          aria-label={copy.makeup.beforeAfterLabel}
+          className="flex gap-2 py-1.5"
+        >
           <Chip selected={showBefore} onSelect={onShowBefore}>
             {copy.makeup.before}
           </Chip>

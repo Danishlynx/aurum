@@ -19,6 +19,11 @@ import { copy } from "@/lib/shared/copy";
  * It stays a link rather than disappearing on /profile: the header holds the top
  * rhythm of every screen in the group, and dropping the only thing in it would
  * lift the profile title 44px above where every other title sits.
+ *
+ * The word "Profile" sets 42 wide in Manrope 14, which is under the 44px tap
+ * target docs/06-safety-privacy.md requires, so the box carries a minimum width
+ * and centres the word inside it. Nothing else in the header competes for the
+ * two pixels.
  */
 export function ProfileLink() {
   const current = usePathname() === "/profile";
@@ -27,7 +32,7 @@ export function ProfileLink() {
     <Link
       href="/profile"
       aria-current={current ? "page" : undefined}
-      className={`inline-flex min-h-[44px] items-center font-body text-small underline-offset-4 hover:underline focus-visible:underline ${
+      className={`inline-flex min-h-[44px] min-w-[44px] items-center justify-center font-body text-small underline-offset-4 hover:underline focus-visible:underline ${
         current ? "text-text" : "text-text-muted"
       }`}
     >
