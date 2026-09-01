@@ -19,6 +19,10 @@ import { UndertoneAdjuster } from "./UndertoneAdjuster";
  * Basalt, because there is no detected tone to paint and a stand in color would
  * be a reading we never took.
  *
+ * The sheet also opens when the person arrived from the "Adjust" affordance on
+ * /profile (docs/01-user-flow.md section L item 1), which asks for it by name in
+ * the query string. Either way it is a sheet the person opened.
+ *
  * The "Not quite right?" link is the one gold thing on this screen.
  */
 
@@ -28,10 +32,18 @@ const SWATCH_HEIGHT_CLASS = "h-24";
 type ToneHeaderProps = {
   readonly skinToneHex: string | null;
   readonly undertone: Undertone | null;
+  /** True when the query string asked for the adjuster. See color-content.ts. */
+  readonly openAdjuster?: boolean;
 };
 
-export function ToneHeader({ skinToneHex, undertone }: ToneHeaderProps) {
-  const [open, setOpen] = useState(() => adjusterOpensAutomatically(undertone));
+export function ToneHeader({
+  skinToneHex,
+  undertone,
+  openAdjuster = false,
+}: ToneHeaderProps) {
+  const [open, setOpen] = useState(
+    () => openAdjuster || adjusterOpensAutomatically(undertone),
+  );
 
   return (
     <div className="flex flex-col gap-3">

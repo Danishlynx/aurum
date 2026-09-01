@@ -40,6 +40,34 @@ export function adjusterOpensAutomatically(undertone: Undertone | null): boolean
   return undertone === null;
 }
 
+/**
+ * The search parameter that opens the undertone adjuster on arrival, and the
+ * href that carries it.
+ *
+ * docs/01-user-flow.md section L item 1 gives the "Tone and undertone" row on
+ * /profile an "Adjust" affordance, and section G item 2 puts the adjuster on
+ * this screen. The two screens meet on this parameter rather than on a second
+ * copy of the sheet, so there is still one place a person can change their
+ * undertone.
+ */
+export const ADJUSTER_QUERY_PARAM = "adjust";
+export const ADJUSTER_QUERY_VALUE = "undertone";
+export const COLOR_ADJUSTER_HREF = `/color?${ADJUSTER_QUERY_PARAM}=${ADJUSTER_QUERY_VALUE}`;
+
+/**
+ * Whether the query asked for the adjuster. Tolerant on purpose: a missing
+ * value, an unknown value, or a parameter a browser repeated leaves the sheet
+ * closed, so nothing but the documented link can open it.
+ */
+export function adjusterRequestedByQuery(
+  value: string | string[] | undefined,
+): boolean {
+  if (Array.isArray(value)) {
+    return value.includes(ADJUSTER_QUERY_VALUE);
+  }
+  return value === ADJUSTER_QUERY_VALUE;
+}
+
 /** One choice in the undertone adjuster, docs/01 section G item 2. */
 export type UndertoneOption = {
   readonly undertone: Undertone;

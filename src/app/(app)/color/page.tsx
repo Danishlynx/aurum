@@ -2,6 +2,10 @@ import { redirect } from "next/navigation";
 
 import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { AvoidList } from "@/components/color/AvoidList";
+import {
+  ADJUSTER_QUERY_PARAM,
+  adjusterRequestedByQuery,
+} from "@/components/color/color-content";
 import { DecidesRows } from "@/components/color/DecidesRows";
 import { PaletteGrid } from "@/components/color/PaletteGrid";
 import { ToneHeader } from "@/components/color/ToneHeader";
@@ -28,6 +32,10 @@ import { copy, fill } from "@/lib/shared/copy";
  * Fixture mode: with AURUM_DEMO_FIXTURE=true the profile layer answers from the
  * checked in fixture and touches neither the database nor a provider, so this
  * screen builds and renders before Supabase exists.
+ *
+ * One query parameter is read: "adjust=undertone" opens the undertone adjuster
+ * on arrival, which is what the "Adjust" affordance on /profile links to
+ * (docs/01-user-flow.md section L item 1). Anything else is ignored.
  */
 
 /** The screen reads a session cookie, so it is never statically rendered. */
@@ -45,7 +53,11 @@ const FIXTURE_SESSION: AppSession = {
   ownerType: "user",
 };
 
-export default async function ColorPage() {
+type ColorPageProps = {
+  readonly searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
+
+export default async function ColorPage({ searchParams }: ColorPageProps) {
   const session = isDemoFixtureMode() ? FIXTURE_SESSION : await getSession();
   if (session === null) {
     // No session means consent has not been given on this device.
@@ -60,6 +72,7 @@ export default async function ColorPage() {
   }
 
   const palette = view.palette;
+  const query = await searchParams;
 
   return (
     <div className="flex flex-col gap-8">
@@ -69,6 +82,7 @@ export default async function ColorPage() {
         <ToneHeader
           skinToneHex={view.skinToneHex}
           undertone={view.undertone}
+          openAdjuster={adjusterRequestedByQuery(query[ADJUSTER_QUERY_PARAM])}
         />
       </Column>
 
