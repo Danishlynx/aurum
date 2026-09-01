@@ -34,7 +34,8 @@ import type { StoredHairColorParams, StoredHairstyleParams } from "./params";
  * from the API playground. Every entry below is therefore null, which
  * hairstyleTemplateFor reports as "this style cannot be rendered". The render
  * layer refuses before it reserves a credit and the screen shows its documented
- * "Preview unavailable for this shade." state.
+ * "Preview unavailable for this style." state (copy.hair.previewUnavailableStyle,
+ * which is section I's reading of section H's line, not the makeup sentence).
  *
  * The other way in, a reference image of the haircut, is deliberately not used:
  * a reference photo is someone else's face, and the rule in CLAUDE.md is that
