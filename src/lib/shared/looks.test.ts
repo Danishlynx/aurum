@@ -309,11 +309,34 @@ describe("the occasion table", () => {
     }
   });
 
-  it("keeps a festival casual and a formal evening formal", () => {
-    expect(OCCASION_RULES.festival.formality).toEqual(["casual"]);
-    expect(OCCASION_RULES.formal_evening.formality).toEqual(["formal"]);
-    expect(formalityFitsOccasion("smart", "festival")).toBe(false);
-    expect(formalityFitsOccasion("smart", "formal_evening")).toBe(false);
+  /*
+   * CHANGED IN LAYER 5, with the table it asserts. It used to read "keeps a
+   * festival casual and a formal evening formal" and pin both bands to one word.
+   *
+   * Why the rule moved: a one word band makes a screen depend on the wardrobe
+   * holding a garment in exactly that band, and the six garment demo profile
+   * does not. Festival with casual alone answered with jeans, shoes, and a
+   * missing top; formal evening with formal alone answered a wardrobe holding no
+   * formal piece with nothing at all. Both bands gained smart, and the comment
+   * over OCCASION_RULES argues it. What did not move is the pair of exclusions
+   * that carry the meaning of each occasion, which is what this test now pins:
+   * formal never reads as festival wear, and casual never reads as black tie.
+   */
+  it("keeps formal out of a festival and casual out of a formal evening", () => {
+    expect(formalityFitsOccasion("formal", "festival")).toBe(false);
+    expect(formalityFitsOccasion("casual", "formal_evening")).toBe(false);
+    // Smart is the band both of them now share with everything else, so it is
+    // the one that has to be checked in both directions.
+    expect(formalityFitsOccasion("smart", "festival")).toBe(true);
+    expect(formalityFitsOccasion("smart", "formal_evening")).toBe(true);
+  });
+
+  it("accepts every band for everyday and none of them for nothing", () => {
+    // Everyday is the one occasion with no exclusion at all: a wardrobe is not a
+    // dress code, and somebody who owns only formal clothes still has a Tuesday.
+    for (const band of FORMALITY) {
+      expect(formalityFitsOccasion(band, "everyday")).toBe(true);
+    }
   });
 
   it("adds a layer only where the build order says to", () => {

@@ -600,11 +600,32 @@ describe("the six garment demo wardrobe", () => {
     expect(first?.ruleNotes).toContain("you do not own shoes yet");
   });
 
-  it("still dresses the demo wardrobe for a festival, where nothing smart fits", () => {
-    const [first] = candidatesFor(DEMO_WARDROBE, "festival");
+  /*
+   * CHANGED IN LAYER 5, with OCCASION_RULES.festival, which gained the smart
+   * band. It used to read "still dresses the demo wardrobe for a festival, where
+   * nothing smart fits" and expect the rust knit, the jeans, and the loafers.
+   *
+   * Why: with casual alone, this wardrobe's two tops (both labeled smart in
+   * src/lib/server/profile/demo-fixture-wardrobe.ts) were excluded and the demo
+   * profile's festival screen showed a look with a missing top. With smart
+   * accepted, the ranking picks the two wear colours that sit best in the deep
+   * autumn palette, which is cream over olive, and the knit is the second look.
+   * The blazer and the coat still cannot appear: festival adds no layer, so the
+   * outerwear slot is never filled.
+   */
+  it("dresses the demo wardrobe for a festival, palette first", () => {
+    const candidates = candidatesFor(DEMO_WARDROBE, "festival");
+    const [first] = candidates;
     expect(first?.gaps).toEqual([]);
-    expect(first?.garmentIds).toEqual(["g06", "g04", "g05"]);
-    expect(first?.heroGarmentId).toBe("g06");
+    expect(first?.garmentIds).toEqual(["g02", "g03", "g05"]);
+    expect(first?.heroGarmentId).toBe("g02");
+    // The rust knit is still worn to a festival, one look down.
+    expect(
+      candidates.some((candidate) => candidate.garmentIds.includes("g06")),
+    ).toBe(true);
+    for (const candidate of candidates) {
+      expect(candidate.garmentIds).not.toContain("g01");
+    }
   });
 });
 

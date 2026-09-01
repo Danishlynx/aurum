@@ -385,33 +385,62 @@ export type OccasionRule = {
  *   wedding_guest   smart, formal    A guest dresses up but never outdresses the
  *                                    couple, so the band runs from smart to
  *                                    formal and stops short of nothing.
- *   date            casual, smart    A date is the widest band we have: dinner
- *                                    is smart, a walk is casual, and neither is
- *                                    wrong. Formal is left out because turning
- *                                    up in eveningwear is a different evening.
- *   festival        casual           A field, standing, weather. Smart clothes
- *                                    are the wrong tool, so the band is one word
- *                                    wide and no layer is forced on top.
- *   everyday        casual, smart    What the person actually leaves the house
- *                                    in. Smart is included because plenty of
- *                                    people work in it.
- *   formal_evening  formal           The one occasion with a single band. A
- *                                    smart blazer at a black tie evening is
- *                                    underdressed, and the rules should say so
- *                                    by leaving it out rather than by ranking it
- *                                    last.
+ *   date            casual, smart    Dinner is smart, a walk is casual, and
+ *                                    neither is wrong. Formal is left out
+ *                                    because turning up in eveningwear is a
+ *                                    different evening.
+ *   festival        casual, smart    A field, standing, weather. Casual leads,
+ *                                    and smart is accepted because "smart" in
+ *                                    this vocabulary is a cotton shirt and a
+ *                                    chino, which people wear to festivals every
+ *                                    summer. The band that genuinely does not
+ *                                    belong is formal, and it stays out. No
+ *                                    layer is forced on top, which is what keeps
+ *                                    a blazer and a coat out of a field: they
+ *                                    sit in the outerwear slot, and this
+ *                                    occasion never fills it.
+ *   everyday        casual, smart,   What the person actually leaves the house
+ *                   formal           in. All three bands, because a wardrobe is
+ *                                    not a dress code: somebody who owns nothing
+ *                                    but formal clothes still has a Tuesday, and
+ *                                    a screen that answers it with nothing is
+ *                                    worse than one that answers it with what
+ *                                    they own.
+ *   formal_evening  smart, formal    Formal leads and the ranking already puts
+ *                                    the fuller, better matched look first, so
+ *                                    smart is accepted rather than excluded.
  *
- * Layer 5 tunes this table with all six occasions on real wardrobes
- * (docs/09-build-order-and-demo.md). Until then these are the bands the eval
- * asserts, and any change to them is a change to a test.
+ * Layer 5 tuning (docs/09-build-order-and-demo.md Layer 5: "All six occasions
+ * tuned in the rules table", definition of done: "Every occasion produces at
+ * least one look on the demo profile"). Three bands moved, and the reasoning for
+ * the two that changed meaning:
+ *
+ * 1. festival gained smart. With casual alone, the six garment demo wardrobe
+ *    answered a festival with jeans, shoes, and a missing top, because both of
+ *    its tops are labeled smart. One band is a fragile rule: it makes the screen
+ *    depend on a wardrobe holding a garment in exactly one band.
+ *
+ * 2. formal_evening gained smart, and this is the rule Layer 5 writes down: an
+ *    occasion the wardrobe is short of answers with a look that names what is
+ *    missing, not with an empty screen. With formal alone, a wardrobe holding no
+ *    formal piece produced no candidate at all, which is a dead screen; with
+ *    smart accepted, the same wardrobe produces its best look and the formal
+ *    piece it lacks appears in the gap list, which "Shop the gap" can actually
+ *    buy (docs/01-user-flow.md section K item 3). A gap is useful and an empty
+ *    screen is not. What is still refused is casual: a t shirt at a black tie
+ *    evening is not an underdressed look, it is the wrong answer, and
+ *    formalityFitsOccasion says so.
+ *
+ * The changes are visible in src/lib/shared/looks.test.ts ("the occasion table")
+ * and evals/stylist, whose expectations moved with them in the same edit.
  */
 export const OCCASION_RULES: Readonly<Record<Occasion, OccasionRule>> = {
   interview: { formality: ["smart", "formal"], addsOuterwear: true },
   wedding_guest: { formality: ["smart", "formal"], addsOuterwear: true },
   date: { formality: ["casual", "smart"], addsOuterwear: false },
-  festival: { formality: ["casual"], addsOuterwear: false },
-  everyday: { formality: ["casual", "smart"], addsOuterwear: false },
-  formal_evening: { formality: ["formal"], addsOuterwear: true },
+  festival: { formality: ["casual", "smart"], addsOuterwear: false },
+  everyday: { formality: ["casual", "smart", "formal"], addsOuterwear: false },
+  formal_evening: { formality: ["smart", "formal"], addsOuterwear: true },
 };
 
 /** True when a garment's formality band is allowed for the occasion. */
