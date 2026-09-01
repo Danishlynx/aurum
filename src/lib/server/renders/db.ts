@@ -60,6 +60,22 @@ export async function findRendersByHashes(args: {
   return unwrap("find renders by params hashes", result);
 }
 
+/**
+ * Every render this person owns, newest first.
+ *
+ * Read by "Delete everything" on /profile, which has to remove the object in the
+ * renders bucket before the row that points at it goes
+ * (docs/06-safety-privacy.md, "Person's controls").
+ */
+export async function listRenders(ownerId: string): Promise<Render[]> {
+  const result = await serviceClient()
+    .from("renders")
+    .select("*")
+    .eq("user_id", ownerId)
+    .order("created_at", { ascending: false });
+  return unwrap("list renders", result);
+}
+
 export async function getRender(
   ownerId: string,
   renderId: string,

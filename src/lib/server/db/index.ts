@@ -114,6 +114,22 @@ export async function getCapture(
   return unwrapNullable("read capture", result);
 }
 
+/**
+ * Every capture this person owns, newest first.
+ *
+ * Read by the data controls on /profile: the download counts what is stored and
+ * the delete needs the storage path of every object before it removes the rows
+ * that point at them (docs/06-safety-privacy.md, "Person's controls").
+ */
+export async function listCaptures(ownerId: string): Promise<Capture[]> {
+  const result = await serviceClient()
+    .from("captures")
+    .select("*")
+    .eq("user_id", ownerId)
+    .order("created_at", { ascending: false });
+  return unwrap("list captures", result);
+}
+
 export async function insertCapture(row: Insert<"captures">): Promise<Capture> {
   const result = await serviceClient()
     .from("captures")
@@ -164,6 +180,23 @@ export async function listAnalyses(
     .eq("capture_id", captureId)
     .order("created_at", { ascending: true });
   return unwrap("list analyses", result);
+}
+
+/**
+ * Every analysis this person owns, across every capture, oldest first.
+ *
+ * Read by the data controls on /profile: "Download my data" returns "analyses
+ * summaries" (docs/06-safety-privacy.md, "Person's controls"), which is not
+ * scoped to one capture, and the delete needs every mask path before the rows
+ * that carry them are gone.
+ */
+export async function listAllAnalyses(ownerId: string): Promise<Analysis[]> {
+  const result = await serviceClient()
+    .from("analyses")
+    .select("*")
+    .eq("user_id", ownerId)
+    .order("created_at", { ascending: true });
+  return unwrap("list all analyses", result);
 }
 
 export async function findAnalysis(

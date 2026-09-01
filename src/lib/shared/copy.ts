@@ -600,6 +600,74 @@ export const copy = {
     // In house. docs/01 section L requires a typed confirmation but gives no
     // label for the field.
     deleteConfirmLabel: "Type DELETE to confirm",
+    /**
+     * In house. docs/01 section L item 1 lists the six summary rows and their
+     * affordances but writes no line for a row whose value was never read. An
+     * empty cell or a dash would be a placeholder, which docs/02-design-system.md
+     * forbids (anti slop checklist item 10), so the row says the true thing and
+     * the "Retake" or "Adjust" link beside it is what to do about it.
+     */
+    valueUnavailable: "Not read from your photo yet.",
+    /**
+     * In house. docs/01 section L item 2 lists what "Saved" holds but not what
+     * it says while it holds nothing. "Global states and rules": empty screens
+     * invite action with one specific verb.
+     */
+    savedEmpty:
+      "Nothing saved yet. Save a makeup look, a hair choice, or an outfit and it appears here.",
+    /**
+     * In house. docs/01 "Judge mode across the flow" has every screen render
+     * from the saved demo profile, which nobody may write to. Word for word the
+     * same as wardrobe.readOnly, because it is the same refusal: a write the
+     * server declined, reported rather than dressed up as a save.
+     */
+    readOnly: "The demo profile is read only, so nothing was changed.",
+    /**
+     * In house. docs/06-safety-privacy.md, "Keys, sessions, abuse": "Judge
+     * sessions cannot delete the demo profile and cannot download data", and the
+     * flow doc writes no line for the refusal. The control stays on the screen
+     * because docs/01 section L item 3 puts it there and only the delete control
+     * is hidden from a judge, so the screen says why instead of handing the
+     * person a file holding an error where their data should be.
+     */
+    downloadReadOnly:
+      "The demo profile is read only, so it cannot be downloaded.",
+    /**
+     * In house. docs/01 section L item 3 mirrors the retention choice here but
+     * gives no line for a choice that never reached the profile, and "Global
+     * states and rules" requires one that says what happened and what to do.
+     */
+    keepOriginalsFailed: "Your choice was not saved. Try again.",
+    /**
+     * In house. docs/01 section L writes the delete copy and the "Deleted."
+     * toast but nothing for a delete the server refused. Saying nothing was
+     * deleted is the only honest answer: the person must never be told their
+     * data is gone when it is not.
+     */
+    deleteFailed: "Nothing was deleted. Try again.",
+    /**
+     * In house. docs/01 "Global states and rules" requires an error that says
+     * what happened and what to do; the flow doc writes none for a profile
+     * request that did not come back. Same shape as looks.unavailable.
+     */
+    unavailable: "Your profile could not be loaded. Try again in a moment.",
+    /**
+     * In house. docs/01 section L item 1 names the row "Skin type" but gives it
+     * no words. The reading itself is two zones
+     * (src/lib/server/profile/skin-type.ts), so the row says the type and then
+     * the two zones it was read from, in the same plain vocabulary the report
+     * uses: "Combination, oily T zone and dry cheeks". Used only when the two
+     * zones differ; when they agree the row is the type word on its own, because
+     * "Balanced, balanced T zone and balanced cheeks" says one thing three times.
+     */
+    skinTypeValueTemplate: "{label}, {tZone} T zone and {cheeks} cheeks",
+    /**
+     * In house, for the same reason, on the "Tone and undertone" row. The tone
+     * half is the depth the palette layer reads off the photo (deep, medium,
+     * light) and the undertone half is the word the person can overrule on
+     * /color: "Deep tone, warm undertone".
+     */
+    toneValueTemplate: "{depth} tone, {undertone} undertone",
   },
 
   /**
@@ -705,6 +773,15 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "report.fallbackGoingWellTemplate",
   "report.fallbackGoingWellSingularTemplate",
   "profile.deleteConfirmLabel",
+  "profile.valueUnavailable",
+  "profile.savedEmpty",
+  "profile.readOnly",
+  "profile.downloadReadOnly",
+  "profile.keepOriginalsFailed",
+  "profile.deleteFailed",
+  "profile.unavailable",
+  "profile.skinTypeValueTemplate",
+  "profile.toneValueTemplate",
   "errors.requestFailed",
   "common.close",
   "privacy.points.0",

@@ -31,6 +31,23 @@ export async function listLooksForOccasion(args: {
   return unwrap("list looks", result);
 }
 
+/**
+ * Every look this person owns, saved ones first, then newest first.
+ *
+ * Read by /profile, which lists saved looks across every occasion
+ * (docs/01-user-flow.md section L item 2), and by the download and the delete,
+ * which do not have an occasion to filter on.
+ */
+export async function listAllLooks(ownerId: string): Promise<Look[]> {
+  const result = await serviceClient()
+    .from("looks")
+    .select("*")
+    .eq("user_id", ownerId)
+    .order("is_saved", { ascending: false })
+    .order("created_at", { ascending: false });
+  return unwrap("list all looks", result);
+}
+
 export async function getLook(
   ownerId: string,
   lookId: string,
