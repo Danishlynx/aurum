@@ -124,6 +124,11 @@ export interface GroundingRequestOptions {
   readonly hl: string;
   readonly ownerType: "user" | "judge_session";
   readonly ownerId: string;
+  /**
+   * Which kind of shop the nearby lookup asks for. Defaults to the routine's
+   * pharmacy; the looks layer passes "clothing store" for a gap in an outfit.
+   */
+  readonly storeCategory?: LocalCategory;
 }
 
 /** Collects reasons so each one is logged once per run, with a count. */
@@ -169,10 +174,14 @@ function shoppingParts(
   };
 }
 
+function storeCategoryOf(options: GroundingRequestOptions): LocalCategory {
+  return options.storeCategory ?? ROUTINE_STORE_CATEGORY;
+}
+
 function placesParts(options: GroundingRequestOptions): CacheKeyParts {
   return {
     engine: MAPS_ENGINE,
-    query: ROUTINE_STORE_CATEGORY,
+    query: storeCategoryOf(options),
     location: locationKey(options.location),
     gl: options.gl,
     hl: options.hl,
@@ -200,7 +209,30 @@ export async function groundRoutineSteps(
   steps: readonly RoutineStepQuery[],
   opts: GroundingRequestOptions,
 ): Promise<(ReportListing | null)[]> {
-  const results: (ReportListing | null)[] = steps.map(() => null);
+  const grouped = await groundProductQueries(steps, opts, 1);
+  return grouped.map((listings) => listings[0] ?? null);
+}
+
+/**
+ * Grounds a set of queries and returns up to `limit` listings for each one.
+ *
+ * The same pipeline the routine uses, with the one difference the shop the gap
+ * card needs: docs/01-user-flow.md section K item 3 offers a person a small
+ * choice for a piece they do not own, while a routine step shows one product.
+ * The cache, the search budget, the blocked hosts, the ranking, and the local
+ * distance lookup are all the ones already written and tested, not a second
+ * copy of them.
+ *
+ * An empty array for a query means no listing came back. It is not a failure:
+ * it is the "No listing found near you yet" state.
+ */
+export async function groundProductQueries(
+  steps: readonly RoutineStepQuery[],
+  opts: GroundingRequestOptions,
+  limit: number,
+): Promise<ReportListing[][]> {
+  const perQuery = Math.max(1, Math.trunc(limit));
+  const results: ReportListing[][] = steps.map(() => []);
   if (steps.length === 0) {
     return results;
   }
@@ -331,13 +363,21 @@ export async function groundRoutineSteps(
     }
   }
 
-  // 4. One listing per step, then local availability once for the whole run.
-  const tops: (NormalizedListing | null)[] = queries.map((query) =>
-    query === null ? null : topListing(listingsByQuery.get(query) ?? []),
-  );
-  const withListing = tops.filter(
-    (listing): listing is NormalizedListing => listing !== null,
-  );
+  // 4. The listings each step shows, then local availability once for the whole
+  // run. topListing is the one listing case, which is what a routine step asks
+  // for; a gap asks for the first few of the same ranked list.
+  const picks: NormalizedListing[][] = queries.map((query) => {
+    if (query === null) {
+      return [];
+    }
+    const ranked = listingsByQuery.get(query) ?? [];
+    if (perQuery === 1) {
+      const top = topListing(ranked);
+      return top === null ? [] : [top];
+    }
+    return ranked.slice(0, perQuery);
+  });
+  const withListing = picks.flat();
 
   let places: readonly NearbyPlace[] = [];
   let localLookup = false;
@@ -356,21 +396,21 @@ export async function groundRoutineSteps(
 
   let withoutListing = 0;
   for (let index = 0; index < steps.length; index += 1) {
-    const listing = tops[index];
-    if (listing === null) {
+    const listings = picks[index] ?? [];
+    if (listings.length === 0) {
       if (queries[index] !== null) {
         withoutListing += 1;
       }
       continue;
     }
-    results[index] = {
+    results[index] = listings.map((listing) => ({
       ...listing,
       distanceText: distanceTextForStore({
         store: listing.store,
         places,
         location: options.location,
       }),
-    };
+    }));
   }
   if (withoutListing > 0) {
     reasons.note("no_listing", withoutListing);
@@ -436,7 +476,7 @@ async function nearbyStores(args: {
 
   try {
     const outcome = await searchMaps({
-      category: ROUTINE_STORE_CATEGORY,
+      category: storeCategoryOf(options),
       latitude: roundCoordinate(options.location.lat),
       longitude: roundCoordinate(options.location.lng),
       gl: options.gl,

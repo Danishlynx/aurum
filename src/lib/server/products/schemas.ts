@@ -54,12 +54,31 @@ const marketCode = z
   .max(8)
   .regex(/^[a-zA-Z-]+$/u, "Expected a market or language code.");
 
+/**
+ * The store category the local lookup asks for. The four the provider module
+ * accepts (src/lib/server/providers/serpapi/index.ts, LOCAL_CATEGORIES), never
+ * free text: docs/04-integrations.md names the categories and the provider
+ * refuses anything else.
+ */
+const storeCategory = z.enum([
+  "pharmacy",
+  "beauty store",
+  "menswear",
+  "womenswear",
+  "clothing store",
+]);
+
 export const groundingOptionsSchema = z.object({
   location: approxLocationSchema.nullable(),
   gl: marketCode,
   hl: marketCode,
   ownerType: z.enum(["user", "judge_session"]),
   ownerId: z.string().min(1).max(64),
+  /**
+   * Which kind of shop the nearby lookup asks for. Absent means the routine's
+   * pharmacy, which is what Layer 1 grounds (see ROUTINE_STORE_CATEGORY).
+   */
+  storeCategory: storeCategory.optional(),
 });
 
 export type GroundingOptions = z.infer<typeof groundingOptionsSchema>;

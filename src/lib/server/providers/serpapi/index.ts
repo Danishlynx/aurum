@@ -55,8 +55,22 @@ export type ProductQuery =
       readonly formality: string;
     };
 
-/** Local categories the app asks for. Free text is not accepted. */
-export const LOCAL_CATEGORIES = ["pharmacy", "beauty store", "menswear", "womenswear"] as const;
+/**
+ * Local categories the app asks for. Free text is not accepted.
+ *
+ * docs/04-integrations.md names "pharmacy", "beauty store", and "menswear".
+ * "clothing store" is added for Layer 4: a gap in a look is shopped near the
+ * person, and nothing on the profile says which department they buy in.
+ * Choosing menswear or womenswear for them would be a guess about the person,
+ * so the neutral category is the honest query.
+ */
+export const LOCAL_CATEGORIES = [
+  "pharmacy",
+  "beauty store",
+  "menswear",
+  "womenswear",
+  "clothing store",
+] as const;
 export type LocalCategory = (typeof LOCAL_CATEGORIES)[number];
 
 const MAX_PART_LENGTH = 48;

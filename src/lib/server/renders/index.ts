@@ -36,6 +36,8 @@ import {
   type PerfectCorpEndpointKey,
 } from "../providers/perfectcorp";
 import type { AppSession } from "../session";
+import { getGarment } from "../wardrobe/db";
+import { clothCategoryForType, clothTaskBody } from "./cloth";
 import {
   countOpenRenders,
   deleteRender,
@@ -47,10 +49,12 @@ import {
 import { hairColorTaskBody, hairstyleTaskBody, hairstyleTemplateFor } from "./hair";
 import { makeupTaskBody } from "./makeup";
 import {
+  canonicalClothParams,
   canonicalHairColorParams,
   canonicalHairstyleParams,
   canonicalMakeupParams,
   paramsHash,
+  type StoredClothParams,
   type StoredHairColorParams,
   type StoredHairstyleParams,
   type StoredMakeupParams,
@@ -91,12 +95,14 @@ export function renderPath(
   return `${ownerId}/${renderId}.${extension}`;
 }
 
-/** The render kinds this build can produce. Layer 4 adds cloth and accessory. */
+/** The render kinds this build can produce. Layer 6 adds accessory. */
 export type SupportedRenderKind = RenderRequest["kind"];
 
 /**
  * The endpoint behind each kind, and with it the price: makeup try on is 1 unit,
- * hairstyle try on is 2, hair colour try on is 1 (docs/04-integrations.md).
+ * hairstyle try on is 2, hair colour try on is 1, and cloth try on is still TBD
+ * in the credit table, so the credits layer reserves the unknown cost fallback
+ * of one unit for it (docs/04-integrations.md).
  */
 export const ENDPOINT_FOR_RENDER_KIND: Readonly<
   Record<SupportedRenderKind, PerfectCorpEndpointKey>
@@ -104,13 +110,17 @@ export const ENDPOINT_FOR_RENDER_KIND: Readonly<
   makeup: "makeupTryOn",
   hairstyle: "hairstyleTryOn",
   hair_color: "hairColorTryOn",
+  cloth: "clothTryOn",
 };
 
 /** The endpoint a stored render polls against, or null for a kind we cannot. */
 export function endpointForRenderKind(
   kind: RenderKind,
 ): PerfectCorpEndpointKey | null {
-  return kind === "makeup" || kind === "hairstyle" || kind === "hair_color"
+  return kind === "makeup" ||
+    kind === "hairstyle" ||
+    kind === "hair_color" ||
+    kind === "cloth"
     ? ENDPOINT_FOR_RENDER_KIND[kind]
     : null;
 }
@@ -152,6 +162,8 @@ export type CreateRenderRefusal =
   | "not_configured"
   | "endpoint_unverified"
   | "style_not_renderable"
+  | "garment_not_found"
+  | "garment_not_renderable"
   | "kill_switch"
   | "daily_cap"
   | "session_cap"
@@ -209,11 +221,33 @@ type RenderPlan =
       readonly endpointKey: "hairColorTryOn";
       readonly stored: StoredHairColorParams;
       readonly itemCount: number;
+    }
+  | {
+      readonly kind: "cloth";
+      readonly endpointKey: "clothTryOn";
+      readonly stored: StoredClothParams;
+      readonly itemCount: number;
+      /** The garment photo sent as the reference image. Read once, above. */
+      readonly garmentStoragePath: string;
     };
+
+/**
+ * The garment a cloth render is of, resolved before anything is planned.
+ *
+ * It is read from the row rather than taken from the request, so the category
+ * comes from the type the person or the classifier actually recorded and the
+ * photo is one this person owns.
+ */
+interface ClothSubject {
+  readonly garmentId: string;
+  readonly storagePath: string;
+  readonly category: string;
+}
 
 function planRender(args: {
   readonly captureId: string;
   readonly request: RenderRequest;
+  readonly cloth: ClothSubject | null;
 }): RenderPlan {
   const request = args.request;
   switch (request.kind) {
@@ -249,17 +283,38 @@ function planRender(args: {
         }),
         itemCount: 1,
       };
+    case "cloth": {
+      if (args.cloth === null) {
+        // Unreachable: createRender resolves the garment before it plans, and
+        // refuses when there is none. Throwing rather than inventing a category
+        // keeps that guarantee visible instead of silently rendering something.
+        throw new Error("A cloth render was planned without a garment.");
+      }
+      return {
+        kind: "cloth",
+        endpointKey: "clothTryOn",
+        stored: canonicalClothParams({
+          captureId: args.captureId,
+          garmentId: args.cloth.garmentId,
+          garmentCategory: args.cloth.category,
+        }),
+        itemCount: 1,
+        garmentStoragePath: args.cloth.storagePath,
+      };
+    }
   }
 }
 
 /**
  * The request body for a plan, or null when there is nothing to render: no
- * makeup category survived the mapping, or the style has no provider template
- * (src/lib/server/renders/hair.ts).
+ * makeup category survived the mapping, the style has no provider template
+ * (src/lib/server/renders/hair.ts), or the garment photo never reached the
+ * provider.
  */
 function taskBodyFor(
   plan: RenderPlan,
   fileId: string,
+  referenceFileId: string | null,
 ): Record<string, unknown> | null {
   switch (plan.kind) {
     case "makeup":
@@ -268,6 +323,10 @@ function taskBodyFor(
       return hairstyleTaskBody({ fileId, params: plan.stored });
     case "hair_color":
       return hairColorTaskBody({ fileId, params: plan.stored });
+    case "cloth":
+      return referenceFileId === null
+        ? null
+        : clothTaskBody({ fileId, referenceFileId, params: plan.stored });
   }
 }
 
@@ -313,7 +372,32 @@ export async function createRender(
     return { ok: false, reason: "no_capture_image" };
   }
 
-  const plan = planRender({ captureId: capture.id, request: input.request });
+  // The garment, before anything is planned or spent. An id that is not this
+  // person's, or one nobody has classified, costs nothing and renders nothing:
+  // the category comes from the recorded type, never from a guess about an
+  // unread photo (src/lib/server/renders/cloth.ts).
+  let cloth: ClothSubject | null = null;
+  if (input.request.kind === "cloth") {
+    const garment = await getGarment(ownerId, input.request.params.garmentId);
+    if (garment === null) {
+      return { ok: false, reason: "garment_not_found" };
+    }
+    const category = clothCategoryForType(garment.type);
+    if (category === null) {
+      return { ok: false, reason: "garment_not_renderable" };
+    }
+    cloth = {
+      garmentId: garment.id,
+      storagePath: garment.storage_path,
+      category,
+    };
+  }
+
+  const plan = planRender({
+    captureId: capture.id,
+    request: input.request,
+    cloth,
+  });
   const stored: StoredRenderParams = plan.stored;
   const hash = paramsHash(kind, stored);
 
@@ -436,7 +520,27 @@ export async function createRender(
     });
     input.onProviderCall?.(1);
 
-    const body = taskBodyFor(plan, uploaded.fileId);
+    // A cloth try on takes a second image: the person's own garment photo, sent
+    // as the reference the garment is copied from (docs/04-integrations.md, the
+    // cloth-v4 request shape). It is uploaded after the capture so a failure
+    // here lands in the same catch and refunds the same reservation.
+    let referenceFileId: string | null = null;
+    if (plan.kind === "cloth") {
+      const garmentObject = await downloadObject(
+        BUCKETS.garments,
+        plan.garmentStoragePath,
+      );
+      const isPng = garmentObject.contentType === "image/png";
+      const uploadedGarment = await uploadImage({
+        fileName: `${plan.stored.garmentId}.${isPng ? "png" : "jpg"}`,
+        contentType: isPng ? "image/png" : "image/jpeg",
+        bytes: garmentObject.bytes,
+      });
+      input.onProviderCall?.(1);
+      referenceFileId = uploadedGarment.fileId;
+    }
+
+    const body = taskBodyFor(plan, uploaded.fileId, referenceFileId);
     if (body === null) {
       await refund({ session: input.session, reservation: reservation.reservation });
       if (existing === null) {
@@ -798,6 +902,7 @@ async function failRender(args: {
 }
 
 export type {
+  StoredClothParams,
   StoredHairColorParams,
   StoredHairstyleParams,
   StoredMakeupParams,

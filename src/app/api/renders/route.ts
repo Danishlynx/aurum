@@ -213,6 +213,20 @@ export async function POST(request: NextRequest): Promise<Response> {
           outcome: "server_error",
           code: "provider_endpoint_unverified",
         });
+      case "garment_not_found":
+        // A garment id that is not this person's. Same answer as any other id
+        // that is not theirs: it is not here.
+        throw notFound(messages.garmentNotFound);
+      case "garment_not_renderable":
+        // The garment has no type recorded, so there is no garment_category to
+        // send (src/lib/server/renders/cloth.ts). Nothing was reserved and
+        // nothing was called. The card shows the flat lay without a try on.
+        throw new HttpError({
+          status: 409,
+          message: messages.classifierUnavailable,
+          outcome: "invalid_request",
+          code: "garment_not_classified",
+        });
       case "style_not_renderable":
         // The hairstyle endpoint is confirmed, but no provider template id has
         // been recorded for this style yet

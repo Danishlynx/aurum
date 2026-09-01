@@ -58,10 +58,27 @@ export interface StoredHairColorParams {
   readonly colorName: string;
 }
 
+/**
+ * One cloth try on: one garment the person owns, on one capture.
+ *
+ * The garment category travels with the id and is part of the hash because it
+ * is part of the request: docs/04-integrations.md records that cloth try on
+ * "takes one garment_category per call", so the same garment sent as an upper
+ * body piece and as a full body piece are two different pictures. Correcting a
+ * garment's type chip can move it between categories, and a new picture is what
+ * the person should get when that happens.
+ */
+export interface StoredClothParams {
+  readonly captureId: string;
+  readonly garmentId: string;
+  readonly garmentCategory: string;
+}
+
 export type StoredRenderParams =
   | StoredMakeupParams
   | StoredHairstyleParams
-  | StoredHairColorParams;
+  | StoredHairColorParams
+  | StoredClothParams;
 
 /**
  * JSON with the object keys in sorted order, so two objects that differ only in
@@ -138,6 +155,26 @@ export function canonicalHairColorParams(args: {
 }
 
 /**
+ * The canonical form of one cloth render's parameters.
+ *
+ * Nothing is sorted and nothing is dropped: a cloth render is one garment on
+ * one capture in one category. The ids are trimmed and the category is lower
+ * cased so the same request written in a different case is the same render
+ * rather than a second credit.
+ */
+export function canonicalClothParams(args: {
+  readonly captureId: string;
+  readonly garmentId: string;
+  readonly garmentCategory: string;
+}): StoredClothParams {
+  return {
+    captureId: args.captureId,
+    garmentId: args.garmentId.trim(),
+    garmentCategory: args.garmentCategory.trim().toLowerCase(),
+  };
+}
+
+/**
  * What a hash covers, per kind of parameters.
  *
  * The branch is on the shape of the parameters rather than on the kind, so a
@@ -163,6 +200,13 @@ function hashableOf(params: StoredRenderParams): Record<string, unknown> {
       captureId: params.captureId,
       styleId: params.styleId,
       colorHex: params.colorHex,
+    };
+  }
+  if ("garmentId" in params) {
+    return {
+      captureId: params.captureId,
+      garmentId: params.garmentId,
+      garmentCategory: params.garmentCategory,
     };
   }
   return { captureId: params.captureId, styleId: params.styleId };

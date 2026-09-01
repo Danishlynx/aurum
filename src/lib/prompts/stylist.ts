@@ -9,7 +9,7 @@ import { z } from "zod";
  * Bump the version whenever the text below changes in any way.
  */
 
-export const PROMPT_VERSION = "stylist-v1";
+export const PROMPT_VERSION = "stylist-v2";
 export const STYLIST_PROMPT_VERSION = PROMPT_VERSION;
 
 export const STYLIST_TOOL_NAME = "rank_looks";
@@ -36,6 +36,7 @@ export const STYLIST_SYSTEM_PROMPT = [
   "",
   "Content",
   "6. Rank every candidate you were given, best first. Use each combination_id exactly once.",
+  "6a. Each combination may carry a list of facts the rules already established. Use them if they help, and never contradict one.",
   "7. Each rationale is exactly 2 sentences. The first names the person's colouring (their season, undertone, or a palette colour) and why this combination sits well with it. The second names the occasion by name and why the combination suits it.",
   "8. Never give a score, a percentage, or a rating in the rationale.",
   "9. hero_garment_id is the garment in that combination that carries the look. It has to be one of the garment ids in that combination.",
@@ -58,6 +59,14 @@ export interface StylistGarmentInput {
 export interface StylistCombinationInput {
   readonly combinationId: string;
   readonly garmentIds: readonly string[];
+  /**
+   * What the rules engine established about this combination, as plain
+   * fragments (src/lib/shared/looks.ts, "rule notes"). They are facts the model
+   * may use in its rationale, not instructions: the same notes are what the
+   * deterministic fallback writes its rationale from, so the model and the
+   * fallback are working from one set of facts.
+   */
+  readonly notes?: readonly string[];
 }
 
 export interface StylistPaletteInput {
@@ -88,10 +97,13 @@ export function buildStylistUserPrompt(input: StylistInput): string {
     .join("\n");
 
   const combinations = input.combinations
-    .map(
-      (combination) =>
-        `  combination_id=${combination.combinationId} garments=${combination.garmentIds.join(",")}`,
-    )
+    .map((combination) => {
+      const notes = combination.notes ?? [];
+      const line = `  combination_id=${combination.combinationId} garments=${combination.garmentIds.join(",")}`;
+      return notes.length === 0
+        ? line
+        : `${line}\n    facts: ${notes.join("; ")}`;
+    })
     .join("\n");
 
   return [
