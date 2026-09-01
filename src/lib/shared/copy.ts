@@ -447,6 +447,42 @@ export const copy = {
     skipLine: "Or skip this. Looks can be built from new pieces near you.",
     correctChipsHint: "Tap a chip to correct it.",
     classificationFailed: "Could not read this one. Tap to fill in details.",
+    /**
+     * In house. docs/01 section J item 3 says the grid is "filterable by type"
+     * but names neither the control nor the chip that clears the filter.
+     */
+    filterLabel: "Filter by type",
+    filterAll: "All",
+    /**
+     * In house. docs/01 section J item 2 makes the chips tappable to correct but
+     * gives no title for the sheet a tap opens, and no name for the three groups
+     * inside it. The group names are the chips' own words.
+     */
+    correctSheetTitle: "Correct this garment",
+    chipGroupType: "Type",
+    chipGroupPattern: "Pattern",
+    chipGroupFormality: "Formality",
+    /**
+     * In house. docs/01 section J describes the add flow but gives no line for
+     * an upload that never landed. "Global states and rules" requires one that
+     * says what happened and what to do.
+     */
+    addFailed: "Those garments were not added. Try again.",
+    /** In house, for a correction that never reached the row. */
+    correctionFailed: "That chip was not saved. Try again.",
+    /**
+     * In house. docs/01 "Judge mode across the flow" has every screen render
+     * from the saved demo profile, which nobody may write to. Same promise as
+     * hair.saveReadOnly, worded for a screen where the write is an add or a
+     * correction rather than a save.
+     */
+    readOnly: "The demo profile is read only, so nothing was changed.",
+    /**
+     * In house. The wardrobe ceiling in src/lib/shared/wardrobe-view.ts. Kept
+     * word for word the same as messages.wardrobeFull, so the sentence in the
+     * refusal body and the sentence on the screen are one sentence.
+     */
+    full: "Your wardrobe is full. Remove a garment before adding more.",
   },
 
   /** K. Looks (/looks) */
@@ -466,6 +502,80 @@ export const copy = {
     /** No wardrobe state, docs/01 section K states. */
     noWardrobe:
       "Built from pieces near you. Add your own garments to mix them in.",
+    /**
+     * In house. The doc's gap line ends "and are near you", which is only true
+     * when a nearby store was found. docs/01 section K states: with location not
+     * allowed the cards "drop the distance and say 'Online listing'", so the
+     * sentence above them drops the claim too rather than saying near you about
+     * a listing with no distance.
+     */
+    shopTheGapOnlineTemplate:
+      "You do not own {garmentType} yet. These sit in your palette.",
+    /**
+     * In house. docs/01 section K item 1 is a row of occasion chips but gives
+     * the row no name, and a group of chips needs one for a screen reader.
+     */
+    occasionsLabel: "Occasion",
+    /**
+     * In house. docs/01 section K states: "Try on pending: the flat lay shows
+     * first; the rendered hero arrives when the job completes." These two are
+     * the makeup pattern (section H states) worded for a garment, the same way
+     * hair.applyingStyleTemplate is worded for a style.
+     */
+    applyingTemplate: "Applying the {garment}",
+    previewUnavailable: "Preview unavailable for this garment.",
+    /**
+     * In house. docs/01 section K item 4 has "Save this look" but gives no
+     * confirmation line. Same wording as the makeup and hair saves, because it
+     * is the same promise (docs/02-design-system.md, Toast).
+     */
+    savedToast: "Saved to your profile.",
+    /** In house, for a save that never reached the profile. */
+    saveFailed: "This look was not saved. Try again.",
+    /** In house. The demo profile is read only, so a save stored nothing. */
+    saveReadOnly: "The demo profile is read only, so nothing was saved.",
+    /**
+     * In house. docs/01 section K covers an empty wardrobe but not a wardrobe
+     * that holds nothing this occasion can use, which the rules engine answers
+     * with no looks at all. The line says what happened and the two ways out.
+     */
+    noLooksForOccasion:
+      "Nothing in your wardrobe fits this occasion yet. Try another occasion, or add garments.",
+    /**
+     * In house. docs/01 "Global states and rules" requires an error that says
+     * what happened and what to do; the flow doc writes none for a looks request
+     * that did not come back.
+     */
+    unavailable: "Your looks could not be loaded. Try again in a moment.",
+    /**
+     * The deterministic rationale, used when the stylist call cannot run or its
+     * answer fails the hard checks. docs/03-architecture.md, "Failure modes":
+     * "the stylist ranks looks by the rules alone with a one line rule based
+     * rationale". In house, all of it: the flow doc writes the model's example
+     * sentence pair and gives the fallback no words.
+     *
+     * Two sentences at most, assembled by src/lib/server/looks/rationale.ts. The
+     * first names the person's coloring, the second names the occasion, which is
+     * the standard docs/04-integrations.md sets for the model.
+     */
+    rationale: {
+      colorTemplate:
+        "{color} sits in your {season} palette, so it holds its own next to your skin.",
+      avoidColorTemplate: "{color} stays below the waist, away from your face.",
+      noColorTemplate:
+        "None of these colors sit in your {season} palette, so this look is put together on formality rather than color.",
+      occasionTemplate: "For {occasion}, {reason}.",
+      reasonOwnedPieces: "these are the pieces you own that fit",
+      reasonListings:
+        "every piece here is a live listing rather than something you own",
+      /** The occasion inside a sentence. The chips above are its label. */
+      phraseInterview: "an interview",
+      phraseWeddingGuest: "a wedding",
+      phraseDate: "a date",
+      phraseFestival: "a festival",
+      phraseEveryday: "everyday wear",
+      phraseFormalEvening: "a formal evening",
+    },
   },
 
   /** L. Profile (/profile) */
@@ -559,6 +669,37 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "hair.saveFailed",
   "hair.saveReadOnly",
   "hair.colorsUnavailable",
+  "wardrobe.filterLabel",
+  "wardrobe.filterAll",
+  "wardrobe.correctSheetTitle",
+  "wardrobe.chipGroupType",
+  "wardrobe.chipGroupPattern",
+  "wardrobe.chipGroupFormality",
+  "wardrobe.addFailed",
+  "wardrobe.correctionFailed",
+  "wardrobe.readOnly",
+  "wardrobe.full",
+  "looks.shopTheGapOnlineTemplate",
+  "looks.occasionsLabel",
+  "looks.applyingTemplate",
+  "looks.previewUnavailable",
+  "looks.savedToast",
+  "looks.saveFailed",
+  "looks.saveReadOnly",
+  "looks.noLooksForOccasion",
+  "looks.unavailable",
+  "looks.rationale.colorTemplate",
+  "looks.rationale.avoidColorTemplate",
+  "looks.rationale.noColorTemplate",
+  "looks.rationale.occasionTemplate",
+  "looks.rationale.reasonOwnedPieces",
+  "looks.rationale.reasonListings",
+  "looks.rationale.phraseInterview",
+  "looks.rationale.phraseWeddingGuest",
+  "looks.rationale.phraseDate",
+  "looks.rationale.phraseFestival",
+  "looks.rationale.phraseEveryday",
+  "looks.rationale.phraseFormalEvening",
   "report.fallbackReadingNoSkinTypeTemplate",
   "report.fallbackSecondConcernTemplate",
   "report.fallbackGoingWellTemplate",

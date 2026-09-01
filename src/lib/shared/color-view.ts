@@ -27,6 +27,7 @@ import {
   hairColorRenderRequestSchema,
   hairstyleRenderRequestSchema,
 } from "./hair-view";
+import { clothRenderRequestSchema } from "./looks-view";
 import type { Palette, Season, Undertone } from "./palette";
 import type { ReportListing } from "./report-view";
 
@@ -212,14 +213,16 @@ export const makeupRenderRequestSchema = z.object({
 /**
  * Every kind of try on POST /api/renders accepts, discriminated by kind.
  *
- * The two hair kinds are declared in src/lib/shared/hair-view.ts, beside the
- * screen that posts them, and joined here because the route takes one body and
- * the render layer takes one input. Layer 4 adds cloth to the same union.
+ * The two hair kinds are declared in src/lib/shared/hair-view.ts and the cloth
+ * kind in src/lib/shared/looks-view.ts, each beside the screen that posts it,
+ * and they are joined here because the route takes one body and the render
+ * layer takes one input.
  */
 export const renderRequestSchema = z.discriminatedUnion("kind", [
   makeupRenderRequestSchema,
   hairstyleRenderRequestSchema,
   hairColorRenderRequestSchema,
+  clothRenderRequestSchema,
 ]);
 
 export type RenderRequest = z.infer<typeof renderRequestSchema>;
