@@ -4,6 +4,7 @@ import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { Column } from "@/components/layout/Column";
 import { ConcernList } from "@/components/report/ConcernList";
 import { ReadingBlock } from "@/components/report/ReadingBlock";
+import { ProjectionRow } from "@/components/report/ProjectionRow";
 import { hasHeroContent } from "@/components/report/report-content";
 import { ReportHero } from "@/components/report/ReportHero";
 import { RoutineGroup } from "@/components/report/RoutineGroup";
@@ -12,6 +13,7 @@ import {
   buildReportView,
   isDemoFixtureMode,
 } from "@/lib/server/profile/report-view";
+import { readProjection } from "@/lib/server/renders";
 import { getSession, type AppSession } from "@/lib/server/session";
 import { copy } from "@/lib/shared/copy";
 import {
@@ -66,6 +68,17 @@ export default async function ReportPage() {
 
   const skinAgeLine = reportSkinAgeLine(view);
   const dermatologistLine = reportDermatologistLine(view);
+
+  /*
+   * The projection, docs/09-build-order-and-demo.md Layer 6. The render layer
+   * answers with nothing at all in fixture mode, with no key, with the skin
+   * simulation endpoint still unverified, or once retention has deleted the
+   * original photo, and the row then renders nothing.
+   */
+  const projection = await readProjection({
+    session,
+    rankedConcernKeys: view.concerns.map((concern) => concern.key),
+  });
 
   return (
     <div className="flex flex-col gap-8">
@@ -123,6 +136,23 @@ export default async function ReportPage() {
           steps={view.routine.night}
         />
       </Column>
+
+      {/*
+        docs/09-build-order-and-demo.md Layer 6, after the routine and before the
+        footer. With no projection stored and none that could be asked for, the
+        row is not on the screen at all: no column, no spacing, no control that
+        cannot work. The same question is asked inside the component, so it can
+        never be rendered into a state it has nothing to draw.
+      */}
+      {projection.renderUrl === null && !projection.canRender ? null : (
+        <Column>
+          <ProjectionRow
+            renderUrl={projection.renderUrl}
+            canRender={projection.canRender}
+            concerns={projection.concerns}
+          />
+        </Column>
+      )}
 
       <Column className="flex flex-col items-start gap-4">
         {/*

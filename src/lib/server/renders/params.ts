@@ -74,11 +74,40 @@ export interface StoredClothParams {
   readonly garmentCategory: string;
 }
 
+/**
+ * One skin simulation: the concerns projected, on one capture.
+ *
+ * The concerns are sorted and de duplicated in the canonical form, so the same
+ * projection asked for in a different order is the same picture and the second
+ * ask is answered from the cache rather than from four more units
+ * (docs/04-integrations.md, credit table).
+ */
+export interface StoredSkinSimulationParams {
+  readonly captureId: string;
+  readonly concerns: readonly string[];
+}
+
+/**
+ * One accessory try on: one accessory the person owns, worn on one capture, in
+ * one category.
+ *
+ * The category is part of the hash because it is part of the request and part of
+ * the picture: the same photo sent as a bag and as a pair of earrings goes to
+ * two different endpoints and comes back as two different images.
+ */
+export interface StoredAccessoryParams {
+  readonly captureId: string;
+  readonly garmentId: string;
+  readonly category: string;
+}
+
 export type StoredRenderParams =
   | StoredMakeupParams
   | StoredHairstyleParams
   | StoredHairColorParams
-  | StoredClothParams;
+  | StoredClothParams
+  | StoredSkinSimulationParams
+  | StoredAccessoryParams;
 
 /**
  * JSON with the object keys in sorted order, so two objects that differ only in
@@ -175,6 +204,39 @@ export function canonicalClothParams(args: {
 }
 
 /**
+ * The canonical form of one skin simulation's parameters.
+ *
+ * The concerns are lower cased, de duplicated, and sorted: which order the
+ * report happened to rank them in does not change the picture, and asking for
+ * the same set twice must not cost a second four units.
+ */
+export function canonicalSimulationParams(args: {
+  readonly captureId: string;
+  readonly concerns: readonly string[];
+}): StoredSkinSimulationParams {
+  const concerns = [
+    ...new Set(args.concerns.map((concern) => concern.trim().toLowerCase())),
+  ].sort();
+  return { captureId: args.captureId, concerns };
+}
+
+/**
+ * The canonical form of one accessory try on's parameters. The same rules as the
+ * cloth params: ids trimmed, the category lower cased, nothing dropped.
+ */
+export function canonicalAccessoryParams(args: {
+  readonly captureId: string;
+  readonly garmentId: string;
+  readonly category: string;
+}): StoredAccessoryParams {
+  return {
+    captureId: args.captureId,
+    garmentId: args.garmentId.trim(),
+    category: args.category.trim().toLowerCase(),
+  };
+}
+
+/**
  * What a hash covers, per kind of parameters.
  *
  * The branch is on the shape of the parameters rather than on the kind, so a
@@ -193,6 +255,18 @@ function hashableOf(params: StoredRenderParams): Record<string, unknown> {
         category: entry.category,
         shadeHex: entry.shadeHex,
       })),
+    };
+  }
+  if ("concerns" in params) {
+    return { captureId: params.captureId, concerns: [...params.concerns] };
+  }
+  if ("category" in params) {
+    // The accessory shape. It is checked before the cloth shape below because
+    // both carry a garment id, and only this one carries a category.
+    return {
+      captureId: params.captureId,
+      garmentId: params.garmentId,
+      category: params.category,
     };
   }
   if ("colorHex" in params) {

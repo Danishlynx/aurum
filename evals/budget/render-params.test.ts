@@ -4,12 +4,18 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import {
+  canonicalAccessoryParams,
+  canonicalClothParams,
   canonicalHairColorParams,
   canonicalHairstyleParams,
   canonicalJson,
   canonicalMakeupParams,
+  canonicalSimulationParams,
   paramsHash,
 } from "@/lib/server/renders/params";
+import { simulationConcernsFor } from "@/lib/server/renders/simulation";
+import { unitsForCall } from "@/lib/server/providers/perfectcorp/endpoints";
+import { MAX_SIMULATED_CONCERNS } from "@/lib/shared/color-view";
 
 /**
  * eval:budget, the render cache key.
@@ -218,5 +224,125 @@ describe("render params, hair color", () => {
     expect(stored.colorName).toBe("Warm chestnut");
     expect(stored.colorHex).toBe("#6b3f24");
     expect(stored.styleId).toBe("textured-crop");
+  });
+});
+
+/*
+ * The Layer 6 kinds. A skin simulation is the dearest render in the credit table
+ * (4 units for up to four concerns against 1 for a makeup try on,
+ * docs/04-integrations.md), so its cache key is worth four times a shade's, and
+ * an accessory sits on the same garment id a cloth render does, which is the one
+ * place two kinds could collide on a row.
+ */
+
+const GARMENT = "c4f2e1d3-2222-4b3c-9d4e-000000000001";
+
+function simulation(concerns: readonly string[], captureId = CAPTURE) {
+  return canonicalSimulationParams({ captureId, concerns });
+}
+
+function accessory(category: string, captureId = CAPTURE) {
+  return canonicalAccessoryParams({
+    captureId,
+    garmentId: GARMENT,
+    category,
+  });
+}
+
+describe("render params, skin simulation", () => {
+  it("is a 64 character lowercase hex digest", () => {
+    expect(paramsHash("skin_simulation", simulation(["texture"]))).toMatch(
+      /^[0-9a-f]{64}$/u,
+    );
+  });
+
+  it("gives the same hash for the same concerns in a different order", () => {
+    expect(
+      paramsHash("skin_simulation", simulation(["texture", "pores"])),
+    ).toBe(paramsHash("skin_simulation", simulation(["pores", "texture"])));
+  });
+
+  it("drops a repeated concern rather than paying for it twice", () => {
+    expect(simulation(["texture", "texture"]).concerns).toEqual(["texture"]);
+  });
+
+  it("changes with the concerns, because that is a different picture", () => {
+    expect(paramsHash("skin_simulation", simulation(["texture"]))).not.toBe(
+      paramsHash("skin_simulation", simulation(["texture", "pores"])),
+    );
+  });
+
+  it("changes with the capture, so a new selfie never serves the old face", () => {
+    expect(paramsHash("skin_simulation", simulation(["texture"]))).not.toBe(
+      paramsHash(
+        "skin_simulation",
+        simulation(["texture"], "b3f1e0c2-1111-4a2b-8c3d-000000000002"),
+      ),
+    );
+  });
+});
+
+describe("skin simulation, how many concerns one projection asks for", () => {
+  it("keeps the report's own order and drops what the engine cannot simulate", () => {
+    // Pigmentation and uneven tone lead a tone first report but are not among
+    // the ten concerns docs/04-integrations.md records as simulatable, so the
+    // projection covers the ones underneath them rather than swapping in
+    // something the reading never named.
+    expect(
+      simulationConcernsFor([
+        "pigmentation",
+        "uneven_tone",
+        "dark_spots",
+        "texture",
+      ]),
+    ).toEqual(["dark_spots", "texture"]);
+  });
+
+  it("stops at four, which is the whole of the cheaper credit tier", () => {
+    const chosen = simulationConcernsFor([
+      "texture",
+      "pores",
+      "oiliness",
+      "acne",
+      "redness",
+      "wrinkles",
+    ]);
+    expect(chosen).toHaveLength(MAX_SIMULATED_CONCERNS);
+    expect(unitsForCall("skinSimulation", chosen.length)).toBe(4);
+  });
+
+  it("asks for nothing when no concern can be simulated, so nothing is spent", () => {
+    expect(simulationConcernsFor(["pigmentation", "uneven_tone"])).toEqual([]);
+  });
+});
+
+describe("render params, accessory", () => {
+  it("is a 64 character lowercase hex digest", () => {
+    expect(paramsHash("accessory", accessory("earrings"))).toMatch(
+      /^[0-9a-f]{64}$/u,
+    );
+  });
+
+  it("changes with the category, because it is a different endpoint", () => {
+    expect(paramsHash("accessory", accessory("earrings"))).not.toBe(
+      paramsHash("accessory", accessory("bag")),
+    );
+  });
+
+  it("ignores the case of a category the way a hex is ignored", () => {
+    expect(paramsHash("accessory", accessory("earrings"))).toBe(
+      paramsHash("accessory", accessory("Earrings")),
+    );
+  });
+
+  it("never collides with the cloth render of the same garment", () => {
+    const cloth = canonicalClothParams({
+      captureId: CAPTURE,
+      garmentId: GARMENT,
+      garmentCategory: "upper_body",
+    });
+    expect(paramsHash("accessory", accessory("bag"))).not.toBe(
+      paramsHash("cloth", cloth),
+    );
   });
 });

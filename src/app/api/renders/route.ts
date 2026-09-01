@@ -33,8 +33,10 @@ import { createRender } from "@/lib/server/renders";
  * kind, params_hash) is unique. Re selecting a shade or style returns the stored
  * render").
  *
- * Three kinds today, all through the same body, the same caps, and the same
- * refusals: makeup (docs/01 section H), hairstyle and hair color (section I).
+ * Six kinds, all through the same body, the same caps, and the same refusals:
+ * makeup (docs/01 section H), hairstyle and hair color (section I), cloth
+ * (section K), and the two Layer 6 kinds, the skin simulation on /report and the
+ * accessory try on in the top look (docs/09-build-order-and-demo.md).
  *
  * The order of the gates, and why:
  * 1. fixture mode, which has no database and no key, so it is answered first
@@ -226,6 +228,18 @@ export async function POST(request: NextRequest): Promise<Response> {
           message: messages.classifierUnavailable,
           outcome: "invalid_request",
           code: "garment_not_classified",
+        });
+      case "accessory_not_renderable":
+        // The garment is this person's, but it is not recorded as an accessory,
+        // so it is not something the accessory endpoints wear
+        // (src/lib/server/renders/accessory.ts). Nothing was reserved and
+        // nothing was called. Same answer as any other request that did not
+        // match what the row says.
+        throw new HttpError({
+          status: 409,
+          message: messages.classifierUnavailable,
+          outcome: "invalid_request",
+          code: "garment_not_an_accessory",
         });
       case "style_not_renderable":
         // The hairstyle endpoint is confirmed, but no provider template id has

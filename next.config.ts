@@ -24,6 +24,19 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "**.ggpht.com" },
     ],
   },
+  /*
+   * The landing hero asks the file system whether the consented fixture face is
+   * in the repository (src/components/landing/fixture-face.ts). Every route in
+   * this app is server rendered on demand, so that question is asked inside the
+   * serverless function, and files under public/ are served from the CDN rather
+   * than bundled into the function by default. This line puts that one file in
+   * the function's trace, so the answer is the same in production as it is
+   * locally. The pattern matching nothing (which is the state today) is not an
+   * error.
+   */
+  outputFileTracingIncludes: {
+    "/": ["./public/fixtures/landing-face.jpg"],
+  },
 };
 
 export default nextConfig;

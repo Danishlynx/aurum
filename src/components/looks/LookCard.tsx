@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { Button } from "@/components/ui/Button";
 import { ProductCard } from "@/components/ui/ProductCard";
 import { copy } from "@/lib/shared/copy";
@@ -54,6 +56,13 @@ type LookCardProps = {
   readonly leading: boolean;
   readonly saving: boolean;
   readonly onSave: (lookId: string) => void;
+  /**
+   * The accessory try on slot, on the top look only
+   * (docs/09-build-order-and-demo.md Layer 6). It is passed in rather than built
+   * here because whether a session can render one at all is a server question,
+   * and the answer is nothing to draw far more often than it is a control.
+   */
+  readonly accessory?: ReactNode;
 };
 
 export function LookCard({
@@ -62,6 +71,7 @@ export function LookCard({
   leading,
   saving,
   onSave,
+  accessory,
 }: LookCardProps) {
   const rationaleId = `look-${look.id}-rationale`;
   const garments = garmentItems(look);
@@ -138,6 +148,8 @@ export function LookCard({
       )}
 
       <ShopTheGap gaps={look.gaps} />
+
+      {accessory ?? null}
 
       <Button
         variant={leading ? "primary" : "secondary"}

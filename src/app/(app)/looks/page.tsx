@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { LooksScreen } from "@/components/looks/LooksScreen";
 import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
+import { accessoryTryOnOptions } from "@/lib/server/renders";
 import { getSession } from "@/lib/server/session";
 import { copy } from "@/lib/shared/copy";
 
@@ -45,11 +46,22 @@ export default async function LooksPage() {
     redirect("/welcome");
   }
 
+  /*
+   * The accessory try on in the top look, docs/09-build-order-and-demo.md Layer
+   * 6. The render layer answers with an empty list in fixture mode, without a
+   * Perfect Corp key, with the kill switch off, when the wardrobe holds no
+   * accessory, and for every category whose endpoint is still unverified. An
+   * empty list draws no affordance, so the demo never shows a control that
+   * cannot render.
+   */
+  const accessoryOptions =
+    session === null ? [] : await accessoryTryOnOptions(session);
+
   return (
     <div className="flex flex-col gap-8">
       <ScreenTitle>{copy.nav.looks}</ScreenTitle>
 
-      <LooksScreen readOnly={fixture} />
+      <LooksScreen readOnly={fixture} accessoryOptions={accessoryOptions} />
     </div>
   );
 }

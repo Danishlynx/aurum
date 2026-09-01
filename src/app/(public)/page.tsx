@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { LandingHero } from "@/components/landing/LandingHero";
 import { Column } from "@/components/layout/Column";
 import { Button, ButtonLink } from "@/components/ui/Button";
 import { copy } from "@/lib/shared/copy";
@@ -12,9 +13,11 @@ import { copy } from "@/lib/shared/copy";
  *
  * The hero is the reveal preview: the fixture face with gold toned concern masks
  * blooming and settling into swatches, the one orchestrated non user triggered
- * motion in the app. It lands with Layer 1, alongside the masks it reuses from
- * /analyzing. Until then the frame holds its exact size in Basalt so the screen
- * is composed at 390px rather than reflowing when the preview arrives.
+ * motion in the app. It plays only when the consented fixture face is in the
+ * repository at public/fixtures/landing-face.jpg; until then the frame holds its
+ * exact size in Basalt, so the screen is composed at 390px either way and
+ * nothing reflows when the image lands. That decision is made on the server, in
+ * src/components/landing/LandingHero.tsx.
  *
  * The fixture is the founder's own consented selfie, or a synthetic face made
  * with Perfect Corp's tools. Never a stock model, never an illustration
@@ -36,10 +39,7 @@ export default function LandingPage() {
           </p>
         </div>
 
-        <div
-          aria-hidden="true"
-          className="aspect-square w-full border border-raised bg-surface"
-        />
+        <LandingHero />
 
         <div className="flex flex-col gap-4">
           <ButtonLink variant="primary" href="/welcome">

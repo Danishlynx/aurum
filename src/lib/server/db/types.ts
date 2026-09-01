@@ -36,12 +36,14 @@ export type CreditOwnerType = "user" | "judge_session";
 
 export type CreditProvider = "perfectcorp" | "serpapi" | "anthropic";
 
+/** The renders.kind check in migrations 0003 and 0010. */
 export type RenderKind =
   | "makeup"
   | "hairstyle"
   | "hair_color"
   | "cloth"
-  | "accessory";
+  | "accessory"
+  | "skin_simulation";
 
 type ProfileRow = {
   user_id: string;

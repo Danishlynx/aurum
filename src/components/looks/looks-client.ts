@@ -236,6 +236,52 @@ export async function requestClothRender(
   };
 }
 
+/**
+ * Starts the accessory try on for one accessory the person owns, in one
+ * category, or returns the stored render when the same pair was rendered before
+ * (docs/03-architecture.md, "Caching").
+ *
+ * docs/09-build-order-and-demo.md Layer 6. The category travels with the garment
+ * because the wardrobe records every accessory under one type, so the person is
+ * the only one who can say whether the photo is a bag or a pair of earrings
+ * (src/lib/server/renders/accessory.ts).
+ */
+export async function requestAccessoryRender(params: {
+  readonly garmentId: string;
+  readonly category: string;
+}): Promise<RenderResult> {
+  let response: Response;
+  try {
+    response = await fetch("/api/renders", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "accessory",
+        params: { garmentId: params.garmentId, category: params.category },
+      }),
+    });
+  } catch {
+    return { ok: false };
+  }
+  if (!response.ok) {
+    return { ok: false };
+  }
+
+  const parsed = renderStartSchema.safeParse(await readJson(response));
+  if (!parsed.success) {
+    return { ok: false };
+  }
+  return {
+    ok: true,
+    render: {
+      renderId: parsed.data.renderId,
+      status: parsed.data.status,
+      renderUrl: parsed.data.renderUrl ?? null,
+    },
+  };
+}
+
 /** The render as it stands. Polled while it is pending or running. */
 export async function fetchRender(renderId: string): Promise<RenderResult> {
   let response: Response;

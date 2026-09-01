@@ -253,6 +253,13 @@ export const copy = {
     skinAgeFraming:
       "This is a cosmetic estimate of surface condition, not a health measure.",
 
+    /**
+     * In house. Names the mask toggle row above the hero (docs/02-design-system.md,
+     * MaskToggle) for a screen reader, which otherwise meets a row of chips with
+     * no word for what they switch between.
+     */
+    maskTogglesLabel: "Concern masks",
+
     /** Routine groups, docs/01 section F item 5. */
     routineMorning: "Morning",
     routineNight: "Night",
@@ -299,6 +306,36 @@ export const copy = {
       "Also worth attention: {concern} on the {location}.",
     fallbackGoingWellTemplate: "Your {concerns} are in good shape.",
     fallbackGoingWellSingularTemplate: "Your {concern} is in good shape.",
+
+    /**
+     * The projection row, docs/09-build-order-and-demo.md Layer 6: "Skin
+     * simulation for a projected improvement render on the report ('projected',
+     * labeled)".
+     *
+     * All in house. docs/01-user-flow.md section F stops at the footer and does
+     * not write this row. The words are set by docs/06-safety-privacy.md, which
+     * requires the label: "Try on renders are labeled as previews. Skin
+     * simulation is labeled as a projection." So the heading is the label, and
+     * the line under it says what the picture is and what it is not, because the
+     * same doc says the app "never claims a product will produce a result".
+     */
+    projectionHeading: "Projected",
+    projectionFraming:
+      "A projection of this photo with your top concerns eased. It is a picture of what care could look like, not a promise of a result.",
+    /**
+     * The row's only control, and only when a projection can actually be
+     * rendered. Plain verb, says what happens (docs/02-design-system.md).
+     */
+    projectionAction: "Show the projection",
+    /** Pending, in the same two words as "Applying rust lip" on /makeup. */
+    projectionPending: "Building the projection",
+    /**
+     * The try on failed state of section H, worded for this row: a projection is
+     * not a shade, so it says which picture is missing.
+     */
+    projectionUnavailable: "Projection unavailable for this photo.",
+    /** Names the concerns the projection covers, for example "dark spots and texture". */
+    projectionConcernsTemplate: "Projected on {concerns}.",
   },
 
   /** Product card, used on /report, /makeup, /hair, and /looks. */
@@ -356,6 +393,11 @@ export const copy = {
   makeup: {
     before: "Before",
     after: "After",
+    /**
+     * In house. Names the pair of chips above the hero for a screen reader,
+     * which otherwise meets two words with nothing saying they are one choice.
+     */
+    beforeAfterLabel: "Before and after",
     rowLip: "Lip",
     rowBlush: "Blush",
     rowFoundation: "Foundation",
@@ -548,6 +590,25 @@ export const copy = {
      */
     unavailable: "Your looks could not be loaded. Try again in a moment.",
     /**
+     * The accessory try on in the top look,
+     * docs/09-build-order-and-demo.md Layer 6: "One accessory try on in the top
+     * look (earrings or a bag) from the fashion APIs".
+     *
+     * All in house. docs/01-user-flow.md section K composes garments and does not
+     * word this affordance. The button is a plain verb that says what happens,
+     * the pending and unavailable lines follow section H's pattern the same way
+     * the garment ones above do, and the three category names are the words a
+     * person would use for the thing they photographed.
+     */
+    addAccessoryAction: "Add an accessory",
+    accessoryCategoriesLabel: "Accessory",
+    accessoryEarrings: "Earrings",
+    accessoryBag: "Bag",
+    accessoryWatch: "Watch",
+    applyingAccessoryTemplate: "Applying the {accessory}",
+    previewUnavailableAccessory: "Preview unavailable for this accessory.",
+
+    /**
      * The deterministic rationale, used when the stylist call cannot run or its
      * answer fails the hard checks. docs/03-architecture.md, "Failure modes":
      * "the stylist ranks looks by the rules alone with a one line rule based
@@ -725,7 +786,9 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "capture.shutterLabel",
   "judge.exploreDemoAction",
   "productCard.distanceTemplate",
+  "report.maskTogglesLabel",
   "color.adjusterFailed",
+  "makeup.beforeAfterLabel",
   "makeup.savedToast",
   "makeup.saveFailed",
   "makeup.shadeProductTypeTemplate",
@@ -768,6 +831,19 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "looks.rationale.phraseFestival",
   "looks.rationale.phraseEveryday",
   "looks.rationale.phraseFormalEvening",
+  "looks.addAccessoryAction",
+  "looks.accessoryCategoriesLabel",
+  "looks.accessoryEarrings",
+  "looks.accessoryBag",
+  "looks.accessoryWatch",
+  "looks.applyingAccessoryTemplate",
+  "looks.previewUnavailableAccessory",
+  "report.projectionHeading",
+  "report.projectionFraming",
+  "report.projectionAction",
+  "report.projectionPending",
+  "report.projectionUnavailable",
+  "report.projectionConcernsTemplate",
   "report.fallbackReadingNoSkinTypeTemplate",
   "report.fallbackSecondConcernTemplate",
   "report.fallbackGoingWellTemplate",

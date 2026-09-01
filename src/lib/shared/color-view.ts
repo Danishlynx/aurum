@@ -23,6 +23,8 @@
 
 import { z } from "zod";
 
+import type { ConcernKey } from "./concerns";
+import { copy } from "./copy";
 import {
   hairColorRenderRequestSchema,
   hairstyleRenderRequestSchema,
@@ -210,19 +212,153 @@ export const makeupRenderRequestSchema = z.object({
   params: makeupRenderParamsSchema,
 });
 
+// ---------------------------------------------------------------------------
+// Layer 6: the skin simulation and the accessory try on
+// ---------------------------------------------------------------------------
+
+/**
+ * The concerns Perfect Corp's skin simulation can project, in our own keys.
+ *
+ * docs/04-integrations.md records the ten the reference page lists: "radiance,
+ * acne, oiliness, eye bags, dark circles, spots, pores, texture, wrinkles,
+ * redness". Their "spots" is our dark_spots; the rest map by name.
+ *
+ * Two of our tone concerns, pigmentation and uneven tone, are not on that list.
+ * The report ranks those first on deeper skin (src/lib/shared/concerns.ts), so a
+ * projection on a tone first report can only show the concerns underneath them.
+ * That is a limit of the endpoint, and the row says what it projected rather
+ * than implying it projected everything the reading named.
+ */
+export const SIMULATABLE_CONCERN_KEYS = [
+  "dark_spots",
+  "texture",
+  "pores",
+  "oiliness",
+  "acne",
+  "redness",
+  "radiance",
+  "wrinkles",
+  "dark_circles",
+  "eye_bags",
+] as const satisfies readonly ConcernKey[];
+
+export type SimulatableConcernKey = (typeof SIMULATABLE_CONCERN_KEYS)[number];
+
+const SIMULATABLE_CONCERN_SET: ReadonlySet<string> = new Set<string>(
+  SIMULATABLE_CONCERN_KEYS,
+);
+
+export function isSimulatableConcern(
+  value: string,
+): value is SimulatableConcernKey {
+  return SIMULATABLE_CONCERN_SET.has(value);
+}
+
+/**
+ * How many concerns one projection asks for.
+ *
+ * docs/04-integrations.md, credit table: skin simulation costs "4 for 1 to 4
+ * concerns, 6 for 5 to 10 concerns". Four is the whole of the cheaper tier, and
+ * it is also as many concerns as the report leads with, so the projection covers
+ * the top of the reading without moving to the dearer tier.
+ */
+export const MAX_SIMULATED_CONCERNS = 4;
+
+/**
+ * One skin simulation: the person's own capture, with the concerns the report
+ * ranked highest projected.
+ *
+ * The concerns travel in the request because the report already ranked them and
+ * the person is looking at that ranking; they are checked here against the ten
+ * the endpoint can simulate, so nothing outside that set is ever sent.
+ */
+export const skinSimulationRenderParamsSchema = z.object({
+  concerns: z
+    .array(z.enum(SIMULATABLE_CONCERN_KEYS))
+    .min(1)
+    .max(MAX_SIMULATED_CONCERNS),
+});
+
+export type SkinSimulationRenderParams = z.infer<
+  typeof skinSimulationRenderParamsSchema
+>;
+
+export const skinSimulationRenderRequestSchema = z.object({
+  kind: z.literal("skin_simulation"),
+  params: skinSimulationRenderParamsSchema,
+});
+
+/**
+ * The accessory try on categories this build offers.
+ *
+ * docs/09-build-order-and-demo.md, Layer 6: "One accessory try on in the top
+ * look (earrings or a bag)". The watch is here as well because it is the one
+ * accessory endpoint that is confirmed in
+ * src/lib/server/providers/perfectcorp/endpoints.ts, so it is the one that can
+ * run first. The provider has nine accessory endpoints in all; adding another
+ * one here and in src/lib/server/renders/accessory.ts is the whole change.
+ *
+ * Which of these a session can actually render is decided on the server from the
+ * verification state of the endpoint behind it, never here.
+ */
+export const ACCESSORY_CATEGORIES = ["earrings", "bag", "watch"] as const;
+
+export type AccessoryCategory = (typeof ACCESSORY_CATEGORIES)[number];
+
+/** The category named on the chip that starts the try on. */
+export const ACCESSORY_CATEGORY_LABELS: Readonly<
+  Record<AccessoryCategory, string>
+> = {
+  earrings: copy.looks.accessoryEarrings,
+  bag: copy.looks.accessoryBag,
+  watch: copy.looks.accessoryWatch,
+};
+
+export function accessoryCategoryLabel(category: AccessoryCategory): string {
+  return ACCESSORY_CATEGORY_LABELS[category];
+}
+
+/**
+ * One accessory try on: one accessory the person owns, worn on their own
+ * capture, in one category.
+ *
+ * The category is in the request because the wardrobe records accessories under
+ * a single "accessory" type (src/lib/shared/wardrobe-view.ts): a photo of a bag
+ * and a photo of a pair of earrings are the same garment type, so nothing on the
+ * server can tell which endpoint the photo belongs to. The person says which,
+ * and the server checks the garment is theirs and is an accessory before
+ * anything is uploaded.
+ */
+export const accessoryRenderParamsSchema = z.object({
+  garmentId: z.uuid(),
+  category: z.enum(ACCESSORY_CATEGORIES),
+});
+
+export type AccessoryRenderParams = z.infer<typeof accessoryRenderParamsSchema>;
+
+export const accessoryRenderRequestSchema = z.object({
+  kind: z.literal("accessory"),
+  params: accessoryRenderParamsSchema,
+});
+
 /**
  * Every kind of try on POST /api/renders accepts, discriminated by kind.
  *
  * The two hair kinds are declared in src/lib/shared/hair-view.ts and the cloth
  * kind in src/lib/shared/looks-view.ts, each beside the screen that posts it,
  * and they are joined here because the route takes one body and the render
- * layer takes one input.
+ * layer takes one input. The two Layer 6 kinds are declared above rather than
+ * beside /report and /looks: neither is a screen contract of its own, both are
+ * additions to this one route, and keeping them here keeps the union and its
+ * members in one file.
  */
 export const renderRequestSchema = z.discriminatedUnion("kind", [
   makeupRenderRequestSchema,
   hairstyleRenderRequestSchema,
   hairColorRenderRequestSchema,
   clothRenderRequestSchema,
+  skinSimulationRenderRequestSchema,
+  accessoryRenderRequestSchema,
 ]);
 
 export type RenderRequest = z.infer<typeof renderRequestSchema>;

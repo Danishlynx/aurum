@@ -14,6 +14,7 @@ import {
   type Occasion,
 } from "@/lib/shared/looks-view";
 
+import { AccessorySlot, type AccessoryOption } from "./AccessorySlot";
 import { LookCard } from "./LookCard";
 import {
   applyingLine,
@@ -96,9 +97,20 @@ type LooksScreenProps = {
    * look was saved when it was not.
    */
   readonly readOnly: boolean;
+  /**
+   * The accessory try ons this session could actually produce, resolved on the
+   * server (docs/09-build-order-and-demo.md Layer 6). Empty in fixture mode,
+   * without a key, with the kill switch off, with no accessory in the wardrobe,
+   * and for every category whose endpoint is still unverified, which draws no
+   * affordance at all.
+   */
+  readonly accessoryOptions?: readonly AccessoryOption[];
 };
 
-export function LooksScreen({ readOnly }: LooksScreenProps) {
+export function LooksScreen({
+  readOnly,
+  accessoryOptions = [],
+}: LooksScreenProps) {
   const [occasion, setOccasion] = useState<Occasion>(DEFAULT_OCCASION);
   const [view, setView] = useState<LooksView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -353,6 +365,16 @@ export function LooksScreen({ readOnly }: LooksScreenProps) {
             onSave={(lookId) => {
               void save(lookId);
             }}
+            /*
+             * The top look only, docs/09-build-order-and-demo.md Layer 6: "One
+             * accessory try on in the top look". With no options the slot
+             * renders nothing, so the card is unchanged.
+             */
+            accessory={
+              index === 0 && accessoryOptions.length > 0 ? (
+                <AccessorySlot options={accessoryOptions} />
+              ) : null
+            }
           />
         </Column>
       ))}
