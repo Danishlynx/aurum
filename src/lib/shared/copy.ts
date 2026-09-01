@@ -395,6 +395,48 @@ export const copy = {
      */
     faceShapeLineTemplate: "Your face shape reads as {shape}.",
     saveAction: "Save this",
+    /** docs/01-user-flow.md section I names these two sections, items 2 and 3. */
+    stylesHeading: "Styles",
+    colorsHeading: "Colors",
+    /**
+     * In house. docs/01 section I states: "same pending and failed patterns as
+     * Makeup", and section H's pending line is "Applying rust lip". These two
+     * name what the person just chose, in the same two words.
+     */
+    applyingStyleTemplate: "Applying {style}",
+    applyingColorTemplate: "Applying {color}",
+    /**
+     * In house, for the same reason: section H writes "Preview unavailable for
+     * this shade." and section I asks for that pattern here. A style and a color
+     * are two different choices, so each says which one has no preview rather
+     * than borrowing the makeup sentence about a shade.
+     */
+    previewUnavailableStyle: "Preview unavailable for this style.",
+    previewUnavailableColor: "Preview unavailable for this color.",
+    /**
+     * In house. docs/01 section I item 4 has "Save this" store the chosen style
+     * and color but gives no confirmation line. Same wording as the makeup save,
+     * because it is the same promise (docs/02-design-system.md, Toast: one line,
+     * sentence case, no icon).
+     */
+    savedToast: "Saved to your profile.",
+    /** In house, for a save that never reached the profile. */
+    saveFailed: "Your hair choice was not saved. Try again.",
+    /**
+     * In house. docs/01 "Judge mode across the flow" has every screen render
+     * from the saved demo profile, which nobody may write to. Saying so is the
+     * true state; a confirmation toast there would claim a write that the server
+     * refused.
+     */
+    saveReadOnly: "The demo profile is read only, so nothing was saved.",
+    /**
+     * In house. docs/01 section I item 3 puts the hair colors "inside the
+     * palette", so with no palette there are no colors to show. The line says
+     * what happened and what to do, which is what the global rules require of an
+     * empty state.
+     */
+    colorsUnavailable:
+      "Hair colors come from your palette. Confirm your undertone on the color screen and they will appear here.",
   },
 
   /** J. Wardrobe (/wardrobe) */
@@ -509,6 +551,14 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "makeup.savedToast",
   "makeup.saveFailed",
   "makeup.shadeProductTypeTemplate",
+  "hair.applyingStyleTemplate",
+  "hair.applyingColorTemplate",
+  "hair.previewUnavailableStyle",
+  "hair.previewUnavailableColor",
+  "hair.savedToast",
+  "hair.saveFailed",
+  "hair.saveReadOnly",
+  "hair.colorsUnavailable",
   "report.fallbackReadingNoSkinTypeTemplate",
   "report.fallbackSecondConcernTemplate",
   "report.fallbackGoingWellTemplate",
