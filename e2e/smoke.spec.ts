@@ -340,3 +340,106 @@ test.describe("makeup", () => {
     await expect(page.getByRole("link", { name: copy.productCard.viewListing })).toHaveCount(0);
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* I. Hair                                                             */
+/* ------------------------------------------------------------------ */
+
+test.describe("hair", () => {
+  test.skip(
+    externalServer,
+    "Needs the fixture mode server playwright.config.ts starts.",
+  );
+
+  /**
+   * docs/01-user-flow.md section I, items 1 to 3: the face shape line, "a
+   * horizontal row of 3 to 4 rendered try ons", and "a row of 3 to 4 hair colors
+   * inside the palette".
+   *
+   * The counts are asserted as the doc's ranges rather than as the fixture's
+   * four and three, for the same reason the palette counts are: the range is the
+   * rule. Which styles the rules table lands on for an oval face is
+   * src/lib/shared/hair-rules.test.ts's job.
+   */
+  test("shows the face shape line, a row of styles, and a row of colors", async ({
+    page,
+  }) => {
+    await page.goto("/hair");
+
+    await expect(
+      page.getByRole("heading", { name: copy.nav.hair, level: 1 }),
+    ).toBeVisible();
+
+    // Item 1. The sentence opens with the template from copy.ts and continues
+    // with the consequence line the rules table writes for the shape, so this
+    // matches the opening and asserts there is more sentence after it.
+    const shapeLead = copy.hair.faceShapeLineTemplate.split("{")[0] ?? "";
+    const shapeLine = page.locator("p", {
+      hasText: new RegExp(`^${shapeLead}\\S`, "u"),
+    });
+    await expect(shapeLine).toHaveCount(1);
+    await expect(shapeLine).toBeVisible();
+
+    const styles = page
+      .getByRole("group", { name: copy.hair.stylesHeading })
+      .getByRole("button");
+    const styleCount = await styles.count();
+    expect(styleCount).toBeGreaterThanOrEqual(3);
+    expect(styleCount).toBeLessThanOrEqual(4);
+
+    const colors = page
+      .getByRole("group", { name: copy.hair.colorsHeading })
+      .getByRole("button");
+    const colorCount = await colors.count();
+    expect(colorCount).toBeGreaterThanOrEqual(3);
+    expect(colorCount).toBeLessThanOrEqual(4);
+
+    // One line of why under the row, for the style the screen opens on.
+    await expect(
+      page.locator("#hair-style-why"),
+    ).toBeVisible();
+
+    await expect(
+      page.getByRole("button", { name: copy.hair.saveAction }),
+    ).toBeVisible();
+  });
+
+  /**
+   * The absence the fixture carries, which is the same one /makeup carries: no
+   * face is checked in, so there is nothing to render a style on. The hero says
+   * so (section I, "same pending and failed patterns as Makeup") and shows no
+   * image at all, because a try on can never be faked.
+   */
+  test("says the preview is unavailable rather than showing a stand in", async ({
+    page,
+  }) => {
+    await page.goto("/hair");
+
+    await expect(
+      page.getByText(copy.hair.previewUnavailableStyle),
+    ).toBeVisible();
+
+    // Tapping a color moves the hero to the color, and with no photo the line
+    // moves with it. Still no image either way.
+    const colors = page.getByRole("group", { name: copy.hair.colorsHeading });
+    await colors.getByRole("button").first().click();
+    await expect(page.getByText(copy.hair.previewUnavailableColor)).toBeVisible();
+  });
+
+  /**
+   * Section I item 4. The demo profile is read only, so the save is refused with
+   * a 403 and the screen says which of the two things happened rather than
+   * showing the confirmation toast for a write that never landed.
+   */
+  test("answers the save with the read only line, not a confirmation", async ({
+    page,
+  }) => {
+    await page.goto("/hair");
+
+    await page.getByRole("button", { name: copy.hair.saveAction }).click();
+
+    const toast = page.getByRole("status");
+    await expect(toast).toHaveText(copy.hair.saveReadOnly);
+    await expect(page.getByText(copy.hair.savedToast)).toHaveCount(0);
+  });
+});

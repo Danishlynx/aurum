@@ -177,6 +177,29 @@ const cheapestSessionUnits = captureSetReservedUnits + cheapestRenderUnits;
 const cheapestSessionConfirmedUnits =
   captureSetConfirmedUnits + cheapestRenderUnits;
 
+/**
+ * The six renders Layer 3 actually produces, priced on their own.
+ *
+ * The cheapest mix above is a floor, not a flow: nothing in the product renders
+ * six makeup try ons in one session. docs/09-build-order-and-demo.md, Layer 3
+ * definition of done, names a real six ("four rendered styles for a fixture
+ * face, two hair colors on the chosen style") and asks that the budget still
+ * hold for it, so it is priced here as its own session rather than left inside
+ * a list the suite only takes the minimum of.
+ *
+ * Both prices are confirmed figures rather than the unknown cost fallback:
+ * hairstyle try on is a fixed 2 units and hair colour try on a fixed 1 unit in
+ * src/lib/server/providers/perfectcorp/endpoints.ts. The hair colour path is
+ * unverified, which stops the call being made at all, but it does not make the
+ * price a guess.
+ */
+const documentedMix = RENDER_MIXES[1];
+const documentedRenderUnits = mixUnits(documentedMix);
+
+const documentedSessionUnits = captureSetReservedUnits + documentedRenderUnits;
+const documentedSessionConfirmedUnits =
+  captureSetConfirmedUnits + documentedRenderUnits;
+
 const CAP = configuredJudgeCreditsCap();
 const PER_SESSION_BUDGET = perSessionBudgetUnits(CAP);
 
@@ -235,11 +258,20 @@ const summary: Record<string, unknown> = {
     label: mix.label,
     renders: mixRenderCount(mix),
     units: mixUnits(mix),
+    sessionUnits: captureSetReservedUnits + mixUnits(mix),
+    requiredCapUnits: requiredCapUnits(captureSetReservedUnits + mixUnits(mix)),
   })),
   cheapestSessionUnits,
   cheapestSessionConfirmedUnits,
+  documentedSessionUnits,
+  documentedSessionConfirmedUnits,
   requiredCapUnits: requiredCapUnits(cheapestSessionUnits),
   capShortfallUnits: Math.max(0, requiredCapUnits(cheapestSessionUnits) - CAP),
+  documentedRequiredCapUnits: requiredCapUnits(documentedSessionUnits),
+  documentedCapShortfallUnits: Math.max(
+    0,
+    requiredCapUnits(documentedSessionUnits) - CAP,
+  ),
   timingsRan: false,
   timingsSkippedReason: "",
 };
@@ -298,14 +330,31 @@ describe("eval:budget", () => {
     for (const mix of RENDER_MIXES) {
       expect(mixRenderCount(mix), `${mix.label} is not six renders`).toBe(6);
     }
-    // Six makeup renders at 1 unit each.
+
+    // Mix one, the floor: six makeup try ons at 1 unit each.
+    //   6 x 1 = 6 units
+    expect(perfectCorpUnits("makeupTryOn")).toBe(1);
     expect(mixUnits(RENDER_MIXES[0])).toBe(6);
-    // Four hairstyle renders at 2 units plus two hair color renders at 1 unit.
+
+    // Mix two, docs/09 Layer 3: four hairstyle try ons at 2 units, then two
+    // hair colour try ons at 1 unit.
+    //   4 x 2 = 8, 2 x 1 = 2, 8 + 2 = 10 units
+    expect(perfectCorpUnits("hairstyleTryOn")).toBe(2);
+    expect(perfectCorpUnits("hairColorTryOn")).toBe(1);
     expect(mixUnits(RENDER_MIXES[1])).toBe(10);
+
+    // Neither hair price is a fallback, so the 10 above is arithmetic on
+    // published figures rather than on a placeholder.
+    expect(hasUnknownCost("hairstyleTryOn")).toBe(false);
+    expect(hasUnknownCost("hairColorTryOn")).toBe(false);
+
     expect(cheapestRenderUnits).toBe(
       Math.min(...RENDER_MIXES.map((mix) => mixUnits(mix))),
     );
     expect(cheapestSessionUnits).toBe(49);
+    expect(documentedRenderUnits).toBe(10);
+    expect(documentedSessionUnits).toBe(53);
+    expect(documentedSessionConfirmedUnits).toBe(52);
   });
 
   /*
@@ -365,6 +414,62 @@ describe("eval:budget", () => {
     // the conclusion does not rest on the unpriced row.
     expect(cheapestSessionConfirmedUnits).toBe(48);
     expect(requiredCapUnits(cheapestSessionConfirmedUnits)).toBeGreaterThan(CAP);
+  });
+
+  /*
+   * The same two questions asked of the six renders Layer 3 actually produces.
+   * They are separate tests rather than a second argument to the two above,
+   * because a mix that comes inside the budget while another does not is a
+   * result worth reading on its own line.
+   *
+   * The arithmetic, with JUDGE_CREDITS_CAP=120 from .env.example:
+   *
+   *   capture set, confirmed rows only   10 + 20 + 10 + 2      = 42 units
+   *   skin analysis                      unpriced, reserves      1 unit
+   *   four hairstyle try ons             4 x 2                 =  8 units
+   *   two hair colour try ons            2 x 1                 =  2 units
+   *                                                             -------
+   *   one Layer 3 session                                      = 53 units
+   *
+   *   per session budget = 120 / (3 x 1.2)                     = 33 units
+   *   over budget by                                           = 20 units
+   *
+   *   cap needed for 3 sessions + 20 percent = ceil(53 x 3.6)  = 191 units
+   *   configured cap                                           = 120 units
+   *   short by                                                 = 71 units
+   *
+   * So Layer 3's definition of done ("Budget still within the per session cap
+   * (adjust candidate counts if not)") is not met at the configured cap, and it
+   * cannot be met by cutting candidates either: three styles and two colours is
+   * 8 units of renders on a 43 unit capture set, which is still 51 against 33.
+   * The capture set is what does not fit, so this stays a cap decision for the
+   * human rather than a quiet reduction of the screen docs/01 describes.
+   */
+
+  it.fails(
+    "keeps the documented Layer 3 session (four styles, two hair colors) under the per session credit budget",
+    () => {
+      // Fails today: 53 units against a 33 unit budget.
+      expect(documentedSessionUnits).toBeLessThanOrEqual(PER_SESSION_BUDGET);
+    },
+  );
+
+  it.fails(
+    "leaves JUDGE_CREDITS_CAP enough headroom for 3 Layer 3 sessions plus 20 percent",
+    () => {
+      // Fails today: 191 units needed against a 120 unit cap.
+      expect(CAP).toBeGreaterThanOrEqual(requiredCapUnits(documentedSessionUnits));
+    },
+  );
+
+  it("states the Layer 3 shortfall exactly as well", () => {
+    expect(requiredCapUnits(documentedSessionUnits)).toBe(191);
+    expect(requiredCapUnits(documentedSessionUnits) - CAP).toBe(71);
+    expect(documentedSessionUnits - PER_SESSION_BUDGET).toBe(20);
+
+    // Layer 3 is the more expensive of the two sixes, by the four hairstyle
+    // renders costing 2 units where a makeup render costs 1: 53 - 49 = 4.
+    expect(documentedSessionUnits - cheapestSessionUnits).toBe(4);
   });
 
   it("reports p50 and p95 time from capture accept to report render", () => {

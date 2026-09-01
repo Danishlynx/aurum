@@ -12,7 +12,11 @@ import { describe, expect, it, vi } from "vitest";
  */
 vi.mock("server-only", () => ({}));
 
-import { DEMO_FIXTURE_REPORT_VIEW } from "@/lib/server/profile/demo-fixture";
+import {
+  DEMO_FIXTURE_HAIR_VIEW,
+  DEMO_FIXTURE_REPORT_VIEW,
+} from "@/lib/server/profile/demo-fixture";
+import type { HairView } from "@/lib/shared/hair-view";
 import type { ReportView } from "@/lib/shared/report-view";
 
 import {
@@ -380,6 +384,68 @@ describe("eval:safety, lexicon over the demo fixture report", () => {
     expect(steps.length).toBeGreaterThan(0);
     for (const step of steps) {
       expect(step.product, `${step.stepName} carries a listing`).toBeNull();
+    }
+  });
+});
+
+/**
+ * The other generated fixture output a judge reads: the /hair screen.
+ *
+ * Its sentences are not in copy.ts and are therefore not covered by the lexicon
+ * block at the top of this file. The face shape line, the one line of why under
+ * each style, and the one line under each hair colour are all written in
+ * src/lib/shared/hair-rules.ts, next to the rule that chooses them, the same way
+ * the palette writes its own reasons in src/lib/shared/palette.ts. That keeps a
+ * reason beside its rule, but it also means the only thing standing between
+ * those sentences and a banned term is this check.
+ */
+function hairViewStrings(view: HairView): CopyEntry[] {
+  const entries: CopyEntry[] = [
+    { path: "faceShapeLine", value: view.faceShapeLine },
+  ];
+  for (const style of view.styles) {
+    entries.push({ path: `styles.${style.id}.name`, value: style.name });
+    entries.push({ path: `styles.${style.id}.why`, value: style.why });
+  }
+  for (const color of view.colors) {
+    entries.push({ path: `colors.${color.name}.name`, value: color.name });
+    entries.push({ path: `colors.${color.name}.why`, value: color.why });
+  }
+  return entries;
+}
+
+describe("eval:safety, lexicon over the demo fixture hair view", () => {
+  const HAIR_STRINGS = hairViewStrings(DEMO_FIXTURE_HAIR_VIEW);
+
+  it("has fixture text to check", () => {
+    // Section I asks for 3 to 4 styles and 3 to 4 colours, so the smallest
+    // honest screen is the face shape line plus three of each with a name and a
+    // reason: 1 + 6 + 6.
+    expect(HAIR_STRINGS.length).toBeGreaterThanOrEqual(13);
+  });
+
+  it("finds no banned lexicon term, exclamation, or dash in any of it", () => {
+    for (const entry of HAIR_STRINGS) {
+      for (const violation of checkLexicon(entry.value)) {
+        throw new Error(
+          `${entry.path}: ${describeViolation(violation)} in "${entry.value}"`,
+        );
+      }
+    }
+  });
+
+  it("shows no render, so nothing on the demo hair screen is an invented try on", () => {
+    // docs/06-safety-privacy.md, "Grounding and honesty", applied to images: no
+    // Perfect Corp call has ever been made for the fixture, so every option has
+    // to be in the not yet rendered state and the screen has to say so.
+    expect(DEMO_FIXTURE_HAIR_VIEW.captureImageUrl).toBeNull();
+    for (const style of DEMO_FIXTURE_HAIR_VIEW.styles) {
+      expect(style.renderUrl, `${style.id} carries a render`).toBeNull();
+      expect(style.renderStatus).toBe("none");
+    }
+    for (const color of DEMO_FIXTURE_HAIR_VIEW.colors) {
+      expect(color.renderUrl, `${color.name} carries a render`).toBeNull();
+      expect(color.renderStatus).toBe("none");
     }
   });
 });
