@@ -64,6 +64,7 @@ Keep these working at all times. If you add a command, add it here and to packag
 - npm run eval:capture, eval:consistency, eval:palette, eval:synthesis, eval:grounding, eval:stylist, eval:budget, eval:safety: the suites defined in docs/05-evals.md
 - npm run eval:smoke: the fast subset that runs on every PR
 - npm run db:migrate and npm run db:types: apply Supabase migrations and regenerate types
+- npm run shots: capture every screen at 390px in fixture mode and run the automatable anti slop checks
 
 ## Repository layout
 
