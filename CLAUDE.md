@@ -56,6 +56,7 @@ Keep these working at all times. If you add a command, add it here and to packag
 
 - npm run dev: local dev server
 - npm run build: production build, must pass before any PR
+- npm run start: serve the production build locally, after npm run build
 - npm run lint: ESLint plus a custom rule that fails on em dashes and en dashes in src and docs
 - npm run typecheck: tsc with no emit
 - npm run test: unit tests
