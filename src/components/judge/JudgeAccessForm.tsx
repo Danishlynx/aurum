@@ -3,19 +3,25 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 
-import { Button, ButtonLink } from "@/components/ui/Button";
+import { Button, buttonClassName } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { createJudgeSession } from "@/lib/client/api";
-import { rememberJudgeRemaining } from "@/lib/client/judge-session";
+import {
+  judgeLanding,
+  rememberJudgeRemaining,
+} from "@/lib/client/judge-session";
 import { copy } from "@/lib/shared/copy";
 
 /**
  * B. Judge access, docs/01-user-flow.md section B.
  *
- * A valid code sets the httpOnly session cookie server side and routes to
- * /welcome. A session that has already used its analyses does not route: it says
- * so and offers the saved demo profile, because docs/07-payments-and-judge-mode.md
- * promises a judge is never stranded on a dead screen.
+ * A valid code sets the httpOnly session cookie server side and routes to where
+ * the session can actually be used: /welcome when it has an analysis to spend,
+ * /report when it was given none and will read the saved demo profile. A session
+ * that was given analyses and spent them does not route at all: it says so and
+ * offers the demo profile, because docs/07-payments-and-judge-mode.md promises a
+ * judge is never stranded on a dead screen. judgeLanding in
+ * src/lib/client/judge-session.ts holds that decision and explains each case.
  *
  * The sentence shown for a failure is chosen here, not read from the response
  * body, so the voice rules hold whatever a route decides to return.
@@ -48,21 +54,8 @@ export function JudgeAccessForm() {
 
     rememberJudgeRemaining(result.data.analysesRemaining);
 
-    /*
-     * A session that was given analyses and has none left is the exhausted state
-     * docs/01-user-flow.md section B writes, and it says so here.
-     *
-     * A session that was given none at all is a different thing and gets the
-     * ordinary route into the app. This build sets JUDGE_ANALYSES_ALLOWED=0
-     * (docs/07-payments-and-judge-mode.md): judges walk the whole flow, consent
-     * included, and every screen renders from the saved demo profile, with the
-     * capture screen disabled and saying so. Sending them to a dead end on the
-     * access screen instead would hide the app the code was meant to open.
-     */
-    if (
-      result.data.analysesRemaining === 0 &&
-      result.data.analysesAllowed > 0
-    ) {
+    const landing = judgeLanding(result.data);
+    if (landing === "exhausted") {
       setPending(false);
       setExhausted(true);
       return;
@@ -77,7 +70,7 @@ export function JudgeAccessForm() {
      * rendered before the session existed, so the first screens of the judge
      * flow would carry no banner at all until something forced a reload.
      */
-    window.location.assign("/welcome");
+    window.location.assign(landing);
   }
 
   if (exhausted) {
@@ -86,9 +79,15 @@ export function JudgeAccessForm() {
         <p className="rounded-sm border border-accent bg-surface px-4 py-3 font-body text-body text-text">
           {copy.judge.exhausted}
         </p>
-        <ButtonLink variant="primary" href="/report">
+        {/*
+          A plain anchor, for the reason the assign above is a whole page load:
+          the session cookie was set moments ago and the banner is drawn by the
+          root layout from that cookie, which a client transition would keep as
+          it was rendered before the code was entered.
+        */}
+        <a href="/report" className={buttonClassName("primary")}>
           {copy.judge.exploreDemoAction}
-        </ButtonLink>
+        </a>
       </div>
     );
   }

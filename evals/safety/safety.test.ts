@@ -19,6 +19,7 @@ import {
 import type { HairView } from "@/lib/shared/hair-view";
 import type { ReportView } from "@/lib/shared/report-view";
 
+import { consentErrorLine } from "@/components/welcome/ConsentForm";
 import {
   COPY_NOT_IN_FLOW_DOC,
   copy,
@@ -287,6 +288,44 @@ describe("eval:safety, copy provenance and formatting", () => {
     expect(formatJudgeBanner(3)).toBe(copy.judge.bannerExample);
     expect(formatJudgeBanner(1)).toBe("Judge session. 1 analysis remaining.");
     expect(formatJudgeBanner(0)).toBe("Judge session. 0 analyses remaining.");
+  });
+});
+
+/**
+ * Error copy has to be true as well as clean.
+ *
+ * docs/01-user-flow.md, "Global states and rules": an error says what happened
+ * and what to do. A consent post that comes back 401 reached the server and was
+ * answered by it, so the offline line ("The app could not reach the server")
+ * would be a false account of what happened, which the honesty rule in
+ * docs/06-safety-privacy.md rules out as firmly as it rules out an invented
+ * product.
+ *
+ * The component's own decision is checked here rather than a copy of it, so the
+ * two cannot drift. The screen cannot be driven from this suite (there is no DOM
+ * environment and no server to answer a post), and the 401 itself is not
+ * reachable from the end to end servers, which have no Supabase project to
+ * resolve a signed in person against. What can be pinned down is the choice
+ * between the two sentences, which is where the bug was.
+ */
+describe("eval:safety, the consent screen tells the truth about a refusal", () => {
+  it("says the session is missing when the server answered 401", () => {
+    expect(consentErrorLine("unauthorized")).toBe(copy.errors.sessionMissing);
+    expect(consentErrorLine("unauthorized")).not.toBe(copy.errors.requestFailed);
+  });
+
+  it("keeps the offline line for a request that never arrived", () => {
+    expect(consentErrorLine("network")).toBe(copy.errors.requestFailed);
+    for (const kind of ["forbidden", "capped", "invalid", "server"] as const) {
+      expect(consentErrorLine(kind)).toBe(copy.errors.requestFailed);
+    }
+  });
+
+  it("points at the judge door without claiming a connection problem", () => {
+    const line = copy.errors.sessionMissing;
+    expect(line).toContain("access code");
+    expect(line.toLowerCase()).not.toContain("connection");
+    expect(checkCopyString(line)).toEqual([]);
   });
 });
 

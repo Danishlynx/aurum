@@ -1,5 +1,9 @@
+import { redirect } from "next/navigation";
+
 import { Column } from "@/components/layout/Column";
 import { ConsentForm } from "@/components/welcome/ConsentForm";
+import { judgeAnalysesRemaining } from "@/lib/server/judge";
+import { readJudgeSessionFromCookie } from "@/lib/server/judge/guard";
 import { copy } from "@/lib/shared/copy";
 
 /**
@@ -9,10 +13,33 @@ import { copy } from "@/lib/shared/copy";
  * button, no illustration. It is a screen and never a modal
  * (docs/06-safety-privacy.md, "Consent").
  *
- * A returning person with a profile skips this screen and lands on /report.
- * That redirect needs the session, so it lands with the auth work in Layer 0.
+ * docs/01-user-flow.md section C: "Returning person with a profile: this screen
+ * is skipped; they land on /report." A judge session with no analyses left is
+ * that person. It reads the saved demo profile on every screen
+ * (src/lib/server/judge/demo.ts) and can never take a photo, so consent here
+ * would gate nothing and the capture screen behind it is one it cannot use. The
+ * redirect is server side rather than a decision the access form makes alone,
+ * because a bookmark, a back button, or the landing page's own button can all
+ * arrive here without going through /judge.
+ *
+ * The other half of that doc line, a signed in person who already has a profile,
+ * still waits on the auth work: it needs a session read that reaches Supabase,
+ * which this screen must not require on a build with no project configured.
+ *
+ * Nothing about consent is weakened by the redirect. A session that skips this
+ * screen has recorded no consent, and the capture and analyze routes answer 403
+ * without it (docs/06-safety-privacy.md), so no photo can be read either way.
  */
-export default function WelcomePage() {
+
+/** The page reads the judge cookie, so it is never statically rendered. */
+export const dynamic = "force-dynamic";
+
+export default async function WelcomePage() {
+  const judge = await readJudgeSessionFromCookie();
+  if (judge !== null && judgeAnalysesRemaining(judge) === 0) {
+    redirect("/report");
+  }
+
   return (
     <main className="py-12">
       <Column className="flex flex-col gap-8">

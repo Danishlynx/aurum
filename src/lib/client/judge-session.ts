@@ -72,3 +72,38 @@ export function decrementJudgeRemaining(): void {
   }
   writeRemaining(current - 1);
 }
+
+// ---------------------------------------------------------------------------
+// Where the code lands
+// ---------------------------------------------------------------------------
+
+/**
+ * What /judge does once the code has opened a session.
+ *
+ * "/welcome": the ordinary way in. The session has an analysis, so a photo will
+ * be taken, and docs/06-safety-privacy.md makes consent the gate in front of it.
+ *
+ * "/report": the session was given no analyses at all, which is what this build
+ * ships (JUDGE_ANALYSES_ALLOWED=0, docs/07-payments-and-judge-mode.md). No photo
+ * can ever be taken with it, so every screen is read from the saved demo
+ * profile. docs/01-user-flow.md section C: a person who already has a profile
+ * skips the consent screen and lands on /report. A judge exploring the demo
+ * profile is that person, and routing them through consent to a capture screen
+ * they can never use is two screens of dead end.
+ *
+ * "exhausted": the session was given analyses and has spent them, which is the
+ * state docs/01-user-flow.md section B writes copy for. It is told on /judge, in
+ * that copy, with the way into the demo profile under it, because "this session
+ * has used its 3 analyses" is true only here and is worth saying.
+ */
+export type JudgeLanding = "/welcome" | "/report" | "exhausted";
+
+export function judgeLanding(session: {
+  readonly analysesAllowed: number;
+  readonly analysesRemaining: number;
+}): JudgeLanding {
+  if (session.analysesRemaining > 0) {
+    return "/welcome";
+  }
+  return session.analysesAllowed > 0 ? "exhausted" : "/report";
+}

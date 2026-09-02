@@ -41,6 +41,7 @@ import {
   JUDGE_FIXTURE_ENV,
 } from "@/lib/server/judge/fixture-store";
 import { refuseWhenJudgeAnalysesExhausted } from "@/lib/server/judge/guard";
+import { judgeLanding } from "@/lib/client/judge-session";
 import { saveLook } from "@/lib/server/looks/save";
 import { confirmUndertone } from "@/lib/server/profile/color";
 import { deleteEverything, setKeepOriginals } from "@/lib/server/profile/delete";
@@ -322,6 +323,50 @@ describe("eval:safety, the capture and analyze guard at zero", () => {
         requestId: "request-3",
       });
     }).not.toThrow();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Where the code lands                                                */
+/* ------------------------------------------------------------------ */
+
+describe("eval:safety, where the judge code lands", () => {
+  it("sends a session that was given no analyses to the demo profile", () => {
+    // docs/01-user-flow.md section C: a person who already has a profile skips
+    // the consent screen and lands on /report. This session reads the saved demo
+    // profile on every screen and can never take a photo, so it is that person.
+    expect(judgeLanding({ analysesAllowed: 0, analysesRemaining: 0 })).toBe(
+      "/report",
+    );
+  });
+
+  it("never routes a session with no analyses at the capture flow", () => {
+    // /welcome is the consent screen, and the only thing behind it is /capture,
+    // which this session is refused at with 429 above. Landing there is the two
+    // screen dead end this decision exists to prevent.
+    expect(judgeLanding({ analysesAllowed: 0, analysesRemaining: 0 })).not.toBe(
+      "/welcome",
+    );
+  });
+
+  it("keeps consent in front of a session that can still take a photo", () => {
+    // docs/06-safety-privacy.md: nothing is captured before consent, so a judge
+    // with an analysis to spend goes through /welcome like anyone else.
+    expect(judgeLanding({ analysesAllowed: 3, analysesRemaining: 3 })).toBe(
+      "/welcome",
+    );
+    expect(judgeLanding({ analysesAllowed: 3, analysesRemaining: 1 })).toBe(
+      "/welcome",
+    );
+  });
+
+  it("tells a session that spent its analyses rather than routing it", () => {
+    // docs/01-user-flow.md section B writes copy for this state and no other:
+    // "This session has used its 3 analyses." It is true only when three were
+    // given, which is why it is not what a zero session is told.
+    expect(judgeLanding({ analysesAllowed: 3, analysesRemaining: 0 })).toBe(
+      "exhausted",
+    );
   });
 });
 

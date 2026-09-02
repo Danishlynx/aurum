@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { JUDGE_E2E_CODE } from "../playwright.config";
 import { copy, formatJudgeBanner } from "../src/lib/shared/copy";
+import { CONSENT_VERSION } from "../src/lib/shared/schemas";
 
 /**
  * The judge session this build actually ships: JUDGE_ANALYSES_ALLOWED=0.
@@ -35,13 +36,39 @@ test.describe("judge session with no analyses", () => {
     "Needs the judge mode server playwright.config.ts starts on port 3100.",
   );
 
-  /** Types the code on /judge and waits for wherever it lands. */
+  /** Types the code on /judge and waits for where a zero session lands. */
   async function openJudgeSession(page: Page): Promise<void> {
     await page.goto("/judge");
     await page
       .getByRole("textbox", { name: copy.judge.fieldPlaceholder })
       .fill(JUDGE_E2E_CODE);
     await page.getByRole("button", { name: copy.judge.submitAction }).click();
+    await page.waitForURL("**/report");
+  }
+
+  /**
+   * Records consent the way this session can: through the route.
+   *
+   * docs/06-safety-privacy.md keeps consent in front of every capture, and a
+   * judge's consent is recorded on the session row rather than on a profiles row
+   * (migration 0008). A zero session no longer passes the consent screen on its
+   * way in, so the tests below that need consent recorded ask the route for it
+   * directly, which is what the screen does.
+   */
+  async function recordConsent(page: Page): Promise<void> {
+    const response = await page.request.post("/api/consent", {
+      data: {
+        isAdultConfirmed: true,
+        agreesToProcessing: true,
+        keepOriginals: false,
+        consentVersion: CONSENT_VERSION,
+      },
+    });
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      keepOriginals: false,
+    });
   }
 
   /**
@@ -49,17 +76,19 @@ test.describe("judge session with no analyses", () => {
    *
    * A session that was given three analyses and spent them shows the exhausted
    * panel docs/01 section B writes. A session that was given none never had
-   * three, so it gets the ordinary route in: /welcome, where consent is, because
-   * consent is not an analysis and the flow is the thing being judged.
+   * three and can never take a photo, so consent gates nothing for it and the
+   * capture screen behind consent is one it cannot use. docs/01 section C:
+   * "Returning person with a profile: this screen is skipped; they land on
+   * /report." This session reads the saved demo profile, so it is that person.
    */
-  test("lands on the consent screen with the banner already at zero", async ({
+  test("lands on the demo profile with the banner already at zero", async ({
     page,
   }) => {
     await openJudgeSession(page);
 
-    await page.waitForURL("**/welcome");
+    await expect(page).toHaveURL(/\/report$/u);
     await expect(
-      page.getByRole("heading", { name: copy.welcome.title, level: 1 }),
+      page.getByRole("heading", { name: copy.nav.report, level: 1 }),
     ).toBeVisible();
 
     // The banner, on the first screen after the code, with the real count. The
@@ -72,24 +101,34 @@ test.describe("judge session with no analyses", () => {
   });
 
   /**
-   * Consent still works. docs/06-safety-privacy.md makes this screen load
-   * bearing for everyone, judges included, and a judge's consent is recorded on
-   * the session row rather than on a profiles row (migration 0008).
+   * The same decision, made on the server, for everyone who arrives at /welcome
+   * without going through the access form: a bookmark, the back button, or the
+   * landing page's own "Start with a selfie".
    */
-  test("records consent and moves on to capture", async ({ page }) => {
+  test("sends this session away from the consent screen", async ({ page }) => {
     await openJudgeSession(page);
-    await page.waitForURL("**/welcome");
 
-    await page.getByText(copy.welcome.checkboxAge).click();
-    await page.getByText(copy.welcome.checkboxProcessing).click();
+    await page.goto("/welcome");
 
-    const continueButton = page.getByRole("button", {
-      name: copy.welcome.continueAction,
-    });
-    await expect(continueButton).toBeEnabled();
-    await continueButton.click();
+    await expect(page).toHaveURL(/\/report$/u);
+    await expect(
+      page.getByRole("heading", { name: copy.welcome.title, level: 1 }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: copy.welcome.continueAction }),
+    ).toHaveCount(0);
+    await expect(page.getByText(formatJudgeBanner(0)).first()).toBeVisible();
+  });
 
-    await page.waitForURL("**/capture");
+  /**
+   * Consent still works for a judge, and is still recorded on the session row.
+   * The screen is no longer in this session's path, but the route it posts to is
+   * the same one, and it is what the capture guard reads.
+   */
+  test("records consent against the session", async ({ page }) => {
+    await openJudgeSession(page);
+
+    await recordConsent(page);
   });
 
   /**
@@ -102,7 +141,6 @@ test.describe("judge session with no analyses", () => {
     page,
   }) => {
     await openJudgeSession(page);
-    await page.waitForURL("**/welcome");
     await page.goto("/capture");
 
     await expect(
@@ -135,13 +173,9 @@ test.describe("judge session with no analyses", () => {
     page,
   }) => {
     await openJudgeSession(page);
-    await page.waitForURL("**/welcome");
 
     // Consent first, so the refusal below is the cap and not the consent gate.
-    await page.getByText(copy.welcome.checkboxAge).click();
-    await page.getByText(copy.welcome.checkboxProcessing).click();
-    await page.getByRole("button", { name: copy.welcome.continueAction }).click();
-    await page.waitForURL("**/capture");
+    await recordConsent(page);
 
     const captures = await page.request.post("/api/captures", {
       data: {
@@ -186,9 +220,7 @@ test.describe("judge session with no analyses", () => {
     page,
   }) => {
     await openJudgeSession(page);
-    await page.waitForURL("**/welcome");
 
-    await page.goto("/report");
     await expect(
       page.getByRole("heading", { name: copy.nav.report, level: 1 }),
     ).toBeVisible();
@@ -253,7 +285,6 @@ test.describe("judge session with no analyses", () => {
     page,
   }) => {
     await openJudgeSession(page);
-    await page.waitForURL("**/welcome");
 
     await page.goto("/hair");
     await page.getByRole("button", { name: copy.hair.saveAction }).click();

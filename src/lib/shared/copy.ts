@@ -752,6 +752,15 @@ export const copy = {
      */
     requestFailed:
       "The app could not reach the server. Check your connection and try again.",
+    /**
+     * In house. The server answered 401, so requestFailed above would be untrue:
+     * the app reached the server and the server said there is no session on this
+     * device. docs/01 "Global states and rules" asks an error to say what
+     * happened and what to do, and docs/01 section B is the door a judge is
+     * meant to come through, so the line names it.
+     */
+    sessionMissing:
+      "This screen needs a session. If you are judging, enter your access code first.",
   },
 
   /** Toasts: one line, sentence case, no icons, gone in 3 seconds. */
@@ -859,6 +868,7 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "profile.skinTypeValueTemplate",
   "profile.toneValueTemplate",
   "errors.requestFailed",
+  "errors.sessionMissing",
   "common.close",
   "privacy.points.0",
   "privacy.points.1",

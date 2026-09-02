@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Sheet } from "@/components/ui/Sheet";
 import { Toggle } from "@/components/ui/Toggle";
-import { saveConsent } from "@/lib/client/api";
+import { saveConsent, type ApiFailureKind } from "@/lib/client/api";
 import { copy } from "@/lib/shared/copy";
 
 /**
@@ -20,6 +20,22 @@ import { copy } from "@/lib/shared/copy";
  * the capture and analyze routes return 403 until consent_at and
  * is_adult_confirmed are set, so this is a gate, not a formality.
  */
+
+/**
+ * The sentence shown when the consent post did not succeed.
+ *
+ * Split out so it can be checked without a browser, and because the two cases
+ * are not the same failure. POST /api/consent answers 401 when there is no
+ * Supabase user and no judge cookie on this device (requireSession in
+ * src/lib/server/http/handler.ts). Saying "The app could not reach the server"
+ * there would be false: the server was reached, and it answered. The honest
+ * line says what is missing and points at the judge door from docs/01 section B.
+ */
+export function consentErrorLine(kind: ApiFailureKind): string {
+  return kind === "unauthorized"
+    ? copy.errors.sessionMissing
+    : copy.errors.requestFailed;
+}
 export function ConsentForm() {
   const router = useRouter();
   const [isAdult, setIsAdult] = useState(false);
@@ -41,7 +57,7 @@ export function ConsentForm() {
     const result = await saveConsent(keepOriginals);
     if (!result.ok) {
       setPending(false);
-      setError(copy.errors.requestFailed);
+      setError(consentErrorLine(result.kind));
       return;
     }
 
