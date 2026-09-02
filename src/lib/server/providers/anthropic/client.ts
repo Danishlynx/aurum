@@ -35,11 +35,18 @@ export function anthropicClient(): Anthropic {
       message: "ANTHROPIC_API_KEY is not set on the server.",
     });
   }
+  // Identity linked API keys (a 2026 console key type) are rejected with 400
+  // unless every request names the workspace it acts on. Standard workspace
+  // keys need no header, so this stays optional and absent by default.
+  const workspaceId = process.env.ANTHROPIC_WORKSPACE_ID;
   cached = new Anthropic({
     apiKey,
     // The TypeScript SDK takes milliseconds.
     timeout: ANTHROPIC_HTTP_TIMEOUT_MS,
     maxRetries: 0,
+    ...(typeof workspaceId === "string" && workspaceId.length > 0
+      ? { defaultHeaders: { "anthropic-workspace-id": workspaceId } }
+      : {}),
   });
   return cached;
 }
