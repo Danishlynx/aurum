@@ -126,7 +126,34 @@ export async function uploadObject(args: {
   return data.path;
 }
 
-/** Removes objects. Missing objects are not an error worth failing a job for. */
+/**
+ * Removes objects. Missing objects are not an error worth failing a job for, so
+ * this still does not throw: a delete is called from paths that must finish
+ * (removeGarment, the scheduled purges) and none of them has anything useful to
+ * do with the failure.
+ *
+ * It does not stay silent, though. It used to discard the result entirely,
+ * which meant a delete that genuinely failed looked exactly like one that
+ * succeeded. removeGarment then went on to delete the row, and the photo was
+ * left in the bucket with nothing pointing at it and no line anywhere saying
+ * so. That is the outcome the ordering in removeGarment exists to prevent
+ * ("the object goes first"), and docs/06-safety-privacy.md, "Retention", is the
+ * promise it keeps. A warning is the least this can do and still be honest.
+ *
+ * Verified against the live project: a successful remove returns error null
+ * with one entry per path actually removed, and removing a path that is already
+ * gone returns error null with an empty array, so an empty result is not a
+ * failure and is not logged as one.
+ *
+ * One live observation worth knowing when testing a delete by hand. Reading an
+ * object before removing it leaves downloadObject serving the bytes for around
+ * a minute after the remove has succeeded, while list() already shows the
+ * object gone. A signed read URL, which is the only path anything outside this
+ * server is ever given, returns 400 immediately. So the staleness is confined
+ * to the service role read path and is not exposure; a test that asserts a
+ * delete by calling downloadObject will still get bytes and should use list()
+ * or a signed read instead.
+ */
 export async function removeObjects(
   bucket: BucketName,
   storagePaths: readonly string[],
@@ -134,7 +161,20 @@ export async function removeObjects(
   if (storagePaths.length === 0) {
     return;
   }
-  await serviceClient()
+  const result = await serviceClient()
     .storage.from(bucket)
     .remove([...storagePaths]);
+
+  if (result.error !== null) {
+    // The bucket and the count, never a path: an object path is part of a
+    // signed URL (migration 0006, "Never log an object path").
+    console.warn(
+      JSON.stringify({
+        event: "aurum.storage_remove_failed",
+        bucket,
+        objects: storagePaths.length,
+        error: result.error.message,
+      }),
+    );
+  }
 }
