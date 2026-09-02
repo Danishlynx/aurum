@@ -503,6 +503,17 @@ test.describe("keyboard", () => {
 
     await expect(continueAction).toBeDisabled();
 
+    /*
+     * The back control from the screen skeleton is the first thing in the
+     * document (docs/02-design-system.md, "Layout": back, title, then the
+     * screen), so it is the first thing a keyboard reaches. It is a link with no
+     * visible label, which the design system allows for this control and the
+     * shutter alone, so it is reached by its accessible name.
+     */
+    expect(
+      await tabTo(page, page.getByRole("link", { name: copy.nav.back })),
+    ).toBe(1);
+
     expect(await tabTo(page, age)).toBe(1);
     await page.keyboard.press("Space");
     await expect(age).toBeChecked();

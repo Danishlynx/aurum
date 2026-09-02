@@ -1,10 +1,12 @@
 import { redirect } from "next/navigation";
 
+import { BackLink } from "@/components/app-shell/BackLink";
 import { Column } from "@/components/layout/Column";
 import { ConsentForm } from "@/components/welcome/ConsentForm";
 import { judgeAnalysesRemaining } from "@/lib/server/judge";
 import { readJudgeSessionFromCookie } from "@/lib/server/judge/guard";
 import { copy } from "@/lib/shared/copy";
+import { backTargetFor } from "@/lib/shared/navigation";
 
 /**
  * C. Welcome and consent, docs/01-user-flow.md section C.
@@ -41,34 +43,49 @@ export default async function WelcomePage() {
   }
 
   return (
-    <main className="py-12">
-      <Column className="flex flex-col gap-8">
-        <h1 className="font-display text-display-2 font-light text-text">
-          {copy.welcome.title}
-        </h1>
+    <>
+      {/*
+        The header row of the screen skeleton (docs/02-design-system.md,
+        "Layout"). This group has no shared shell, so the screen draws its own.
+        Back goes to the landing screen: nothing has been recorded at this point,
+        so leaving costs the person nothing, and a screen of consent text with no
+        way out is a wall. src/lib/shared/navigation.ts holds the decision.
+      */}
+      <header className="pt-6">
+        <Column>
+          <BackLink href={backTargetFor("/welcome")} />
+        </Column>
+      </header>
 
-        <section className="flex flex-col gap-2">
-          <h2 className="font-display text-title font-normal text-text">
-            {copy.welcome.section1Heading}
-          </h2>
-          <p className="max-w-[64ch] font-body text-body text-text-muted">
-            {copy.welcome.section1Body}
-          </p>
-        </section>
+      <main className="pb-12 pt-2">
+        <Column className="flex flex-col gap-8">
+          <h1 className="font-display text-display-2 font-light text-text">
+            {copy.welcome.title}
+          </h1>
 
-        <section className="flex flex-col gap-2 border-t border-raised pt-8">
-          <h2 className="font-display text-title font-normal text-text">
-            {copy.welcome.section2Heading}
-          </h2>
-          <p className="max-w-[64ch] font-body text-body text-text-muted">
-            {copy.welcome.section2Body}
-          </p>
-        </section>
+          <section className="flex flex-col gap-2">
+            <h2 className="font-display text-title font-normal text-text">
+              {copy.welcome.section1Heading}
+            </h2>
+            <p className="max-w-[64ch] font-body text-body text-text-muted">
+              {copy.welcome.section1Body}
+            </p>
+          </section>
 
-        <div className="border-t border-raised pt-8">
-          <ConsentForm />
-        </div>
-      </Column>
-    </main>
+          <section className="flex flex-col gap-2 border-t border-raised pt-8">
+            <h2 className="font-display text-title font-normal text-text">
+              {copy.welcome.section2Heading}
+            </h2>
+            <p className="max-w-[64ch] font-body text-body text-text-muted">
+              {copy.welcome.section2Body}
+            </p>
+          </section>
+
+          <div className="border-t border-raised pt-8">
+            <ConsentForm />
+          </div>
+        </Column>
+      </main>
+    </>
   );
 }

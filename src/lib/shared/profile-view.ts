@@ -80,12 +80,23 @@ export type SavedItemRow = {
  * both are looking at the saved demo profile: docs/01-user-flow.md, "Judge mode
  * across the flow", says "Judge sessions never see the Delete everything control
  * on the demo profile", and the server refuses the write either way.
+ *
+ * hasProfile is false only before a photo has ever been read for this session.
+ * The rows already carry that fact one value at a time, and they stay: they are
+ * the honest inventory docs/06-safety-privacy.md promises ("/profile shows
+ * exactly what is stored, in plain rows"). What they cannot say is the
+ * difference between a reading that failed and a reading nobody has taken yet,
+ * and only the second of those has one obvious thing to do about it. So the flag
+ * is what the screen reads to put the invitation above the rows
+ * (docs/01-user-flow.md, "Global states and rules": "Empty screens invite action
+ * with one specific verb"), rather than the screen inferring it from six nulls.
  */
 export type ProfileView = {
   rows: ProfileSummaryRow[];
   saved: SavedItemRow[];
   keepOriginals: boolean;
   isJudgeSession: boolean;
+  hasProfile: boolean;
 };
 
 /** The row order docs/01-user-flow.md section L item 1 lists them in. */

@@ -64,6 +64,14 @@ const profileViewSchema = z.object({
   saved: z.array(savedItemRowSchema),
   keepOriginals: z.boolean(),
   isJudgeSession: z.boolean(),
+  /**
+   * False only before any photo has been read for this session, which is when
+   * the screen puts the first run invitation above the rows. Required rather
+   * than optional: a missing flag would default the screen into showing an
+   * invitation to somebody who already has a profile, and the route always
+   * sends it.
+   */
+  hasProfile: z.boolean(),
 });
 
 /** Both writes answer the same way: it happened, or the status says why not. */

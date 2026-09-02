@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { FirstRunInvitation } from "@/components/app-shell/FirstRunInvitation";
 import { Column } from "@/components/layout/Column";
 import { Toast } from "@/components/ui/Toast";
 import { copy } from "@/lib/shared/copy";
@@ -177,6 +178,19 @@ export function ProfileScreen() {
 
       {view === null ? null : (
         <>
+          {/*
+            docs/01-user-flow.md, "Global states and rules": "Empty screens
+            invite action with one specific verb." Six rows of "Not read from
+            your photo yet" are an accurate inventory and no kind of invitation,
+            so the rows stay exactly as they are and the one thing that fills
+            them goes above them. It is the only gold on this screen: the
+            retention toggle is off by default and both other data controls are
+            quiet or secondary.
+          */}
+          {view.hasProfile ? null : (
+            <FirstRunInvitation line={copy.firstRun.profile} />
+          )}
+
           <Column>
             <SummaryRows rows={view.rows} />
           </Column>

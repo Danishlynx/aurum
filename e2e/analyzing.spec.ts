@@ -43,6 +43,62 @@ async function stubJobs(
   );
 }
 
+/**
+ * The other half of section E: what happens when the readings do land.
+ *
+ * "5. Transition to /report." The screen leaves on its own, driven by the jobs
+ * coming back rather than by a timer, and it offers nothing to leave with in the
+ * meantime. That absence is deliberate and is written down in
+ * src/lib/shared/navigation.ts: by the time this screen is on, the photo is
+ * uploaded and the analyses are running, so a back control here would offer to
+ * abandon a reading that is already paid for. The way out of a reveal that
+ * stopped is the "Retake photo" control the tests above assert, which appears
+ * only once there is nothing left to wait for.
+ */
+test.describe("the reveal when every reading lands", () => {
+  test("takes the person to their report without being asked", async ({
+    page,
+  }) => {
+    await stubJobs(
+      page,
+      [
+        { id: "job-skin", kind: "skin", status: "succeeded" },
+        { id: "job-tone", kind: "attributes", status: "succeeded" },
+        { id: "job-fitz", kind: "fitzpatrick", status: "succeeded" },
+      ],
+      true,
+    );
+    await page.goto("/analyzing?capture=e2e-complete");
+
+    await page.waitForURL("**/report");
+    await expect(
+      page.getByRole("heading", { name: copy.nav.report, level: 1 }),
+    ).toBeVisible();
+  });
+
+  test("offers no way to abandon the reveal while it is running", async ({
+    page,
+  }) => {
+    await stubJobs(
+      page,
+      [
+        { id: "job-skin", kind: "skin", status: "succeeded" },
+        { id: "job-fitz", kind: "fitzpatrick", status: "running" },
+      ],
+      false,
+    );
+    await page.goto("/analyzing?capture=e2e-no-back");
+
+    await expect(page.getByText(copy.analyzing.readingTone)).toBeVisible();
+    await expect(page.getByRole("link", { name: copy.nav.back })).toHaveCount(0);
+    // And nothing else to leave by either: the retake link belongs to the
+    // stopped state, which this is not.
+    await expect(
+      page.getByRole("link", { name: copy.report.retakePhotoAction }),
+    ).toHaveCount(0);
+  });
+});
+
 test.describe("the reveal when the engine refuses the photo", () => {
   test("says the face was turned away, and offers the camera again", async ({
     page,

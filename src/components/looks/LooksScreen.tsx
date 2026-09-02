@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { FirstRunInvitation } from "@/components/app-shell/FirstRunInvitation";
 import { Column } from "@/components/layout/Column";
 import { buttonClassName } from "@/components/ui/Button";
 import { Toast } from "@/components/ui/Toast";
@@ -105,11 +106,19 @@ type LooksScreenProps = {
    * affordance at all.
    */
   readonly accessoryOptions?: readonly AccessoryOption[];
+  /**
+   * False before any photo has been read for this session. The looks below are
+   * still real (the rules engine composes on formality alone with no palette),
+   * so nothing is hidden: the screen gains one line saying what it is missing
+   * and the control that fixes it. Resolved on the server, in page.tsx.
+   */
+  readonly hasProfile?: boolean;
 };
 
 export function LooksScreen({
   readOnly,
   accessoryOptions = [],
+  hasProfile = true,
 }: LooksScreenProps) {
   const [occasion, setOccasion] = useState<Occasion>(DEFAULT_OCCASION);
   const [view, setView] = useState<LooksView | null>(null);
@@ -320,6 +329,19 @@ export function LooksScreen({
 
   return (
     <div className="flex flex-col gap-8">
+      {/*
+        docs/01-user-flow.md, "Global states and rules": an empty screen invites
+        action with one specific verb. This screen is not empty without a
+        profile, so the invitation goes above the chips rather than in place of
+        the looks: what is missing is the palette every rationale would otherwise
+        read from. Secondary, because the leading look below already carries this
+        screen's one gold action (docs/02-design-system.md: one primary per
+        screen).
+      */}
+      {hasProfile ? null : (
+        <FirstRunInvitation line={copy.firstRun.looks} variant="secondary" />
+      )}
+
       <Column>
         <OccasionRow
           ref={occasionRowRef}

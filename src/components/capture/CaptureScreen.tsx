@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { BackLink } from "@/components/app-shell/BackLink";
 import { UploadInstead } from "@/components/capture/UploadInstead";
 import { Column } from "@/components/layout/Column";
 import { Button, ButtonLink } from "@/components/ui/Button";
@@ -36,6 +37,7 @@ import {
   toJpegBlob,
 } from "@/lib/client/image";
 import { captureRejectionCopy, copy } from "@/lib/shared/copy";
+import { backTargetFor } from "@/lib/shared/navigation";
 import { assessCapture } from "@/lib/shared/quality";
 import type { CaptureAssessment, CaptureRejectionReason } from "@/lib/shared/quality";
 
@@ -396,6 +398,24 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
 
   return (
     <main className="flex min-h-[100svh] flex-col">
+      {/*
+        The header row of the screen skeleton (docs/02-design-system.md,
+        "Layout"), on the canvas above the camera rather than floating over it:
+        a Sand chevron laid over a live preview is legible against a dark wall
+        and invisible against a bright window, and the one thing on this screen
+        that must always be findable is the way out of it.
+
+        Back goes to /welcome, the screen this one is reached from
+        (docs/01-user-flow.md section C: "Continue to capture"). It is drawn in
+        every phase, including the capped one, because a judge session with no
+        analyses left needs a way off this screen more than anyone.
+      */}
+      <header className="pt-6">
+        <Column>
+          <BackLink href={backTargetFor("/capture")} />
+        </Column>
+      </header>
+
       <div className="relative min-h-[420px] flex-1 overflow-hidden bg-surface">
         {phase.name === "camera_unavailable" || analysesExhausted ? null : (
           <video
