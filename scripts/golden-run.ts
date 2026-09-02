@@ -212,6 +212,21 @@ export interface GoldenOptions {
   readonly captureId: string;
   readonly fixtureId: string;
   readonly makeupCategories: readonly MakeupCategory[];
+  /**
+   * Shades to send instead of the ones derived from the tone, per category.
+   *
+   * The derived shades are the default and the thing the app ships. This is how
+   * a chosen shade gets tried against a real face without editing the palette,
+   * which matters because a render costs a unit and the palette is not the thing
+   * under test when the question is "does this colour look worn".
+   */
+  readonly makeupShades: Readonly<Partial<Record<MakeupCategory, string>>>;
+  /**
+   * Names the render files, so a second pass over a step sits beside the first
+   * instead of overwriting it. Re rendering to tune a shade is a real workflow
+   * and the earlier picture is the thing being compared against.
+   */
+  readonly renderLabel: string | null;
   readonly hairstyleStyleId: string;
   /** A provider template id read from the API playground, which costs nothing. */
   readonly hairstyleTemplateId: string | null;
@@ -267,6 +282,8 @@ export function parseArgs(argv: readonly string[]): GoldenOptions {
   let captureId = DEFAULT_CAPTURE_ID;
   let fixtureId = DEFAULT_FIXTURE_ID;
   let makeupCategories: MakeupCategory[] = [...MAKEUP_CATEGORIES];
+  let makeupShades: Partial<Record<MakeupCategory, string>> = {};
+  let renderLabel: string | null = null;
   let hairstyleStyleId = DEFAULT_HAIRSTYLE_STYLE_ID;
   let hairstyleTemplateId: string | null = null;
   let ingestSkinPath: string | null = null;
@@ -332,6 +349,15 @@ export function parseArgs(argv: readonly string[]): GoldenOptions {
         index += 1;
         break;
       }
+      case "--makeup-shade": {
+        makeupShades = parseShadeOverrides(requireValue(flag, argv[index + 1]));
+        index += 1;
+        break;
+      }
+      case "--render-label":
+        renderLabel = requireValue(flag, argv[index + 1]);
+        index += 1;
+        break;
       case "--hairstyle-style":
         hairstyleStyleId = requireValue(flag, argv[index + 1]);
         index += 1;
@@ -377,10 +403,53 @@ export function parseArgs(argv: readonly string[]): GoldenOptions {
     captureId,
     fixtureId,
     makeupCategories,
+    makeupShades,
+    renderLabel,
     hairstyleStyleId,
     hairstyleTemplateId,
     ingestSkinPath,
   };
+}
+
+/** The only colour form the provider takes, and the only one accepted here. */
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/u;
+
+/**
+ * Reads "lip=#9C5A44,blush=#C98A6E" into a per category override map.
+ *
+ * Refuses anything it does not understand rather than dropping it. A shade that
+ * silently fails to apply would be found by looking at a render that already
+ * cost a unit, which is the most expensive place to find it.
+ */
+export function parseShadeOverrides(
+  raw: string,
+): Partial<Record<MakeupCategory, string>> {
+  const overrides: Partial<Record<MakeupCategory, string>> = {};
+  for (const entry of splitList(raw)) {
+    const at = entry.indexOf("=");
+    if (at <= 0) {
+      throw new GoldenRunError(
+        "bad_argument",
+        `--makeup-shade takes category=#RRGGBB pairs, and was given "${entry}".`,
+      );
+    }
+    const category = entry.slice(0, at).trim();
+    const hex = entry.slice(at + 1).trim();
+    if (!(MAKEUP_CATEGORIES as readonly string[]).includes(category)) {
+      throw new GoldenRunError(
+        "bad_argument",
+        `--makeup-shade does not know the category "${category}". Known: ${MAKEUP_CATEGORIES.join(", ")}.`,
+      );
+    }
+    if (!HEX_COLOR.test(hex)) {
+      throw new GoldenRunError(
+        "bad_argument",
+        `--makeup-shade needs a #RRGGBB colour, and was given "${hex}" for ${category}.`,
+      );
+    }
+    overrides[category as MakeupCategory] = hex.toUpperCase();
+  }
+  return overrides;
 }
 
 /** Keeps the catalog order, so the run order does not depend on typing order. */
@@ -1005,6 +1074,8 @@ export function buildGoldenFixture(input: BuildFixtureInput): GoldenFixture {
 
 export interface CallRecord {
   readonly step: GoldenStep;
+  /** Set when --render-label named this pass, so re runs sit side by side. */
+  readonly renderLabel?: string | null;
   readonly endpointKey: PerfectCorpEndpointKey;
   readonly taskId: string | null;
   readonly state: string;
@@ -1142,6 +1213,8 @@ export function makeupParamsFrom(args: {
   readonly attributesSummary: unknown;
   readonly captureId: string;
   readonly categories: readonly MakeupCategory[];
+  /** Chosen shades that stand in for the derived ones, per category. */
+  readonly overrides?: Readonly<Partial<Record<MakeupCategory, string>>>;
 }): {
   readonly captureId: string;
   readonly categories: readonly MakeupShadeChoice[];
@@ -1172,9 +1245,24 @@ export function makeupParamsFrom(args: {
     skinToneHex: parsed.data.skinColor,
   });
 
+  const overrides = args.overrides ?? {};
   const categories: MakeupShadeChoice[] = [];
   for (const row of rows) {
     if (!args.categories.includes(row.category)) {
+      continue;
+    }
+    /*
+     * A chosen shade replaces the derived one, and takes the hex as its name.
+     * Keeping the derived name would label a terracotta "True red", which is the
+     * kind of small lie that ends up in a manifest and then in a demo.
+     */
+    const override = overrides[row.category];
+    if (override !== undefined) {
+      categories.push({
+        category: row.category,
+        shadeHex: override,
+        shadeName: override,
+      });
       continue;
     }
     const shade = row.shades[row.recommendedIndex] ?? row.shades[0];
@@ -1267,15 +1355,25 @@ export function readRecordedAttributes(
  * This run's calls, on top of the ones a previous run recorded.
  *
  * A step run again replaces its old entry rather than sitting beside it, so
- * running the same step twice leaves one record and not two. Pure, so the rule
- * is testable without a disk.
+ * running the same step twice leaves one record and not two. The exception is a
+ * labelled pass: --render-label says this render is a second take kept next to
+ * the first, so the label is part of what identifies the record and an unlabelled
+ * makeup call survives a labelled one. Pure, so the rule is testable without a
+ * disk.
  */
 export function mergeCallRecords(
   previous: PreviousManifest | null,
   records: readonly CallRecord[],
 ): unknown[] {
-  const rerun = new Set<string>(records.map((record) => record.step));
-  const kept = (previous?.calls ?? []).filter((call) => !rerun.has(call.step));
+  const identity = (call: {
+    readonly step: string;
+    readonly renderLabel?: string | null;
+  }): string => `${call.step}:${call.renderLabel ?? ""}`;
+
+  const rerun = new Set<string>(records.map(identity));
+  const kept = (previous?.calls ?? []).filter(
+    (call) => !rerun.has(identity(call)),
+  );
   return [...kept, ...records];
 }
 
@@ -1507,7 +1605,9 @@ export async function runGoldenRun(
           io.ensureDir(resolve(options.outDir, "renders"));
           const assets = await downloadResultAssets(urls);
           for (const [index, asset] of assets.entries()) {
-            const name = `renders/${call.step}-${String(index + 1)}.${extensionFor(asset)}`;
+            const labelPart =
+              options.renderLabel === null ? "" : `-${options.renderLabel}`;
+            const name = `renders/${call.step}${labelPart}-${String(index + 1)}.${extensionFor(asset)}`;
             io.writeFile(
               resolve(options.outDir, name),
               new Uint8Array(asset.bytes),
@@ -1519,6 +1619,7 @@ export async function runGoldenRun(
         const measured = await settleSpend(state, call);
         records.push({
           step: call.step,
+          renderLabel: options.renderLabel,
           endpointKey: call.endpointKey,
           taskId,
           state: "succeeded",
@@ -1536,6 +1637,7 @@ export async function runGoldenRun(
         const measured = await settleSpend(state, call, { failed: true });
         records.push({
           step: call.step,
+          renderLabel: options.renderLabel,
           endpointKey: call.endpointKey,
           taskId,
           state: "failed",
@@ -1641,6 +1743,7 @@ function makeupBodyFor(
     attributesSummary,
     captureId: options.captureId,
     categories: options.makeupCategories,
+    overrides: options.makeupShades,
   });
   if (params === null) {
     return null;
@@ -1732,6 +1835,7 @@ const previousManifestSchema = z.object({
     .array(
       z.object({
         step: z.string(),
+        renderLabel: z.string().nullable().optional(),
         taskId: z.string().nullable().optional(),
       }).loose(),
     )

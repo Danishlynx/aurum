@@ -69,8 +69,42 @@ export const MAKEUP_EFFECT_CATEGORY: Readonly<
 /** The API version string the reference page records for this endpoint. */
 export const MAKEUP_VTO_VERSION = "1.0";
 
-/** Full strength. The swatch the person picked is the colour they asked for. */
-export const MAKEUP_INTENSITY = 100;
+/**
+ * How much of the swatch lands on the face, 0 to 100.
+ *
+ * This was 100, on the reasoning that the swatch the person picked is the colour
+ * they asked for. The first real render settled that argument against us: full
+ * strength put hard magenta discs on both cheeks and a flat red lip, which is
+ * stage makeup and not a try on. Nobody looking at it would believe they were
+ * seeing a person wearing makeup, which is the only thing this render is for.
+ *
+ * 35 is the default now. A try on is a picture of the person, lightly tinted,
+ * not a picture of the pigment.
+ */
+export const MAKEUP_INTENSITY = 35;
+
+/**
+ * Per category strength, where the default is not the right answer.
+ *
+ * Only the two rows that have been checked against a real render are here. The
+ * others sit on MAKEUP_INTENSITY until a render says otherwise, which is the
+ * honest place for them: a number nobody has looked at should not be dressed up
+ * as a tuned one.
+ *
+ * Blush is the lowest because it covers the most skin over the widest area, so
+ * it is the first thing to read as painted on.
+ */
+export const MAKEUP_CATEGORY_INTENSITY: Readonly<
+  Partial<Record<MakeupCategory, number>>
+> = {
+  lip: 30,
+  blush: 22,
+};
+
+/** The strength for one row: its own tuned value, or the default. */
+export function intensityFor(category: MakeupCategory): number {
+  return MAKEUP_CATEGORY_INTENSITY[category] ?? MAKEUP_INTENSITY;
+}
 
 /**
  * The finish. Every shade we offer is a flat colour rather than a shimmer or a
@@ -85,6 +119,15 @@ export const MAKEUP_TEXTURE = "matte";
  * and .../eyeshadow.json, read on 2026-09-02. Both list it as category "1 color"
  * with colorNum 1, and colorNum is what decides how many palette entries the
  * request has to carry. One swatch, one colour, one entry.
+ *
+ * It is also the softest of the 227 single colour blush patterns, which was
+ * checked rather than assumed: every pattern carries a thumbnail URL, and the
+ * catalog splits into a "Blush 3D" family (1color1 to 1color8) and a "Blush 2D"
+ * family of shape stamps (Circle, Heart, Oblique, Oblong, Rectangle, Round,
+ * Triangle). Comparing thumbnails across both, the 2D stamps are larger, higher
+ * on the cheek, and far more saturated; 1color1 is a small diffuse patch sitting
+ * low on the cheek. The hard discs on the first render came from an intensity of
+ * 100 and a saturated magenta, not from this pattern.
  */
 export const MAKEUP_ONE_COLOR_PATTERN = "1color1";
 
@@ -94,8 +137,15 @@ export const LIP_SHAPE_NAME = "original";
 /** Full lips rather than ombre or two tone: one swatch is one colour. */
 export const LIP_STYLE_TYPE = "full";
 
-/** Foundation coverage. Full, to match MAKEUP_INTENSITY on the other rows. */
-export const FOUNDATION_COVERAGE_INTENSITY = 100;
+/**
+ * Foundation coverage. Light, for the same reason MAKEUP_INTENSITY came down:
+ * full coverage paints over the skin the report just finished describing.
+ *
+ * UNVERIFIED. Foundation was left out of the corrected render, so no picture has
+ * confirmed this number the way 30 and 22 were confirmed for lip and blush. It
+ * is a sane default, not a measured one.
+ */
+export const FOUNDATION_COVERAGE_INTENSITY = 35;
 
 /** No added sheen. The report speaks about skin, not about a highlighter. */
 export const FOUNDATION_GLOW_INTENSITY = 0;
@@ -113,12 +163,13 @@ function effectFor(entry: {
   readonly category: string;
   readonly shadeHex: string;
 }): Record<string, unknown> | null {
-  const category =
-    MAKEUP_EFFECT_CATEGORY[entry.category as MakeupCategory] ?? null;
+  const ours = entry.category as MakeupCategory;
+  const category = MAKEUP_EFFECT_CATEGORY[ours] ?? null;
   if (category === null) {
     return null;
   }
   const color = providerHex(entry.shadeHex);
+  const colorIntensity = intensityFor(ours);
 
   if (category === "foundation") {
     return {
@@ -126,7 +177,7 @@ function effectFor(entry: {
       palettes: [
         {
           color,
-          colorIntensity: MAKEUP_INTENSITY,
+          colorIntensity,
           coverageIntensity: FOUNDATION_COVERAGE_INTENSITY,
           glowIntensity: FOUNDATION_GLOW_INTENSITY,
         },
@@ -139,9 +190,7 @@ function effectFor(entry: {
       category,
       shape: { name: LIP_SHAPE_NAME },
       style: { type: LIP_STYLE_TYPE },
-      palettes: [
-        { color, texture: MAKEUP_TEXTURE, colorIntensity: MAKEUP_INTENSITY },
-      ],
+      palettes: [{ color, texture: MAKEUP_TEXTURE, colorIntensity }],
     };
   }
 
@@ -149,9 +198,7 @@ function effectFor(entry: {
   return {
     category,
     pattern: { name: MAKEUP_ONE_COLOR_PATTERN },
-    palettes: [
-      { color, texture: MAKEUP_TEXTURE, colorIntensity: MAKEUP_INTENSITY },
-    ],
+    palettes: [{ color, texture: MAKEUP_TEXTURE, colorIntensity }],
   };
 }
 

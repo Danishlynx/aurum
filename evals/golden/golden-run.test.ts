@@ -81,6 +81,10 @@ import {
   unitsForCall,
 } from "@/lib/server/providers/perfectcorp";
 import { serpApiSearch } from "@/lib/server/providers/serpapi/client";
+import {
+  MAKEUP_INTENSITY,
+  makeupTaskBody,
+} from "@/lib/server/renders/makeup";
 
 import {
   DEFAULT_STEPS,
@@ -97,8 +101,11 @@ import {
   hairstyleBodyFor,
   buildIngestManifest,
   localMaskFileFor,
+  makeupParamsFrom,
+  mergeCallRecords,
   parseArgs,
   parseEnvFile,
+  parseShadeOverrides,
   readImageHeader,
   readPreviousManifest,
   runGoldenRun,
@@ -217,6 +224,8 @@ function optionsFor(overrides: Partial<GoldenOptions> = {}): GoldenOptions {
     captureId: "golden-01",
     fixtureId: "live-01",
     makeupCategories: ["lip"],
+    makeupShades: {},
+    renderLabel: null,
     hairstyleStyleId: "textured-crop",
     hairstyleTemplateId: null,
     ingestSkinPath: null,
@@ -564,6 +573,143 @@ describe("golden-run image checks", () => {
     );
     expect(code).toBe(1);
     expect(vi.mocked(uploadImage)).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Chosen shades, and keeping a re render beside the first                */
+/* ------------------------------------------------------------------ */
+
+describe("golden-run shade overrides", () => {
+  it("reads category=#RRGGBB pairs and upper cases the hex", () => {
+    expect(parseShadeOverrides("lip=#9c5a44,blush=#C98A6E")).toEqual({
+      lip: "#9C5A44",
+      blush: "#C98A6E",
+    });
+  });
+
+  it("refuses a category it does not know", () => {
+    expect(() => parseShadeOverrides("eyebrow=#000000")).toThrow(GoldenRunError);
+  });
+
+  it("refuses anything that is not a six digit hex colour", () => {
+    expect(() => parseShadeOverrides("lip=terracotta")).toThrow(GoldenRunError);
+    expect(() => parseShadeOverrides("lip=#ABC")).toThrow(GoldenRunError);
+  });
+
+  it("refuses a pair with no equals sign, rather than dropping it", () => {
+    expect(() => parseShadeOverrides("lip")).toThrow(GoldenRunError);
+  });
+
+  /*
+   * The override has to reach the body, and it has to take the hex as its name.
+   * Keeping the derived name would label a terracotta "True red" in the manifest.
+   */
+  it("sends the chosen shade instead of the derived one, named for what it is", () => {
+    const params = makeupParamsFrom({
+      attributesSummary: {
+        skinColor: "#997357",
+        eyeColor: "#0f0b0f",
+        hairColor: "#FAF0BE",
+      },
+      captureId: "golden-01",
+      categories: ["lip", "blush"],
+      overrides: { lip: "#9C5A44" },
+    });
+    const lip = params?.categories.find((entry) => entry.category === "lip");
+    const blush = params?.categories.find((entry) => entry.category === "blush");
+    expect(lip).toEqual({
+      category: "lip",
+      shadeHex: "#9C5A44",
+      shadeName: "#9C5A44",
+    });
+    // The row with no override still comes from the palette.
+    expect(blush?.shadeHex).not.toBe("#9C5A44");
+    expect(blush?.shadeName.length).toBeGreaterThan(0);
+  });
+});
+
+/*
+ * The strengths that produced a wearable render, pinned.
+ *
+ * The first paid render went out at 100 across the board and came back as stage
+ * makeup: hard magenta discs and a flat red lip. These two numbers are the ones
+ * a second unit bought, so a regression back towards 100 should fail here rather
+ * than on a face.
+ */
+describe("makeup body strength", () => {
+  const bodyFor = (category: string, shadeHex: string) =>
+    makeupTaskBody({
+      fileId: "f",
+      params: { captureId: "c", categories: [{ category, shadeHex, shadeName: "n" }] },
+    }) as { effects: { palettes: { colorIntensity: number }[] }[] };
+
+  it("sends the tuned strength for lip and blush", () => {
+    expect(bodyFor("lip", "#9C5A44").effects[0].palettes[0].colorIntensity).toBe(30);
+    expect(bodyFor("blush", "#C98A6E").effects[0].palettes[0].colorIntensity).toBe(22);
+  });
+
+  it("falls back to the default for rows no render has tuned", () => {
+    expect(MAKEUP_INTENSITY).toBe(35);
+    expect(bodyFor("eye", "#6B4F3A").effects[0].palettes[0].colorIntensity).toBe(
+      MAKEUP_INTENSITY,
+    );
+  });
+
+  it("upper cases the hex, which is the form the provider documents", () => {
+    expect(bodyFor("lip", "#9c5a44").effects[0].palettes[0]).toMatchObject({
+      color: "#9C5A44",
+    });
+  });
+});
+
+describe("golden-run manifest merge", () => {
+  const record = (
+    step: string,
+    renderLabel: string | null,
+    units: number,
+  ): never =>
+    ({
+      step,
+      renderLabel,
+      endpointKey: "makeupTryOn",
+      taskId: "t",
+      state: "succeeded",
+      tableUnits: units,
+      measuredUnits: units,
+      startedAt: "now",
+      finishedAt: "now",
+      outputs: [],
+      error: null,
+    }) as never;
+
+  it("keeps the calls a previous run recorded", () => {
+    const merged = mergeCallRecords(
+      { calls: [{ step: "tone", taskId: "old" }] },
+      [record("makeup", null, 1)],
+    );
+    expect(merged).toHaveLength(2);
+  });
+
+  it("replaces an unlabelled step run again, rather than doubling it", () => {
+    const merged = mergeCallRecords(
+      { calls: [{ step: "makeup", taskId: "old" }] },
+      [record("makeup", null, 1)],
+    );
+    expect(merged).toHaveLength(1);
+    expect((merged[0] as { taskId: string }).taskId).toBe("t");
+  });
+
+  /*
+   * A labelled pass is a second take kept next to the first, so the earlier
+   * render keeps its record and the spend it accounts for is not erased.
+   */
+  it("keeps an unlabelled render beside a labelled re render", () => {
+    const merged = mergeCallRecords(
+      { calls: [{ step: "makeup", taskId: "first" }] },
+      [record("makeup", "natural", 1)],
+    );
+    expect(merged).toHaveLength(2);
   });
 });
 
