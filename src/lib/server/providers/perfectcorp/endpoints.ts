@@ -195,6 +195,41 @@ export const PERFECTCORP_CREDIT_ENDPOINT = {
 } as const satisfies { path: string; verification: Verification };
 
 /**
+ * The hairstyle template list. A plain GET, no task, no credit spent.
+ *
+ * This is the catalog the hair transfer task selects a template_id from. It is
+ * the one thing that was missing before a hairstyle could render, and reading it
+ * is free: the balance was 24 units before and 24 after.
+ *
+ * The templates themselves are recorded in src/lib/server/renders/hair.ts, next
+ * to the mapping from our style ids onto them, because which cut we call which
+ * is a decision of that layer and not a fact about this API.
+ */
+export const PERFECTCORP_HAIR_TEMPLATE_ENDPOINT = {
+  path: "/s2s/v2.1/task/template/hair-transfer",
+  /** 20 is accepted. 50 and 100 both answer 400 InvalidParameters. */
+  maxPageSize: 20,
+  verification: {
+    state: "confirmed",
+    source: LIVE_API,
+    checkedOn: AUTH_CHECKED_ON,
+    note:
+      "GET with the API key as a bearer token answers 200 with { status, data: { next_token, " +
+      "templates: [{ id, thumb, title, category_name, keep_users_color }] } }. Paginate by " +
+      "passing next_token back as starting_token; it is null on the last page. 116 templates in " +
+      "all, 17 category_name \"Male\" and 99 \"Female\". The v2.0 spelling of the path returns the " +
+      "identical list. /s2s/v2.1/hair-transfer/styles and " +
+      "/s2s/v2.1/task/template/hair-transfer/styles both answer 404 NotFound, so this is the " +
+      "only spelling. The sibling /s2s/v2.0/task/template/hair-color answers 200 with an empty " +
+      "templates array, so hair colour is not template driven.",
+  },
+} as const satisfies {
+  path: string;
+  maxPageSize: number;
+  verification: Verification;
+};
+
+/**
  * The file API. Confirmed request and response bodies, quoted on the skin
  * analysis integration guide.
  */
@@ -451,7 +486,11 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
       note:
         "Note the v2.1 path, not v2.0. Request takes src_file_id or src_file_url plus one of " +
         "ref_file_id, ref_file_url, or template_id. Result carries a url. Cost is 2 units whether " +
-        "a template or a reference image is used.",
+        "a template or a reference image is used. The template ids come from " +
+        "PERFECTCORP_HAIR_TEMPLATE_ENDPOINT, read live on 2026-09-02 and recorded in " +
+        "src/lib/server/renders/hair.ts. Still unwatched, because no hairstyle task has been " +
+        "created on this account: that the field is spelled template_id, and that a template " +
+        "renders as the cut its title names. The first golden run settles both for 2 units.",
     },
     analysisKind: null,
   },

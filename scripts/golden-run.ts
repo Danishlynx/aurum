@@ -1179,11 +1179,13 @@ export function makeupParamsFrom(args: {
 /**
  * The hairstyle request body.
  *
- * The catalog in src/lib/server/renders/hair.ts holds no template ids yet, so
- * hairstyleTaskBody refuses every style. --hairstyle-template lets the operator
- * pass one id read from the API playground, which costs nothing, and the body is
- * assembled with the field name from endpoints.ts so it stays the shape the
- * render layer will send once the catalog is filled.
+ * The catalog in src/lib/server/renders/hair.ts now holds a real template id for
+ * every style, read free from the provider's template list, so this falls back
+ * to it and the step runs with no flag at all. --hairstyle-template stays as the
+ * override: it is how a different template gets tried without editing the
+ * catalog, and how the mapping gets checked against what actually renders. Either
+ * way the body is assembled with the field name from endpoints.ts, so it is the
+ * shape the render layer sends.
  */
 export function hairstyleBodyFor(args: {
   readonly fileId: string;
@@ -1264,8 +1266,9 @@ export async function runGoldenRun(
       io.errorLog("");
       io.errorLog(
         `The hairstyle step has no provider template for "${options.hairstyleStyleId}". ` +
-          "HAIRSTYLE_TEMPLATE_ID in src/lib/server/renders/hair.ts is still empty, so pass one " +
-          "with --hairstyle-template after reading the catalog from the API playground, which costs nothing.",
+          "HAIRSTYLE_TEMPLATE_ID in src/lib/server/renders/hair.ts maps every catalog style to a " +
+          "template, so this is a style id it does not know. Use one of them, or pass a provider " +
+          "template id with --hairstyle-template.",
       );
       io.errorLog("Nothing was called.");
       return 1;

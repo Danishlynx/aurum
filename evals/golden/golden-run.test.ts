@@ -568,26 +568,30 @@ describe("golden-run image checks", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* The hairstyle template gap                                          */
+/* The hairstyle template                                              */
 /* ------------------------------------------------------------------ */
 
 describe("golden-run hairstyle template", () => {
-  it("has no template in the catalog yet, so the body cannot be built", () => {
+  it("falls back to the catalog when no template is passed", () => {
     expect(
       hairstyleBodyFor({ fileId: "f", styleId: "textured-crop", templateId: null }),
-    ).toBeNull();
+    ).toEqual({ src_file_id: "f", template_id: "male_textured_crop" });
   });
 
-  it("builds the body from a template passed on the command line", () => {
+  it("prefers a template passed on the command line over the catalog", () => {
     expect(
       hairstyleBodyFor({ fileId: "f", styleId: "textured-crop", templateId: "tpl-9" }),
     ).toEqual({ src_file_id: "f", template_id: "tpl-9" });
   });
 
-  it("stops before the upload when hairstyle has no template", async () => {
+  it("stops before the upload when the style id is not in the catalog", async () => {
     const recorder = makeRecorder();
     const code = await runGoldenRun(
-      optionsFor({ steps: ["hairstyle"], hairstyleTemplateId: null }),
+      optionsFor({
+        steps: ["hairstyle"],
+        hairstyleStyleId: "not-a-style",
+        hairstyleTemplateId: null,
+      }),
       makeIo({ recorder, image: jpegBytes(1024, 1024) }),
     );
     expect(code).toBe(1);
