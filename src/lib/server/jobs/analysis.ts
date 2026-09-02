@@ -1,6 +1,10 @@
 import "server-only";
 
-import { mapProviderConcern } from "@/lib/shared/concerns";
+import {
+  isQualityConcern,
+  mapProviderConcern,
+  presenceScoreFor,
+} from "@/lib/shared/concerns";
 
 import { BUCKETS, maskPath, uploadObject } from "../db/storage";
 import type { AnalysisKind, Json } from "../db/types";
@@ -171,8 +175,17 @@ export interface NormalizedAnalysis {
   readonly raw: Json | null;
   /** The shape feature code reads. */
   readonly summary: Json;
-  /** Mask images to fetch before their URLs expire. */
-  readonly maskUrls: ReadonlyArray<{ readonly key: string; readonly url: string }>;
+  /**
+   * Mask images to fetch before their URLs expire, in the order the report will
+   * show their concerns. providerType is the name the mask came back under,
+   * which is what lets a saved mask file be matched back to its concern without
+   * reconstructing the selection rule.
+   */
+  readonly maskUrls: ReadonlyArray<{
+    readonly key: string;
+    readonly url: string;
+    readonly providerType?: string;
+  }>;
 }
 
 function readInteger(value: unknown): number | null {
@@ -216,6 +229,75 @@ function readFitzpatrick(results: unknown): number | null {
 }
 
 /**
+ * Which masks are worth the storage budget.
+ *
+ * The report's mask toggles sit on the concern rows, and the rows are ordered
+ * by presence, so the masks have to follow the same order: storing the first
+ * eight the provider happened to list left the top concerns without a mask and
+ * spent slots on the clearest skin on the face. On the measured face that meant
+ * keeping redness and oiliness, both at a presence of 1, and dropping dark
+ * circles, the most present concern of all.
+ *
+ * The order here is the first phase of rankConcernsToneFirst: presence
+ * descending, ties broken by key so the same response always produces the same
+ * eight. The tone first promotion is deliberately not applied, because it needs
+ * a Fitzpatrick type that the skin analysis alone does not carry. It only ever
+ * reorders concerns that are already within 12 points of each other, so it
+ * cannot pull a concern into the top eight that this order left out.
+ *
+ * The two quality concerns go last whatever their level: moisture and radiance
+ * are not problems to point at, so they take a mask slot only if one is spare.
+ *
+ * One mask per concern key. The provider scores the upper and the lower eyelid
+ * separately and both map to eyelid_droop, so the more present of the two wins
+ * the slot rather than the second overwriting the first and wasting it.
+ */
+function selectMasks(
+  reading: SkinAnalysisReading,
+): Array<{ key: string; url: string; providerType: string }> {
+  const best = new Map<
+    string,
+    { key: string; url: string; providerType: string; presence: number; quality: boolean }
+  >();
+
+  for (const entry of reading.concerns) {
+    const url = entry.maskUrls[0];
+    const key = mapProviderConcern(entry.type);
+    if (url === undefined || key === null) {
+      continue;
+    }
+    const presence = presenceScoreFor({ key, providerUiScore: entry.uiScore });
+    const existing = best.get(key);
+    if (existing === undefined || presence > existing.presence) {
+      best.set(key, {
+        key,
+        url,
+        providerType: entry.type,
+        presence,
+        quality: isQualityConcern(key),
+      });
+    }
+  }
+
+  return [...best.values()]
+    .sort((left, right) => {
+      if (left.quality !== right.quality) {
+        return left.quality ? 1 : -1;
+      }
+      if (left.presence !== right.presence) {
+        return right.presence - left.presence;
+      }
+      return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
+    })
+    .slice(0, MAX_MASKS_PER_CAPTURE)
+    .map((entry) => ({
+      key: entry.key,
+      url: entry.url,
+      providerType: entry.providerType,
+    }));
+}
+
+/**
  * The two zones the report shows, taken from the provider's own skin type
  * output rather than derived from oiliness and moisture.
  *
@@ -247,34 +329,25 @@ export function normalize(
     case "skin": {
       const result = parseSkinAnalysisResult(snapshot);
       const reading = readSkinAnalysis(result);
-      const concerns = reading.concerns.map((entry) => ({
-        providerType: entry.type,
-        key: mapProviderConcern(entry.type),
-        uiScore: entry.uiScore,
-        rawScore: entry.rawScore,
-      }));
 
       /*
-       * One mask per concern key, in provider order, up to the storage budget.
-       * The dedupe matters: the provider scores the upper and the lower eyelid
-       * separately and both map to eyelid_droop, so without it two entries
-       * would race for masks/eyelid_droop.png and the second would overwrite
-       * the first while using up one of the eight slots.
+       * The one place the provider's scale is turned into ours. ui_score is a
+       * condition score (higher is healthier) and everything downstream reads a
+       * score as presence, so presenceScoreFor inverts it, leaving the two
+       * quality concerns alone. The whole finding, with the measured numbers, is
+       * in src/lib/shared/concerns.ts. The provider's own figure is kept beside
+       * ours so a stored summary can always be traced back to the response.
        */
-      const maskUrls: Array<{ key: string; url: string }> = [];
-      const takenKeys = new Set<string>();
-      for (const entry of reading.concerns) {
-        if (maskUrls.length >= MAX_MASKS_PER_CAPTURE) {
-          break;
-        }
-        const url = entry.maskUrls[0];
+      const concerns = reading.concerns.map((entry) => {
         const key = mapProviderConcern(entry.type);
-        if (url === undefined || key === null || takenKeys.has(key)) {
-          continue;
-        }
-        takenKeys.add(key);
-        maskUrls.push({ key, url });
-      }
+        return {
+          providerType: entry.type,
+          key,
+          uiScore: presenceScoreFor({ key, providerUiScore: entry.uiScore }),
+          providerUiScore: entry.uiScore,
+          rawScore: entry.rawScore,
+        };
+      });
 
       return {
         raw: toJson(result),
@@ -284,7 +357,7 @@ export function normalize(
           overallScore: reading.overallScore,
           skinTypeZones: skinTypeZonesFor(reading),
         }) ?? {},
-        maskUrls,
+        maskUrls: selectMasks(reading),
       };
     }
     case "attributes": {

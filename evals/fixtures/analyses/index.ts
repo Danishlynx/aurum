@@ -38,7 +38,15 @@ export const FIXTURE_ANALYSIS_KINDS: readonly AnalysisKind[] = [
 const concernSchema = z.object({
   providerType: z.string(),
   key: z.string().nullable(),
+  /**
+   * Presence, 1 to 100, higher means more present. These twelve files were
+   * always written that way; what changed on 2026-09-02 is that the provider
+   * path now agrees, because presenceScoreFor in src/lib/shared/concerns.ts
+   * inverts the provider's condition score before it reaches a summary.
+   */
   uiScore: z.number(),
+  /** The provider's own figure. Only a recorded fixture carries one. */
+  providerUiScore: z.number().nullable().optional(),
   rawScore: z.number(),
 });
 

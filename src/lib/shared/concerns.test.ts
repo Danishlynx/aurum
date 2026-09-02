@@ -6,6 +6,7 @@ import {
   CONCERN_DISPLAY_NAMES,
   TONE_FIRST_COMPARABLE_BAND,
   TONE_FIRST_CONCERNS,
+  QUALITY_CONCERN_KEYS,
   TONE_FIRST_DEPRIORITIZED,
   VERIFIED_SD_SKIN_CONCERN_TYPES,
   concernDescription,
@@ -16,6 +17,7 @@ import {
   mapProviderConcern,
   normalizeProviderConcernName,
   parseProviderConcernName,
+  presenceScoreFor,
   rankConcernsToneFirst,
   toneFirstApplies,
   topConcern,
@@ -172,6 +174,47 @@ describe("parseProviderConcernName", () => {
     expect(mapProviderConcern("hydration_index_v2")).toBeNull();
     expect(mapProviderConcern("")).toBeNull();
     expect(parseProviderConcernName("unknown_forehead").key).toBeNull();
+  });
+});
+
+describe("presenceScoreFor", () => {
+  const presence = (key: ConcernKey | null, providerUiScore: number): number =>
+    presenceScoreFor({ key, providerUiScore });
+
+  it("inverts a condition score into a presence score", () => {
+    /*
+     * The numbers are the ones measured on 2026-09-02. redness came back at 99,
+     * which on the provider's scale means almost none of it, and dark_circle_v2
+     * at 70, the lowest score on that face and therefore its worst concern.
+     */
+    expect(presence("redness", 99)).toBe(1);
+    expect(presence("dark_circles", 70)).toBe(30);
+    expect(presence("eye_bags", 80)).toBe(20);
+    expect(presence("firmness", 75)).toBe(25);
+  });
+
+  it("orders the measured face the way the report has to show it", () => {
+    expect(presence("dark_circles", 70)).toBeGreaterThan(presence("redness", 99));
+    expect(presence("dark_circles", 70)).toBeGreaterThan(presence("acne", 99));
+  });
+
+  it("leaves the quality concerns alone, so hydration still reads as hydration", () => {
+    for (const key of QUALITY_CONCERN_KEYS) {
+      expect(presence(key, 77)).toBe(77);
+      expect(presence(key, 12)).toBe(12);
+    }
+  });
+
+  it("inverts an unmapped concern too, rather than passing it through", () => {
+    expect(presence(null, 90)).toBe(10);
+  });
+
+  it("rounds to a whole number and clamps into 1 to 100", () => {
+    expect(presence("pores", 96.31306433677672)).toBe(4);
+    expect(presence("acne", 100)).toBe(1);
+    expect(presence("acne", 0)).toBe(100);
+    expect(presence("acne", 140)).toBe(1);
+    expect(presence("acne", Number.NaN)).toBe(100);
   });
 });
 

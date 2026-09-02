@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import {
   isConcernKey,
+  isQualityConcern,
   parseProviderConcernName,
   type ConcernKey,
   type FitzpatrickType,
@@ -32,7 +33,16 @@ import {
 export const skinConcernSummarySchema = z.object({
   providerType: z.string(),
   key: z.string().nullable(),
+  /**
+   * The score this product ranks on: 1 to 100, higher means more present, or a
+   * higher level for the two quality concerns. It is not the provider's own
+   * number, which runs the other way. See presenceScoreFor in
+   * src/lib/shared/concerns.ts for the inversion and the evidence behind it.
+   */
   uiScore: z.number(),
+  /** The provider's ui_score exactly as it arrived, for provenance only. */
+  providerUiScore: z.number().nullable().optional(),
+  /** The provider's raw figure, uninverted. Nothing ranks on it. */
   rawScore: z.number(),
 });
 
@@ -97,21 +107,19 @@ export type AttributesSummary = z.infer<typeof attributesSummarySchema>;
 export const SKIN_TYPE_PROVIDER_NAME = "skin_type";
 
 /**
- * Concerns whose score reads as a quality rather than as a problem: a high
- * moisture or radiance score is a good result, not a concern to rank.
+ * Concerns whose score reads as a quality rather than as a problem.
  *
- * They are kept out of the ranked concern list (ranking is "higher score means
- * more present", which is only true for the rest) and used instead for the skin
- * type zones and for the sentence about what is going well.
+ * Defined in src/lib/shared/concerns.ts, because the normalization layer has to
+ * know which concerns are qualities before any profile code runs: it is the
+ * rule that decides which scores get inverted off the provider's scale. Both
+ * names are re-exported here so the callers that already import them from this
+ * file keep working.
  *
- * UNVERIFIED: the direction of the provider's scale is not confirmed for any
- * concern. Recorded as an open item; eval:consistency is where it gets settled.
+ * The direction of the provider's scale was confirmed on 2026-09-02: ui_score
+ * is a condition score, higher is healthier. presenceScoreFor in concerns.ts
+ * carries the whole finding.
  */
-export const QUALITY_CONCERN_KEYS: readonly ConcernKey[] = ["moisture", "radiance"];
-
-export function isQualityConcern(key: ConcernKey): boolean {
-  return QUALITY_CONCERN_KEYS.includes(key);
-}
+export { QUALITY_CONCERN_KEYS, isQualityConcern } from "@/lib/shared/concerns";
 
 export interface ReadConcern {
   readonly key: ConcernKey;

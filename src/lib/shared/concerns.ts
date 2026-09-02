@@ -48,6 +48,25 @@ export type ConcernKey = (typeof CONCERN_KEYS)[number];
 
 const CONCERN_KEY_SET: ReadonlySet<string> = new Set<string>(CONCERN_KEYS);
 
+/**
+ * Concerns whose score reads as a quality rather than as a problem: a high
+ * moisture or radiance score is a good result, not something to fix.
+ *
+ * They are kept out of the ranked concern list, because ranking means "higher
+ * score, more present", and used instead for the skin type zones and for the
+ * sentence about what is going well. src/lib/server/profile/skin-type.ts reads
+ * moisture as a hydration level for exactly this reason.
+ *
+ * Defined here rather than in the profile layer because it is a fact about a
+ * concern key, and because the normalization layer has to know it before any
+ * profile code runs. src/lib/server/profile/summaries.ts re-exports it.
+ */
+export const QUALITY_CONCERN_KEYS: readonly ConcernKey[] = ["moisture", "radiance"];
+
+export function isQualityConcern(key: ConcernKey): boolean {
+  return QUALITY_CONCERN_KEYS.includes(key);
+}
+
 /** True when a string is one of our concern keys. */
 export function isConcernKey(value: string): value is ConcernKey {
   return CONCERN_KEY_SET.has(value);
@@ -295,6 +314,58 @@ export function parseProviderConcernName(raw: string): ParsedProviderConcern {
 /** The internal key for a provider concern name, or null when unknown. */
 export function mapProviderConcern(raw: string): ConcernKey | null {
   return parseProviderConcernName(raw).key;
+}
+
+// ---------------------------------------------------------------------------
+// The provider's scale, and ours
+// ---------------------------------------------------------------------------
+
+/** Both scales run 1 to 100. Scores are clamped into it, never past it. */
+export const SCORE_MIN = 1;
+export const SCORE_MAX = 100;
+
+/**
+ * The provider's ui_score turned into the score this product ranks on.
+ *
+ * The two scales run in opposite directions, which is the single most
+ * consequential fact about the provider's output and was not written down
+ * anywhere until a real response was read on 2026-09-02.
+ *
+ * Perfect Corp's ui_score is a condition score: higher is healthier. On the one
+ * face we have measured, redness came back at 99 and acne at 99, meaning almost
+ * none of either, while dark_circle_v2 came back at 70, the lowest score on the
+ * face and therefore its most present concern.
+ *
+ * Everything downstream of here reads a score as presence: docs/01 section F
+ * draws the bars as concern intensity, rankConcernsToneFirst below picks the
+ * biggest problem, and the synthesis prompt is handed the top concerns to write
+ * about. Left uninverted, the report would have led on whatever the person's
+ * skin was doing best, and told them to treat it.
+ *
+ * So a concern is inverted here, once, at the boundary:
+ *
+ *     presence = 100 - ui_score, rounded, clamped 1 to 100
+ *
+ * ui_score is the base rather than raw_score because ui_score is the provider's
+ * own calibrated display figure; raw_score is kept beside it for provenance and
+ * nothing ranks on it.
+ *
+ * The two quality concerns are the exception and are NOT inverted. moisture and
+ * radiance are read as levels rather than as problems (QUALITY_CONCERN_KEYS
+ * above), and src/lib/server/profile/skin-type.ts reads moisture as hydration:
+ * "moisture below 45 means dry cheeks". Inverting it would call a well hydrated
+ * face dry. On the measured face, moisture 77 stays 77 and means well hydrated,
+ * while oiliness 99 becomes 1 and means an oil free T zone, which is what makes
+ * the derived skin type right for the first time.
+ */
+export function presenceScoreFor(args: {
+  readonly key: ConcernKey | null;
+  readonly providerUiScore: number;
+}): number {
+  const value = Number.isFinite(args.providerUiScore) ? args.providerUiScore : 0;
+  const oriented =
+    args.key !== null && isQualityConcern(args.key) ? value : SCORE_MAX - value;
+  return Math.min(SCORE_MAX, Math.max(SCORE_MIN, Math.round(oriented)));
 }
 
 // ---------------------------------------------------------------------------
