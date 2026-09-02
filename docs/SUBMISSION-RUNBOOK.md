@@ -148,18 +148,18 @@ Afterwards: read `manifest.json` for what each call actually cost and put those 
 
 Same guard rails: the plan prints first, `--max` is a hard ceiling on searches (one search is one unit of quota), a typed `yes` or `--confirm` is required, searches run one at a time, and the first failure stops the run.
 
-Each response is stripped before it is written, per `evals/fixtures/listings/README.md`: no `search_parameters`, no `serpapi_` account field anywhere, no `api_key` anywhere, and `search_metadata` cut down to `id` and `status`. The files land in `evals/fixtures/listings/recorded/` named after their query, with a `manifest.json` that records the query, where it came from, and how many results came back. Both scripts refuse to write any file whose text contains the value of a key in `.env.local`, and report only the name of the variable that matched.
+Each response is stripped before it is written, per `evals/fixtures/listings/README.md`: no `search_parameters`, no `serpapi_` account field anywhere, no `api_key` anywhere, and `search_metadata` cut down to `id` and `status`. The files land in `src/lib/server/profile/recorded-listings/` named after their query, with a `manifest.json` that records the query, where it came from, and how many results came back. Both scripts refuse to write any file whose text contains the value of a key in `.env.local`, and report only the name of the variable that matched.
 
 | Flag | Default | What it is |
 | --- | --- | --- |
 | `--max <n>` | 12 | The ceiling on searches. A plan above it aborts with nothing searched. |
-| `--out <dir>` | `evals/fixtures/listings/recorded` | Where the responses and the manifest land. |
+| `--out <dir>` | `src/lib/server/profile/recorded-listings` | Where the responses and the manifest land. |
 | `--confirm` | off | Answers the typed confirmation in advance. |
 | `--location <city>` | none | City level location for the search, when the recording should carry one. |
 | `--gl` / `--hl` | from `.env.local` | Country and language, defaulting to `SERPAPI_DEFAULT_GL` and `SERPAPI_DEFAULT_HL`. |
 | `--limit <n>` | 10 | How many listings to ask for per search. |
 
-Afterwards: paste the recorded bodies into `RECORDED_GAP_RESPONSES` in `src/lib/server/profile/demo-fixture-looks.ts` with their queries, which is the one edit that turns every "No listing found near you yet" row on the demo profile into a real product card, and use the same set for A6 and A8.
+Afterwards: nothing to paste. The recordings land where the demo profile reads them, and the loader in that folder is the one code path the fixture report, the fixture looks, and the `product_cache` rows in A8 all go through. Run `npm run eval:grounding`, which reads the same folder and fails if a routine step lost its recording, then `npm run seed:demo -- --from-fixtures` so the seeded profile carries the same listings. Note in the pull request whether the ranker still picked sensibly over real data; if it did not, that is a real failure, so make it a fixture and fix the ranker (docs/05-evals.md, "When we find a real failure").
 
 Both scripts are covered by `evals/golden/golden-run.test.ts`, which mocks every provider function and asserts the plan arithmetic, the two abort paths, the confirmation gate, the fixture shape, and the stop on failure behaviour. It runs on `npm run test` and spends nothing.
 
@@ -312,3 +312,8 @@ Copied from `docs/09-build-order-and-demo.md`, "Pre submission checklist". Tick 
 - [ ] hackathon-submission tag pushed; Devpost submitted before September 3, 2026, 10:00 AM Pacific.
 
 The last one has a deadline attached: September 3, 2026, 10:00 AM Pacific. Everything above it is worth nothing if that passes.
+
+## Known quirk: Supabase anon key and the Data API
+
+The project accepts the publishable key on the auth service but its REST layer answers 401 to both the legacy anon JWT and the publishable key, while the service role key works. This blocks nothing in the demo: judges and the demo profile run entirely through server routes holding the service role key, and magic link accounts are a post hackathon feature. Before turning on real signups, open the dashboard's JWT signing keys page and complete the migration to the new key system (or enable legacy JWT keys), then re test with: a table query through /rest/v1 using the anon line from .env.local.
+
