@@ -9,7 +9,10 @@ import type { NextConfig } from "next";
  * and two servers writing one .next directory would fight over the same compiled
  * output. Nothing in production sets it.
  */
-const distDir = process.env.AURUM_DIST_DIR ?? ".next";
+// An empty string must count as unset: pasting a whole .env file into a
+// deployment's environment variables carries the empty dev-only line along,
+// and Next refuses distDir: "". The || is deliberate, not ??.
+const distDir = process.env.AURUM_DIST_DIR || ".next";
 
 const nextConfig: NextConfig = {
   distDir,
