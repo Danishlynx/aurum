@@ -48,15 +48,18 @@ export type Frame = {
  * measure. On an 8 bit image downscaled to a 1024px long edge, a well focused
  * selfie sits in the hundreds; a motion blurred one collapses toward zero.
  *
- * PROVISIONAL. 60 and 120 are starting points chosen around the value commonly
- * used for blur detection (about 100). They are calibrated for real once
- * evals/fixtures/captures-bad and evals/fixtures/faces exist, against the
- * eval:capture threshold in docs/05-evals.md: every bad capture rejected, every
- * good light face accepted, at most one indoor light face borderline.
+ * CALIBRATED against the first real device, 2026-09-02: a Samsung S26 Ultra
+ * front camera at night, held steady, was hard rejected in a loop at the old
+ * floor of 60. Flagship night processing denoises skin into smooth regions,
+ * which suppresses Laplacian variance even when the frame is genuinely usable,
+ * and the person had no way forward. The floor now catches only real motion
+ * smears (variance collapses toward zero); everything between it and the old
+ * floor is borderline, which per docs/01 section D offers "Use it anyway".
+ * The provider's own input gate is the true arbiter and refuses for free.
  */
-export const SHARPNESS_REJECT_BELOW = 60;
+export const SHARPNESS_REJECT_BELOW = 12;
 /** Between this and SHARPNESS_REJECT_BELOW the frame is borderline. */
-export const SHARPNESS_BORDERLINE_BELOW = 120;
+export const SHARPNESS_BORDERLINE_BELOW = 60;
 
 /** A pixel at or above this luminance carries no detail. */
 export const BLOWN_LUMINANCE_AT_OR_ABOVE = 250;
