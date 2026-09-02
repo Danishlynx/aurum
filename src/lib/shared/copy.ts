@@ -22,6 +22,7 @@
  * copy. They land with src/lib/shared/palette.ts and the garment vocabulary.
  */
 
+import type { AnalysisFailureReason } from "./analysis-failure";
 import type { CaptureRejectionReason } from "./quality";
 
 export const copy = {
@@ -149,6 +150,16 @@ export const copy = {
       // In house. docs/01 section D gives no line for a frame with no face.
       no_face: "No face in the frame. Center your face in the oval and try again.",
     },
+    /**
+     * In house. docs/01 section D gates a frame on the face being "roughly
+     * frontal" but writes no line for it, because the client side gate cannot
+     * measure the angle. Perfect Corp can, and refuses the reading when the head
+     * is turned: error_face_angle_rightward and error_face_not_forward_facing,
+     * both read live on 2026-09-02. Written to the pattern of the rejection
+     * lines above, which is what happened and then what to do.
+     */
+    facingAway:
+      "Your face is turned away from the camera. Look straight at it and try again.",
     retakeAction: "Retake",
     /** Secondary, shown for borderline frames only, never for a face failure. */
     useAnywayAction: "Use it anyway",
@@ -741,6 +752,14 @@ export const copy = {
     // docs/03-architecture.md, "Failure modes and what the person sees".
     uploadFailed:
       "Upload did not complete. Your photo was not saved. Try again.",
+    /**
+     * In house. The engine refused the photo for a reason we have no specific
+     * line for. It lived in src/lib/server/http/messages.ts as providerRefused,
+     * which still re exports it, and moved here because the reveal shows it on
+     * screen now: the same words have to be in the body and on the screen.
+     */
+    readingRefused:
+      "Perfect Corp could not read this photo. Your photo is safe. Try again with a new one.",
     /** Judge session at zero, shown across the flow. docs/01 "Judge mode". */
     judgeExhausted:
       "This session has used its analyses. Exploring the saved demo profile.",
@@ -793,6 +812,7 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "capture.rejection.no_face",
   "capture.cameraUnavailable",
   "capture.shutterLabel",
+  "capture.facingAway",
   "judge.exploreDemoAction",
   "productCard.distanceTemplate",
   "report.maskTogglesLabel",
@@ -867,6 +887,7 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "profile.unavailable",
   "profile.skinTypeValueTemplate",
   "profile.toneValueTemplate",
+  "errors.readingRefused",
   "errors.requestFailed",
   "errors.sessionMissing",
   "common.close",
@@ -883,6 +904,27 @@ export const COPY_NOT_IN_FLOW_DOC = [
  */
 export function captureRejectionCopy(reason: CaptureRejectionReason): string {
   return copy.capture.rejection[reason];
+}
+
+/**
+ * The line a person reads when Perfect Corp refused one of their readings.
+ *
+ * The two specific reasons reuse the capture screen's own words, because they
+ * are the same two problems that screen already names and a person should not
+ * be told about a turned head in one voice on /capture and another on
+ * /analyzing. The switch is exhaustive, so a new reason cannot be added without
+ * deciding what it says.
+ */
+export function analysisFailureCopy(reason: AnalysisFailureReason): string {
+  switch (reason) {
+    case "face_angle":
+      return copy.capture.facingAway;
+    case "no_face":
+      return copy.capture.rejection.no_face;
+    case "frame":
+    case "provider":
+      return copy.errors.readingRefused;
+  }
 }
 
 /**

@@ -2,9 +2,18 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { captureRejectionCopy } from "@/lib/shared/copy";
+/** The jobs layer is server only; nothing here calls a provider or a database. */
+vi.mock("server-only", () => ({}));
+
+import { messageForTaskFailure } from "@/lib/server/jobs";
+import {
+  ANALYSIS_FAILURE_REASONS,
+  analysisFailureReasonFor,
+  isRetakeFailure,
+} from "@/lib/shared/analysis-failure";
+import { analysisFailureCopy, captureRejectionCopy, copy } from "@/lib/shared/copy";
 import {
   CAPTURE_REASON_PRECEDENCE,
   FACE_COVERAGE_BORDERLINE_MIN,
@@ -173,6 +182,72 @@ describe("eval:capture, gate logic on synthetic frames", () => {
       faceBox: GOOD_FACE_BOX,
     });
     expect(twice).toEqual(once);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* The gate the provider runs after ours                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Our gate is not the only one. The engine runs its own checks on the frame we
+ * send and refuses the reading with a code, and on 2026-09-02 it refused three
+ * ways: error_face_angle_rightward and error_face_not_forward_facing from the
+ * skin tone analysis, which checks the face angle strictly, and error_no_face.
+ *
+ * A refused task costs nothing, so the only thing at stake is what the person
+ * is told. This block holds the jobs layer to the same words the capture screen
+ * uses for the same two problems.
+ */
+describe("eval:capture, what the engine's own refusal says", () => {
+  const LIVE_REFUSALS = [
+    { code: "error_face_angle_rightward", line: copy.capture.facingAway },
+    { code: "error_face_not_forward_facing", line: copy.capture.facingAway },
+    { code: "error_no_face", line: copy.capture.rejection.no_face },
+  ] as const;
+
+  it("answers each live code with the capture screen's own line", () => {
+    for (const refusal of LIVE_REFUSALS) {
+      expect(messageForTaskFailure(refusal.code)).toBe(refusal.line);
+    }
+  });
+
+  it("routes the jobs layer through the shared mapping and nothing else", () => {
+    for (const code of [
+      ...LIVE_REFUSALS.map((refusal) => refusal.code),
+      "error_image_resolution_too_low",
+      "InternalError",
+      "",
+    ]) {
+      expect(messageForTaskFailure(code)).toBe(
+        analysisFailureCopy(analysisFailureReasonFor(code)),
+      );
+    }
+  });
+
+  it("says something the person can act on, never a provider code", () => {
+    for (const refusal of LIVE_REFUSALS) {
+      const line = messageForTaskFailure(refusal.code);
+      expect(line).not.toContain("error_");
+      expect(line).not.toContain("_");
+      expect(line.toLowerCase()).toContain("again");
+    }
+  });
+
+  it("falls back to the refusal line rather than blaming a good photo", () => {
+    expect(messageForTaskFailure(null)).toBe(copy.errors.readingRefused);
+    expect(messageForTaskFailure("InternalError")).toBe(copy.errors.readingRefused);
+  });
+
+  it("marks the photo reasons as worth a retake and the provider one as not", () => {
+    const retakeable = ANALYSIS_FAILURE_REASONS.filter(isRetakeFailure);
+    expect(retakeable).toEqual(["face_angle", "no_face", "frame"]);
+  });
+
+  it("keeps every line free of a dash of either kind", () => {
+    for (const reason of ANALYSIS_FAILURE_REASONS) {
+      expect(analysisFailureCopy(reason)).not.toMatch(/[\u2013\u2014]/u);
+    }
   });
 });
 

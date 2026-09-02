@@ -33,6 +33,36 @@ function succeeded(jobs: readonly ClientJob[], kind: string): boolean {
 }
 
 /**
+ * The kinds the reveal cannot reach the report without, in the order the report
+ * needs them: without the skin analysis there are no concerns and no masks, and
+ * without a tone reading there is no palette. docs/03-architecture.md step 6.
+ */
+const CORE_KINDS = ["skin", "fitzpatrick", "attributes"] as const;
+
+/**
+ * The sentence the server put on the first core job that failed.
+ *
+ * The words are chosen on the server, where the provider's failure code is
+ * (src/lib/server/jobs/index.ts), so the reveal shows the reason the reading
+ * stopped instead of a timeout line that is true only when it timed out. A job
+ * that failed without a message leaves this null and the screen falls back.
+ */
+function coreFailureMessage(jobs: readonly ClientJob[]): string | null {
+  for (const kind of CORE_KINDS) {
+    for (const job of jobs) {
+      if (job.kind !== kind || job.status !== "failed") {
+        continue;
+      }
+      const error = job.error;
+      if (typeof error === "string" && error.trim().length > 0) {
+        return error;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * The status line for a set of jobs, in the sequence docs/01 section E gives.
  * A kind with no job is nothing to wait for, so it does not hold the line.
  */
@@ -72,6 +102,13 @@ export type RevealState = {
   readonly settled: boolean;
   /** The core set came back, so there is a profile to show. */
   readonly coreSucceeded: boolean;
+  /**
+   * Why the reading cannot finish, when a core job failed and said why. Null
+   * while the core set can still land and null once it has. The screen reads it
+   * only after settling, because a core failure with the other core kind still
+   * running is not yet a dead end.
+   */
+  readonly problem: string | null;
 };
 
 /**
@@ -79,10 +116,12 @@ export type RevealState = {
  * of its own and a test can assert on a set of jobs.
  */
 export function revealStateFor(jobs: readonly ClientJob[]): RevealState {
+  const coreSucceeded = coreSetSucceeded(jobs);
   return {
     status: statusKeyFor(jobs),
     masksBloom: succeeded(jobs, "skin"),
     settled: jobs.length > 0 && jobs.every(isTerminal),
-    coreSucceeded: coreSetSucceeded(jobs),
+    coreSucceeded,
+    problem: coreSucceeded ? null : coreFailureMessage(jobs),
   };
 }
