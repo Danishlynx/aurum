@@ -71,7 +71,7 @@ Credit table
 Read from the public reference pages on 2026-09-01. Note that docs.perfectcorp.com was unreachable; the same documentation is served from docs.makeupar.com, which is what the "source" column below points at. Rows still marked TBD are not published publicly and need the human's API key and the API console. Failed tasks cost nothing: "If the engine fails to process the task, the task's status will change to 'error' and no unit will be consumed."
 
     API                         Units per call    Source page               Notes
-    skin analysis               TBD               ai_skin_analysis          Cost is not on the public unit consumption page. Read it from the console.
+    skin analysis               16                measured live             Still not on the public unit consumption page. Measured on 2026-09-02: one task with all 16 SD concern keys took the balance from 40 to 24. A call asking for fewer concerns has never been priced.
     fitzpatrick                 10                ai_fitzpatrick_skin_type
     facial color tones          20                ai_skin_tone_analysis     This is the API that returns skin, eye, eyebrow, lip, and hair colors.
     face attributes and ratio   10 / 20 / 30      ai_face_analyzer          10 for 1 to 5 attributes, 20 for 6 to 14, 30 for 15 to 28. This is the API that returns face shape.
@@ -84,7 +84,18 @@ Read from the public reference pages on 2026-09-01. Note that docs.perfectcorp.c
     accessory try on (others)   TBD               per accessory page        Only the watch page was read. Confirm bracelet, ring, earrings, necklace, scarf, hat, shoes, and bag.
     skin simulation             4 / 6             ai_skin_simulation        4 for 1 to 4 concerns, 6 for 5 to 10 concerns.
 
-Known cost of one capture set, with the rows above: fitzpatrick 10, facial color tones 20, face attributes 10 to 30 depending on how many attributes are asked for, hair type 2 (only if three photos exist). Skin analysis is the missing row, so the capture set total cannot be computed yet and JUDGE_CREDITS_CAP cannot be set from the table. src/lib/server/providers/perfectcorp/endpoints.ts returns null from unitsForCall for every row still marked TBD, which the credits layer reads as "do not reserve, do not call".
+Known cost of one capture set, with the rows above: skin analysis 16, fitzpatrick 10, facial color tones 20, face attributes 10 at one attribute (10 to 30 depending on how many are asked for), hair type 2 (only if three photos exist). That is 58 units for the five analyses, before a single render. src/lib/server/providers/perfectcorp/endpoints.ts returns null from unitsForCall for every row still marked TBD, which the credits layer reads as "do not reserve, do not call".
+
+The consequence, from eval:budget: the cheapest full session (capture set plus six makeup try ons) is 64 units, and the six renders Layer 3 actually produces make it 68. Three sessions plus 20 percent headroom needs a cap of 231, or 245 for the Layer 3 mix, against JUDGE_CREDITS_CAP=120. The two it.fails assertions in evals/budget/budget.test.ts hold those numbers and turn red the moment the cap is raised far enough.
+
+The task status envelope, confirmed live on 2026-09-02 against skin analysis and recorded as PERFECTCORP_TASK_STATUS_ENVELOPE in endpoints.ts:
+
+    GET <task path>/<taskId> -> 200
+    { "status": 200, "data": { "error": null, "results": { ... }, "task_status": "success" } }
+
+data.error is present and null on success, not absent. The first version of the status schema declared it as an optional string, which rejects null, so the first real task was charged 16 units and recorded as failed. A recorded copy of that body, with every signed URL replaced, is committed at evals/fixtures/perfectcorp/skin-analysis-status.json and is what the schema is tested against. The same envelope is assumed for the other task APIs until one of them is run.
+
+The skin analysis result, also confirmed live: data.results.output is a mixed list. A scored concern carries ui_score, raw_score, and mask_urls. skin_type appears once per zone (whole, t_zone, u_zone) with region and skin_type and no score. "all" and "skin_age" carry their number under score and have no mask. "resize_image" carries the frame the engine worked from. ui_score is a condition score: higher is better.
 
 What is actually on the account: 40 units, read from GET /s2s/v1.0/client/credit on 2026-09-02 (one grant, type ApiPaygToken, expiry 2027-09-02). That is the hard ceiling, and it is smaller than one capture set of the known rows alone (10 plus 20 plus 10 to 30, before skin analysis). It is also exactly DAILY_CAP_PERFECTCORP_UNITS, so the daily cap is not a cap at all today, and JUDGE_CREDITS_CAP=120 is three times the units that exist. Two consequences, both open: the account needs topping up before any judge session can run for real, and until it is, every screenshot and eval has to come from a fixture. Check the live number with GET /api/health rather than guessing.
 

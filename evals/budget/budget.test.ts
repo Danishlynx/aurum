@@ -307,23 +307,31 @@ describe("eval:budget", () => {
     expect(byKind.get("face_shape")?.units).toBe(10);
     expect(byKind.get("hair_type")?.units).toBe(2);
 
-    // Skin analysis has no published cost, so it reserves the fallback unit and
-    // the real total is higher than anything this suite can compute.
-    expect(hasUnknownCost("skinAnalysis")).toBe(true);
-    expect(byKind.get("skin")?.units).toBe(UNKNOWN_COST_FALLBACK_UNITS);
+    /*
+     * Skin analysis is still not on the public unit consumption page. The 16
+     * below is measured rather than published: one live task on 2026-09-02
+     * took the balance from 40 to 24. It reserved the one unit fallback until
+     * that run happened, which is why every total in this file moved.
+     */
+    expect(hasUnknownCost("skinAnalysis")).toBe(false);
+    expect(byKind.get("skin")?.units).toBe(16);
 
-    expect(captureSetConfirmedUnits).toBe(42);
-    expect(captureSetReservedUnits).toBe(42 + UNKNOWN_COST_FALLBACK_UNITS);
+    expect(captureSetConfirmedUnits).toBe(58);
+    expect(captureSetReservedUnits).toBe(58);
   });
 
   it("records which rows are still unpriced, so nothing reads as confirmed", () => {
-    // docs/04-integrations.md marks these TBD. The moment the human reads the
-    // real figures from the API console, this test fails and the arithmetic
-    // below has to be redone with them.
-    expect(unitsForCall("skinAnalysis")).toBeNull();
+    // docs/04-integrations.md marks cloth try on TBD. Skin analysis left this
+    // list on 2026-09-02, when one live task measured it at 16 units.
+    expect(unitsForCall("skinAnalysis")).toBe(16);
+    expect(PERFECTCORP_ENDPOINTS.skinAnalysis.unitCost).toEqual({
+      kind: "fixed",
+      units: 16,
+    });
     expect(unitsForCall("clothTryOn")).toBeNull();
-    expect(PERFECTCORP_ENDPOINTS.skinAnalysis.unitCost.kind).toBe("unknown");
     expect(PERFECTCORP_ENDPOINTS.clothTryOn.unitCost.kind).toBe("unknown");
+    // The fallback still guards the rows that have no figure.
+    expect(UNKNOWN_COST_FALLBACK_UNITS).toBe(1);
   });
 
   it("prices six renders both ways and keeps the cheaper one as the floor", () => {
@@ -351,45 +359,60 @@ describe("eval:budget", () => {
     expect(cheapestRenderUnits).toBe(
       Math.min(...RENDER_MIXES.map((mix) => mixUnits(mix))),
     );
-    expect(cheapestSessionUnits).toBe(49);
+    expect(cheapestSessionUnits).toBe(64);
     expect(documentedRenderUnits).toBe(10);
-    expect(documentedSessionUnits).toBe(53);
-    expect(documentedSessionConfirmedUnits).toBe(52);
+    expect(documentedSessionUnits).toBe(68);
+    /*
+     * Confirmed and reserved are now the same number: every row in the capture
+     * set has a figure behind it, so there is no fallback unit to subtract.
+     */
+    expect(documentedSessionConfirmedUnits).toBe(68);
   });
 
   /*
    * The two assertions docs/05-evals.md asks for. Both fail with the numbers
    * confirmed today, so both are marked it.fails: the assertion inside is the
    * real one, unchanged, and vitest reports the suite green only while it keeps
-   * failing. Raise JUDGE_CREDITS_CAP to at least 177 (or cut the session down to
+   * failing. Raise JUDGE_CREDITS_CAP to at least 231 (or cut the session down to
    * 33 units) and these two turn red, which is the signal to change it.fails
    * back to it.
    *
-   * The arithmetic, with JUDGE_CREDITS_CAP=120 from .env.example:
+   * The arithmetic, with JUDGE_CREDITS_CAP=120 from .env.example. Every row is
+   * now a real figure: skin analysis was measured at 16 units on 2026-09-02 and
+   * is no longer the one unit placeholder that used to flatter this sum.
    *
-   *   capture set, confirmed rows only   10 + 20 + 10 + 2      = 42 units
-   *   skin analysis                      unpriced, reserves      1 unit
+   *   skin analysis                      measured 2026-09-02   = 16 units
+   *   fitzpatrick                                              = 10 units
+   *   facial color tones                                       = 20 units
+   *   face attributes, one attribute                           = 10 units
+   *   hair type                                                =  2 units
+   *                                                             -------
+   *   capture set                                              = 58 units
    *   cheapest six renders               6 x makeup try on     =  6 units
    *                                                             -------
-   *   one session, floor                                       = 49 units
+   *   one session, floor                                       = 64 units
    *
    *   per session budget = 120 / (3 x 1.2)                     = 33 units
-   *   over budget by                                           = 16 units
+   *   over budget by                                           = 31 units
    *
-   *   cap needed for 3 sessions + 20 percent = ceil(49 x 3.6)  = 177 units
+   *   cap needed for 3 sessions + 20 percent = ceil(64 x 3.6)  = 231 units
    *   configured cap                                           = 120 units
-   *   short by                                                 = 57 units
+   *   short by                                                 = 111 units
+   *
+   * The gap grew by 54 units the moment skin analysis was priced honestly, which
+   * is the point of pricing it. For scale: the account holds 40 units, so one
+   * capture set of 58 does not fit on it at all.
    *
    * The cap is not raised here. It is the human's provider spend, and
-   * docs/04-integrations.md leaves setting it to them once the two TBD rows are
-   * read from the API console. Raising it would also weaken the one hard cap
+   * docs/04-integrations.md leaves setting it to them once the remaining TBD row
+   * is read from the API console. Raising it would also weaken the one hard cap
    * that keeps a judge session from spending without a ceiling.
    */
 
   it.fails(
     "keeps a simulated session (the capture set plus 6 renders) under the per session credit budget",
     () => {
-      // Fails today: 49 units against a 33 unit budget.
+      // Fails today: 64 units against a 33 unit budget.
       expect(cheapestSessionUnits).toBeLessThanOrEqual(PER_SESSION_BUDGET);
     },
   );
@@ -397,7 +420,7 @@ describe("eval:budget", () => {
   it.fails(
     "leaves JUDGE_CREDITS_CAP enough headroom for 3 sessions plus 20 percent",
     () => {
-      // Fails today: 177 units needed against a 120 unit cap.
+      // Fails today: 231 units needed against a 120 unit cap.
       expect(CAP).toBeGreaterThanOrEqual(requiredCapUnits(cheapestSessionUnits));
     },
   );
@@ -406,13 +429,13 @@ describe("eval:budget", () => {
     // This one is a plain assertion on purpose. It is the record of how far off
     // the cap is, and it fails the moment either side of the arithmetic moves.
     expect(PER_SESSION_BUDGET).toBe(33);
-    expect(requiredCapUnits(cheapestSessionUnits)).toBe(177);
-    expect(requiredCapUnits(cheapestSessionUnits) - CAP).toBe(57);
-    expect(cheapestSessionUnits - PER_SESSION_BUDGET).toBe(16);
+    expect(requiredCapUnits(cheapestSessionUnits)).toBe(231);
+    expect(requiredCapUnits(cheapestSessionUnits) - CAP).toBe(111);
+    expect(cheapestSessionUnits - PER_SESSION_BUDGET).toBe(31);
 
-    // The confirmed only floor is the same story without the fallback unit, so
-    // the conclusion does not rest on the unpriced row.
-    expect(cheapestSessionConfirmedUnits).toBe(48);
+    // Nothing in the capture set is priced by fallback any more, so the
+    // confirmed only floor and the reserved floor are the same number.
+    expect(cheapestSessionConfirmedUnits).toBe(64);
     expect(requiredCapUnits(cheapestSessionConfirmedUnits)).toBeGreaterThan(CAP);
   });
 
@@ -424,24 +447,23 @@ describe("eval:budget", () => {
    *
    * The arithmetic, with JUDGE_CREDITS_CAP=120 from .env.example:
    *
-   *   capture set, confirmed rows only   10 + 20 + 10 + 2      = 42 units
-   *   skin analysis                      unpriced, reserves      1 unit
+   *   capture set                        16 + 10 + 20 + 10 + 2 = 58 units
    *   four hairstyle try ons             4 x 2                 =  8 units
    *   two hair colour try ons            2 x 1                 =  2 units
    *                                                             -------
-   *   one Layer 3 session                                      = 53 units
+   *   one Layer 3 session                                      = 68 units
    *
    *   per session budget = 120 / (3 x 1.2)                     = 33 units
-   *   over budget by                                           = 20 units
+   *   over budget by                                           = 35 units
    *
-   *   cap needed for 3 sessions + 20 percent = ceil(53 x 3.6)  = 191 units
+   *   cap needed for 3 sessions + 20 percent = ceil(68 x 3.6)  = 245 units
    *   configured cap                                           = 120 units
-   *   short by                                                 = 71 units
+   *   short by                                                 = 125 units
    *
    * So Layer 3's definition of done ("Budget still within the per session cap
    * (adjust candidate counts if not)") is not met at the configured cap, and it
    * cannot be met by cutting candidates either: three styles and two colours is
-   * 8 units of renders on a 43 unit capture set, which is still 51 against 33.
+   * 8 units of renders on a 58 unit capture set, which is still 66 against 33.
    * The capture set is what does not fit, so this stays a cap decision for the
    * human rather than a quiet reduction of the screen docs/01 describes.
    */
@@ -449,7 +471,7 @@ describe("eval:budget", () => {
   it.fails(
     "keeps the documented Layer 3 session (four styles, two hair colors) under the per session credit budget",
     () => {
-      // Fails today: 53 units against a 33 unit budget.
+      // Fails today: 68 units against a 33 unit budget.
       expect(documentedSessionUnits).toBeLessThanOrEqual(PER_SESSION_BUDGET);
     },
   );
@@ -457,15 +479,15 @@ describe("eval:budget", () => {
   it.fails(
     "leaves JUDGE_CREDITS_CAP enough headroom for 3 Layer 3 sessions plus 20 percent",
     () => {
-      // Fails today: 191 units needed against a 120 unit cap.
+      // Fails today: 245 units needed against a 120 unit cap.
       expect(CAP).toBeGreaterThanOrEqual(requiredCapUnits(documentedSessionUnits));
     },
   );
 
   it("states the Layer 3 shortfall exactly as well", () => {
-    expect(requiredCapUnits(documentedSessionUnits)).toBe(191);
-    expect(requiredCapUnits(documentedSessionUnits) - CAP).toBe(71);
-    expect(documentedSessionUnits - PER_SESSION_BUDGET).toBe(20);
+    expect(requiredCapUnits(documentedSessionUnits)).toBe(245);
+    expect(requiredCapUnits(documentedSessionUnits) - CAP).toBe(125);
+    expect(documentedSessionUnits - PER_SESSION_BUDGET).toBe(35);
 
     // Layer 3 is the more expensive of the two sixes, by the four hairstyle
     // renders costing 2 units where a makeup render costs 1: 53 - 49 = 4.

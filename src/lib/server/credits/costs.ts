@@ -11,13 +11,18 @@ import type { AnalysisKind, CreditProvider } from "../db/types";
  * so there is one credit table, not two.
  *
  * docs/04-integrations.md keeps the authoritative numbers; endpoints.ts returns
- * null for every row still marked TBD (skin analysis and cloth try on today).
+ * null for every row still marked TBD (cloth try on today, and the accessory
+ * APIs other than the watch).
+ *
+ * Skin analysis left that list on 2026-09-02: one live task measured it at 16
+ * units, balance 40 to 24. It is a measurement of one call with all 16 SD
+ * concern keys, not a published price, which endpoints.ts says on the row.
  */
 
 /**
  * TODO: replace with the real figure once the human reads the per call cost for
- * skin analysis and cloth try on from the Perfect Corp API console, and updates
- * the credit table in docs/04-integrations.md and unitCost in
+ * cloth try on from the Perfect Corp API console, and updates the credit table
+ * in docs/04-integrations.md and unitCost in
  * src/lib/server/providers/perfectcorp/endpoints.ts.
  *
  * Until then an unknown cost reserves one unit. One unit is deliberately low:
