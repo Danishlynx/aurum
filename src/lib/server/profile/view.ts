@@ -16,6 +16,7 @@ import {
 import { garmentTypeLabel } from "@/lib/shared/wardrobe-view";
 
 import type { Look } from "../db/types";
+import { demoFixtureNote, planDemoRead } from "../judge/demo";
 import { listAllLooks } from "../looks/db";
 import { readStoredMembers } from "../looks/stored";
 import { getConsent, type AppSession } from "../session";
@@ -34,7 +35,7 @@ import {
   DEMO_FIXTURE_SAVED_OCCASIONS,
 } from "./demo-fixture-looks";
 import { readSavedColorName, readSavedStyleId, readStoredHairType } from "./hair";
-import { DEMO_FIXTURE_ENV, isDemoFixtureMode, readUndertone } from "./report-view";
+import { readUndertone } from "./report-view";
 import { skinTypeFromZones } from "./skin-type";
 
 /**
@@ -237,7 +238,12 @@ export function savedLookRow(row: Look): SavedItemRow | null {
 /* ------------------------------------------------------------------ */
 
 /**
- * The /profile screen with AURUM_DEMO_FIXTURE=true.
+ * The /profile screen built from the checked in fixture.
+ *
+ * Two paths reach it: AURUM_DEMO_FIXTURE=true in development, and a judge
+ * session with no analyses left on a build with no seeded demo profile
+ * (src/lib/server/judge/demo.ts). Both are the saved demo profile, so both draw
+ * the same rows.
  *
  * Every value is read from the same checked in constants the report, the colour
  * screen, and the looks screen are built from, never written out again here, so
@@ -313,19 +319,21 @@ function seasonNameOf(palette: Palette | null): string | null {
 export async function buildProfileView(
   session: AppSession,
 ): Promise<ProfileView> {
-  if (isDemoFixtureMode()) {
+  const plan = await planDemoRead(session);
+  if (plan.source === "fixture") {
     console.log(
       JSON.stringify({
         event: "aurum.profile_view",
         source: "fixture",
-        note: `${DEMO_FIXTURE_ENV} is true: the profile rows are served from the checked in fixture and no database or provider is touched.`,
+        reason: plan.reason,
+        note: demoFixtureNote(plan.reason, "the profile rows are served"),
       }),
     );
     return demoFixtureProfileView();
   }
 
   const consent = await getConsent(session);
-  const profile = await getAestheticProfile(session.id);
+  const profile = await getAestheticProfile(plan.ownerId);
 
   if (profile === null) {
     return {
@@ -355,7 +363,7 @@ export async function buildProfileView(
   if (hairRow !== null) {
     saved.push(hairRow);
   }
-  for (const look of await readSavedLooks(session.id)) {
+  for (const look of await readSavedLooks(plan.ownerId)) {
     const row = savedLookRow(look);
     if (row !== null) {
       saved.push(row);

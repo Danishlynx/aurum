@@ -5,6 +5,8 @@ import { notFound } from "@/lib/server/http/responses";
 import {
   fixtureGarmentSvg,
 } from "@/lib/server/profile/demo-fixture-wardrobe";
+import { judgeAnalysesRemaining } from "@/lib/server/judge";
+import { readJudgeSessionFromCookie } from "@/lib/server/judge/guard";
 import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
 
 /**
@@ -20,9 +22,12 @@ import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
  *
  * Two limits keep it from becoming a general image route:
  *
- * 1. It answers only while AURUM_DEMO_FIXTURE is true. With a real database the
- *    wardrobe view carries signed URLs for the person's own objects, and no
- *    garment photo is ever served through here.
+ * 1. It answers only for a caller who is being shown the checked in fixture
+ *    wardrobe: AURUM_DEMO_FIXTURE in development, or a judge session with no
+ *    analyses left, which reads the same six garments
+ *    (src/lib/server/judge/demo.ts). With a real database the wardrobe view
+ *    carries signed URLs for the person's own objects, and no garment photo is
+ *    ever served through here.
  * 2. It answers only for the six fixture ids. Anything else is a 404 rather
  *    than a lookup, so no id from a request can reach storage through it.
  *
@@ -37,12 +42,22 @@ export const dynamic = "force-dynamic";
 /** Fixture data never changes between deploys, so it can sit in a cache. */
 const CACHE_CONTROL = "public, max-age=3600, immutable";
 
+/**
+ * True when the caller is a judge session with no analyses left, which is being
+ * shown the same six garments the fixture wardrobe holds. Read from the judge
+ * cookie alone, so this never reaches Supabase Auth and never needs a project.
+ */
+async function judgeReadsTheFixture(): Promise<boolean> {
+  const judge = await readJudgeSessionFromCookie();
+  return judge !== null && judgeAnalysesRemaining(judge) === 0;
+}
+
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   return handleRoute(request, "/api/wardrobe/images/[id]", async () => {
-    if (!isDemoFixtureMode()) {
+    if (!isDemoFixtureMode() && !(await judgeReadsTheFixture())) {
       throw notFound();
     }
 

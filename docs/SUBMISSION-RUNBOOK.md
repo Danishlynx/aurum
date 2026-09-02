@@ -97,6 +97,72 @@ Put the printed hash in `JUDGE_ACCESS_CODE_HASH`. Keep the plain code out of git
 
 Then open http://localhost:3000/api/health . Every provider you configured reads true, and no key value appears anywhere in the response. `perfectcorpCredits` carries the units left on the Perfect Corp account, or null when the key is missing or the provider did not answer inside four seconds. Reading it creates no task and spends nothing.
 
+**A13. Run the golden run.** One pass, one selfie, one plan, and the only Perfect Corp spend this project makes.
+
+The account holds 40 units, which is less than one full capture set at the documented prices, so there is no version of this where judges get a live analysis. The units buy one recording of the founder's own face, and the demo profile, the eval fixtures, and the screenshots are all seeded from it. `scripts/golden-run.ts` is that pass.
+
+    npm run golden:run -- --image path\to\selfie.jpg --spend 34
+
+bash: `npm run golden:run -- --image path/to/selfie.jpg --spend 34`
+
+What it does, in order:
+
+1. Loads `.env.local` itself and refuses to start unless `PROVIDER_CALLS_ENABLED=true` is set in as many words. The app treats anything other than `"false"` as on; a script that can empty the balance takes the stricter reading.
+2. Prints the plan: every call, its unit cost read from the same table `src/lib/server/credits/costs.ts` uses, the total, and the total against `--spend`. A plan over the ceiling aborts with nothing called.
+3. Checks the image against the size, format, and byte limits of every endpoint in the plan, so a frame the provider would reject never costs a round trip. The sharpness and exposure gate in `src/lib/shared/quality.ts` is advisory here and does not run: it reads pixels, Node ships no image decoder, and no dependency is being added for one call. The script prints the dimensions and the thresholds the app would have applied so the frame can be judged by eye. The real gate runs in the browser at capture time.
+4. Asks for a typed `yes` on stdin. Pass `--confirm` to answer it in advance, which is how it is driven non interactively.
+5. Uploads the selfie once, free, then runs each step one at a time, polls it to a terminal state, downloads every mask and render, and checks the running spend against `--spend` before every call after the first.
+6. Writes `live-01.json` (the analyses fixture shape), `manifest.json` (per call units, task ids, and what was written), `raw/<step>.json` (the validated provider payloads, which is what corrects the field names in `endpoints.ts`), `masks/`, and `renders/` into `--out`, then prints a spend report.
+
+Any failure stops the run, prints what was spent, and writes the manifest anyway. No spending call is ever retried automatically.
+
+| Flag | Default | What it is |
+| --- | --- | --- |
+| `--image <path>` | required | The consented selfie. Nothing is copied into `--out`: only its SHA 256 and its dimensions are recorded. |
+| `--spend <units>` | required | The hard ceiling. Checked once against the whole plan and again before every call. |
+| `--steps <list>` | `skin,tone,attr` | Any of `skin`, `tone`, `attr`, `makeup`, `hairstyle`. Order does not matter; the catalog order is used. |
+| `--out <dir>` | `evals/fixtures/golden` | Where the fixture, the manifest, the masks, and the renders land. |
+| `--confirm` | off | Answers the typed confirmation in advance. |
+| `--assume-unknown <units>` | 1 | What a row the cost table cannot price yet counts as. Only `skinAnalysis` is in that state today (A3). |
+| `--capture-id <id>` | `golden-01` | Names the uploaded file. |
+| `--fixture-id <id>` | `live-01` | Names the fixture file. |
+| `--makeup-categories <list>` | all four | Which of `lip`, `blush`, `foundation`, `eye` go into the one makeup call. All four still cost 1 unit together. |
+| `--hairstyle-style <id>` | `textured-crop` | The catalog style the render is asked for. |
+| `--hairstyle-template <id>` | none | The provider template id. Required for the hairstyle step, see below. |
+
+Three things to know before running it:
+
+- **The Fitzpatrick and hair type analyses are not run, on purpose.** Fitzpatrick is 10 units for one number the palette derives without, and hair type needs three photos of the same size, which a one selfie flow does not have. The fixture carries both as null and says why.
+- **`tone` and `attr` are unverified endpoints.** `facialColorTones` and `faceAttributes` are still marked `"unverified"` in `endpoints.ts` (their task paths were inferred), so the client refuses them unless `PERFECTCORP_ALLOW_UNVERIFIED=true` is set for this run. Set it, run, then write the real paths into `endpoints.ts` from `raw/tone.json` and `raw/attr.json` and unset it again. That is A4 finished with evidence rather than reading.
+- **The hairstyle step needs a template id.** `HAIRSTYLE_TEMPLATE_ID` in `src/lib/server/renders/hair.ts` is still all nulls, so the plan aborts before the upload unless `--hairstyle-template` is passed. List the hair transfer templates in the API playground first, which costs nothing.
+
+At the documented prices one default pass is `skinAnalysis` (unpriced, counted as 1) plus `facialColorTones` (20) plus `faceAttributes` at one attribute (10), so 31 units of the 40. Adding both renders is 3 more. If A3 has produced a real figure for skin analysis by then, put it in `endpoints.ts` first and the plan prices itself correctly.
+
+Afterwards: read `manifest.json` for what each call actually cost and put those numbers in the credit table, confirm the `expected` block in `live-01.json` by eye (it is derived from the recording itself, which is why the file flags it), and use the recorded set for A8.
+
+**A14. Record the SerpApi responses.**
+
+    npm run golden:serpapi -- --max 12
+
+`scripts/record-serpapi.ts` does for listings what A13 does for the face. It does not carry a list of queries: it reads them from the demo profile itself, the routine steps of `DEMO_FIXTURE_REPORT_VIEW` and the shop the gap queries for the two saved occasions, built by the same `gapQueryFor` and `paletteColorFor` the looks screen calls. So what gets recorded is exactly what the demo would have asked for.
+
+Same guard rails: the plan prints first, `--max` is a hard ceiling on searches (one search is one unit of quota), a typed `yes` or `--confirm` is required, searches run one at a time, and the first failure stops the run.
+
+Each response is stripped before it is written, per `evals/fixtures/listings/README.md`: no `search_parameters`, no `serpapi_` account field anywhere, no `api_key` anywhere, and `search_metadata` cut down to `id` and `status`. The files land in `evals/fixtures/listings/recorded/` named after their query, with a `manifest.json` that records the query, where it came from, and how many results came back. Both scripts refuse to write any file whose text contains the value of a key in `.env.local`, and report only the name of the variable that matched.
+
+| Flag | Default | What it is |
+| --- | --- | --- |
+| `--max <n>` | 12 | The ceiling on searches. A plan above it aborts with nothing searched. |
+| `--out <dir>` | `evals/fixtures/listings/recorded` | Where the responses and the manifest land. |
+| `--confirm` | off | Answers the typed confirmation in advance. |
+| `--location <city>` | none | City level location for the search, when the recording should carry one. |
+| `--gl` / `--hl` | from `.env.local` | Country and language, defaulting to `SERPAPI_DEFAULT_GL` and `SERPAPI_DEFAULT_HL`. |
+| `--limit <n>` | 10 | How many listings to ask for per search. |
+
+Afterwards: paste the recorded bodies into `RECORDED_GAP_RESPONSES` in `src/lib/server/profile/demo-fixture-looks.ts` with their queries, which is the one edit that turns every "No listing found near you yet" row on the demo profile into a real product card, and use the same set for A6 and A8.
+
+Both scripts are covered by `evals/golden/golden-run.test.ts`, which mocks every provider function and asserts the plan arithmetic, the two abort paths, the confirmation gate, the fixture shape, and the stop on failure behaviour. It runs on `npm run test` and spends nothing.
+
 ## B. With a Supabase project
 
 **B1. Create the project** at https://supabase.com/dashboard , in the region closest to the Vercel region you will deploy to.

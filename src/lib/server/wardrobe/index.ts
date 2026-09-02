@@ -26,8 +26,8 @@ import {
   removeObjects,
 } from "../db/storage";
 import type { Garment, Insert, JobRecord, Json } from "../db/types";
+import { demoFixtureNote, planDemoRead } from "../judge/demo";
 import { DEMO_FIXTURE_WARDROBE } from "../profile/demo-fixture-wardrobe";
-import { isDemoFixtureMode, DEMO_FIXTURE_ENV } from "../profile/report-view";
 import type { AppSession } from "../session";
 import {
   countGarments,
@@ -184,24 +184,26 @@ async function toView(args: {
 export async function buildWardrobeView(
   session: AppSession,
 ): Promise<WardrobeView> {
-  if (isDemoFixtureMode()) {
+  const plan = await planDemoRead(session);
+  if (plan.source === "fixture") {
     console.log(
       JSON.stringify({
         event: "aurum.wardrobe_view",
         source: "fixture",
-        note: `${DEMO_FIXTURE_ENV} is true: the garments are served from the checked in fixture and no database or provider is touched.`,
+        reason: plan.reason,
+        note: demoFixtureNote(plan.reason, "the garments are served"),
       }),
     );
     return DEMO_FIXTURE_WARDROBE;
   }
 
-  const garments = await listGarments(session.id);
+  const garments = await listGarments(plan.ownerId);
   if (garments.length === 0) {
     return { garments: [] };
   }
 
   const jobs = await listJobsForSubjects(
-    session.id,
+    plan.ownerId,
     garments.map((garment) => garment.id),
   );
   const jobByGarment = classificationJobsByGarment(jobs);

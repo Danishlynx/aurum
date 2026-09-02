@@ -2,6 +2,8 @@ import type { NextRequest } from "next/server";
 
 import { judgeSessionRequestSchema } from "@/lib/shared/schemas";
 
+import { JUDGE_REMAINING_COOKIE } from "@/lib/client/judge-session";
+
 import { handleRoute } from "@/lib/server/http/handler";
 import { logJudgeSessionCreated } from "@/lib/server/http/logging";
 import { messages } from "@/lib/server/http/messages";
@@ -10,6 +12,7 @@ import {
   createJudgeSession,
   judgeAnalysesRemaining,
   JUDGE_SESSION_COOKIE,
+  JUDGE_SESSION_MAX_AGE_SECONDS,
   judgeCookieOptions,
   verifyJudgeCode,
 } from "@/lib/server/judge";
@@ -64,15 +67,32 @@ export async function POST(request: NextRequest): Promise<Response> {
       creditsCap: session.credits_cap,
     });
 
+    const remaining = judgeAnalysesRemaining(session);
     const response = ok(
       {
-        analysesRemaining: judgeAnalysesRemaining(session),
+        analysesRemaining: remaining,
         analysesAllowed: session.analyses_allowed,
         expiresAt: session.expires_at,
       },
       200,
     );
     response.cookies.set(JUDGE_SESSION_COOKIE, session.id, judgeCookieOptions());
+    /*
+     * The count the banner reads, mirrored into a readable cookie
+     * (src/lib/client/judge-session.ts). The client writes it too, but writing
+     * it here as well is what makes the banner right on the very first render:
+     * a session that starts at zero has a count of zero before any script runs,
+     * so the first screen a judge sees already says how many analyses are left.
+     * It carries no secret: it is one small number, and every cap is enforced
+     * server side against the session row.
+     */
+    response.cookies.set(JUDGE_REMAINING_COOKIE, String(remaining), {
+      httpOnly: false,
+      secure: judgeCookieOptions().secure,
+      sameSite: "strict",
+      path: "/",
+      maxAge: JUDGE_SESSION_MAX_AGE_SECONDS,
+    });
     return response;
   });
 }

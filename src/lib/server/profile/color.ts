@@ -9,6 +9,11 @@ import {
 } from "@/lib/shared/palette";
 
 import type { Insert, Json } from "../db/types";
+import {
+  demoFixtureNote,
+  demoProfileIsReadOnly,
+  planDemoRead,
+} from "../judge/demo";
 import type { AppSession } from "../session";
 import { readFirstName } from "./build";
 import {
@@ -17,12 +22,7 @@ import {
   type AestheticProfile,
 } from "./db";
 import { DEMO_FIXTURE_COLOR_VIEW } from "./demo-fixture";
-import {
-  isDemoFixtureMode,
-  readUndertone,
-  toFacts,
-  DEMO_FIXTURE_ENV,
-} from "./report-view";
+import { readUndertone, toFacts } from "./report-view";
 import { runProfileSynthesis } from "./synthesis";
 
 /**
@@ -105,18 +105,20 @@ export function paletteToJson(palette: Palette | null): Json | null {
 export async function buildColorView(
   session: AppSession,
 ): Promise<ColorView | null> {
-  if (isDemoFixtureMode()) {
+  const plan = await planDemoRead(session);
+  if (plan.source === "fixture") {
     console.log(
       JSON.stringify({
         event: "aurum.color_view",
         source: "fixture",
-        note: `${DEMO_FIXTURE_ENV} is true: the palette is served from the checked in fixture and no database or provider is touched.`,
+        reason: plan.reason,
+        note: demoFixtureNote(plan.reason, "the palette is served"),
       }),
     );
     return DEMO_FIXTURE_COLOR_VIEW;
   }
 
-  const profile = await getAestheticProfile(session.id);
+  const profile = await getAestheticProfile(plan.ownerId);
   if (profile === null) {
     return null;
   }
@@ -159,9 +161,11 @@ export async function confirmUndertone(args: {
   readonly session: AppSession;
   readonly undertone: Undertone;
 }): Promise<UndertoneUpdateOutcome> {
-  if (isDemoFixtureMode()) {
-    // The fixture is checked in and there is no database behind it. Saying so is
-    // the honest answer; writing to nothing and reporting success is not.
+  if (demoProfileIsReadOnly(args.session)) {
+    // The fixture is checked in and there is no database behind it, and a judge
+    // session at zero analyses is reading the saved demo profile, which is read
+    // only. Saying so is the honest answer; writing to nothing, or to a row no
+    // screen will read back, and reporting success is not.
     return { ok: false, reason: "fixture_read_only" };
   }
 

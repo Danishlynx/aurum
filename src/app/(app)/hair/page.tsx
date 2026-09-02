@@ -4,6 +4,7 @@ import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { FaceShapeLine } from "@/components/hair/FaceShapeLine";
 import { HairScreen } from "@/components/hair/HairScreen";
 import { Column } from "@/components/layout/Column";
+import { demoProfileIsReadOnly } from "@/lib/server/judge/demo";
 import { buildHairView } from "@/lib/server/profile/hair";
 import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
 import { getSession, type AppSession } from "@/lib/server/session";
@@ -62,7 +63,13 @@ export default async function HairPage() {
         <FaceShapeLine line={view.faceShapeLine} />
       </Column>
 
-      <HairScreen view={view} readOnly={fixture} />
+      {/*
+        Read only covers both ways the saved demo profile is served: the
+        development switch, and a judge session with no analyses left
+        (src/lib/server/judge/demo.ts). Either way the save is refused, and the
+        screen has to say which refusal it was.
+      */}
+      <HairScreen view={view} readOnly={demoProfileIsReadOnly(session)} />
     </div>
   );
 }

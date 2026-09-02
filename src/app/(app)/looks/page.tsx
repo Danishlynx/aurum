@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 
 import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { LooksScreen } from "@/components/looks/LooksScreen";
+import { demoProfileIsReadOnly } from "@/lib/server/judge/demo";
 import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
 import { accessoryTryOnOptions } from "@/lib/server/renders";
 import { getSession } from "@/lib/server/session";
@@ -61,7 +62,12 @@ export default async function LooksPage() {
     <div className="flex flex-col gap-8">
       <ScreenTitle>{copy.nav.looks}</ScreenTitle>
 
-      <LooksScreen readOnly={fixture} accessoryOptions={accessoryOptions} />
+      {/* Read only covers the development switch and a judge session with no
+          analyses left alike (src/lib/server/judge/demo.ts). */}
+      <LooksScreen
+        readOnly={demoProfileIsReadOnly(session)}
+        accessoryOptions={accessoryOptions}
+      />
     </div>
   );
 }

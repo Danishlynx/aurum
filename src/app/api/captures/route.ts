@@ -22,6 +22,7 @@ import {
 } from "@/lib/server/http/handler";
 import { messages } from "@/lib/server/http/messages";
 import { badRequest, ok, serverError } from "@/lib/server/http/responses";
+import { refuseWhenJudgeAnalysesExhausted } from "@/lib/server/judge/guard";
 
 /**
  * POST /api/captures
@@ -68,6 +69,21 @@ export async function POST(request: NextRequest): Promise<Response> {
   return handleRoute(request, "/api/captures", async (context) => {
     const session = await requireSession(context);
     await requireConsent(session);
+    /*
+     * The judge cap, before the photo is registered rather than after.
+     *
+     * docs/01-user-flow.md, "Judge mode across the flow": at zero the capture is
+     * disabled and every screen renders from the demo profile. The screen shows
+     * that state without asking (src/app/(onboarding)/capture/page.tsx), and
+     * this is the same rule where it is enforced: a session with no analyses
+     * left never gets a signed upload URL, so no selfie is stored for a reading
+     * that could not run.
+     */
+    refuseWhenJudgeAnalysesExhausted({
+      session,
+      route: "/api/captures",
+      requestId: context.requestId,
+    });
     await enforceRateLimit({ context, name: "captures", session });
 
     const body: unknown = await request.json().catch(() => null);

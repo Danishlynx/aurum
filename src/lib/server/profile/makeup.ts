@@ -9,16 +9,13 @@ import type { ReportListing } from "@/lib/shared/report-view";
 
 import { getCapture } from "../db";
 import { BUCKETS, createSignedRead } from "../db/storage";
+import { demoFixtureNote, planDemoRead } from "../judge/demo";
 import { groundRoutineSteps } from "../products";
 import type { AppSession } from "../session";
 import { paletteForProfile } from "./color";
 import { getAestheticProfile } from "./db";
 import { DEMO_FIXTURE_MAKEUP_VIEW } from "./demo-fixture";
-import {
-  isDemoFixtureMode,
-  readGroundingContext,
-  DEMO_FIXTURE_ENV,
-} from "./report-view";
+import { readGroundingContext } from "./report-view";
 import { buildMakeupCategoryViews, selectedShade } from "./shades";
 
 /**
@@ -121,18 +118,20 @@ export async function buildMakeupView(
   session: AppSession,
   options: MakeupViewOptions = {},
 ): Promise<MakeupView | null> {
-  if (isDemoFixtureMode()) {
+  const plan = await planDemoRead(session);
+  if (plan.source === "fixture") {
     console.log(
       JSON.stringify({
         event: "aurum.makeup_view",
         source: "fixture",
-        note: `${DEMO_FIXTURE_ENV} is true: the shade rows are served from the checked in fixture and no database or provider is touched.`,
+        reason: plan.reason,
+        note: demoFixtureNote(plan.reason, "the shade rows are served"),
       }),
     );
     return DEMO_FIXTURE_MAKEUP_VIEW;
   }
 
-  const profile = await getAestheticProfile(session.id);
+  const profile = await getAestheticProfile(plan.ownerId);
   if (profile === null) {
     return null;
   }
@@ -152,7 +151,7 @@ export async function buildMakeupView(
       : null;
 
   return {
-    captureImageUrl: await signCapture(session.id, profile.capture_id),
+    captureImageUrl: await signCapture(plan.ownerId, profile.capture_id),
     categories,
     product,
   };

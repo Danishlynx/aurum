@@ -11,6 +11,8 @@
     "test": "vitest run",
     "e2e": "playwright test",
     "shots": "node scripts/screenshots.mjs",
+    "golden:run": "tsx --conditions=react-server scripts/golden-run.ts",
+    "golden:serpapi": "tsx --conditions=react-server scripts/record-serpapi.ts",
     "eval:capture": "vitest run evals/capture",
     "eval:consistency": "vitest run evals/consistency",
     "eval:palette": "vitest run evals/palette",
@@ -20,6 +22,7 @@
     "eval:budget": "vitest run evals/budget",
     "eval:safety": "vitest run evals/safety",
     "eval:smoke": "vitest run evals/capture evals/palette evals/grounding evals/budget evals/safety",
+    "seed:demo": "tsx --conditions=react-server scripts/seed-demo.ts",
     "db:migrate": "node scripts/supabase-cli.mjs db push",
     "db:types": "node scripts/supabase-cli.mjs gen types typescript --local"
   },

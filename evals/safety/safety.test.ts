@@ -456,10 +456,22 @@ describe("eval:safety, checks that need a running app", () => {
     "returns 403 from the capture and analyze routes for a session without consent_at and is_adult_confirmed",
   );
 
-  /* docs/07-payments-and-judge-mode.md and docs/03-architecture.md, "Judge mode". */
-  it.todo(
-    "returns 429 on analyze for a judge session at its cap and serves the demo profile on reads",
-  );
+  /*
+   * docs/07-payments-and-judge-mode.md and docs/03-architecture.md, "Judge
+   * mode": "returns 429 on analyze for a judge session at its cap and serves
+   * the demo profile on reads". Landed with the zero analyses build, in the two
+   * halves it has:
+   *
+   * - the server half, in judge-zero.test.ts beside this file, where
+   *   JUDGE_ANALYSES_ALLOWED=0 gives a session no analyses at all, both capture
+   *   routes refuse it with 429 and the flow doc's sentence, the read plan
+   *   serves the seeded demo profile when it is there and the checked in
+   *   fixture when it is not, and every write is refused,
+   * - the screen half, in e2e/judge-zero.spec.ts, where a running server with
+   *   that setting and no fixture switch walks the whole flow: the code, the
+   *   banner at zero, consent, the disabled capture screen, and /report through
+   *   /profile on the demo profile.
+   */
 
   it.todo("returns 401 for a judge session past its expiry");
 

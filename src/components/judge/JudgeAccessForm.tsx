@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { FormEvent } from "react";
 
@@ -22,7 +21,6 @@ import { copy } from "@/lib/shared/copy";
  * body, so the voice rules hold whatever a route decides to return.
  */
 export function JudgeAccessForm() {
-  const router = useRouter();
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [exhausted, setExhausted] = useState(false);
@@ -50,13 +48,36 @@ export function JudgeAccessForm() {
 
     rememberJudgeRemaining(result.data.analysesRemaining);
 
-    if (result.data.analysesRemaining === 0) {
+    /*
+     * A session that was given analyses and has none left is the exhausted state
+     * docs/01-user-flow.md section B writes, and it says so here.
+     *
+     * A session that was given none at all is a different thing and gets the
+     * ordinary route into the app. This build sets JUDGE_ANALYSES_ALLOWED=0
+     * (docs/07-payments-and-judge-mode.md): judges walk the whole flow, consent
+     * included, and every screen renders from the saved demo profile, with the
+     * capture screen disabled and saying so. Sending them to a dead end on the
+     * access screen instead would hide the app the code was meant to open.
+     */
+    if (
+      result.data.analysesRemaining === 0 &&
+      result.data.analysesAllowed > 0
+    ) {
       setPending(false);
       setExhausted(true);
       return;
     }
 
-    router.push("/welcome");
+    /*
+     * A whole page load rather than a client transition.
+     *
+     * The session cookie changes what the shell renders: docs/01-user-flow.md
+     * puts the judge banner "on every screen", and the root layout draws it from
+     * the cookie on the server. A client side push keeps the layout that was
+     * rendered before the session existed, so the first screens of the judge
+     * flow would carry no banner at all until something forced a reload.
+     */
+    window.location.assign("/welcome");
   }
 
   if (exhausted) {

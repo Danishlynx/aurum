@@ -1,6 +1,18 @@
 import type { NextConfig } from "next";
 
+/**
+ * Where the build output goes. Next.js writes ".next" and nothing else in every
+ * ordinary run, and one environment variable moves it.
+ *
+ * It exists for exactly one case: playwright.config.ts starts a second
+ * development server beside the first one, with a different judge configuration,
+ * and two servers writing one .next directory would fight over the same compiled
+ * output. Nothing in production sets it.
+ */
+const distDir = process.env.AURUM_DIST_DIR ?? ".next";
+
 const nextConfig: NextConfig = {
+  distDir,
   reactStrictMode: true,
   // Linting is a separate gate (npm run lint) so a build failure always means a build problem.
   eslint: { ignoreDuringBuilds: true },

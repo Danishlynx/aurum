@@ -17,9 +17,9 @@ import type { GarmentView } from "@/lib/shared/wardrobe-view";
 
 import { BUCKETS, createSignedRead } from "../db/storage";
 import type { Insert, JobStatus, Look, Render } from "../db/types";
+import { demoFixtureNote, planDemoRead } from "../judge/demo";
 import { paletteForProfile } from "../profile/color";
 import { getAestheticProfile } from "../profile/db";
-import { DEMO_FIXTURE_ENV, isDemoFixtureMode } from "../profile/report-view";
 import { demoFixtureLooksView } from "../profile/demo-fixture-looks";
 import { clothCategoryForType } from "../renders/cloth";
 import { findRendersByHashes } from "../renders/db";
@@ -324,12 +324,14 @@ export async function buildLooksView(
   session: AppSession,
   occasion: Occasion,
 ): Promise<LooksView> {
-  if (isDemoFixtureMode()) {
+  const plan = await planDemoRead(session);
+  if (plan.source === "fixture") {
     console.log(
       JSON.stringify({
         event: "aurum.looks_view",
         source: "fixture",
-        note: `${DEMO_FIXTURE_ENV} is true: the looks are served from the checked in fixture and no database or provider is touched.`,
+        reason: plan.reason,
+        note: demoFixtureNote(plan.reason, "the looks are served"),
       }),
     );
     return demoFixtureLooksView(occasion);
@@ -341,7 +343,7 @@ export async function buildLooksView(
     garments.map((garment) => [garment.id, garment] as const),
   );
 
-  const profile = await getAestheticProfile(session.id);
+  const profile = await getAestheticProfile(plan.ownerId);
   const palette = profile === null ? null : paletteForProfile(profile);
   const captureId = profile?.capture_id ?? null;
 
@@ -356,16 +358,22 @@ export async function buildLooksView(
           candidates,
           garmentsById,
           captureId,
+          renderOwnerId: plan.ownerId,
         })
       : await composeFromShop({ session, occasion, palette });
 
-  const rows = await readLooksRows(session, occasion);
-  const assigned = await persistComposition({
-    session,
-    occasion,
-    composed,
-    rows,
-  });
+  const rows = await readLooksRows(plan.ownerId, occasion);
+  /*
+   * The demo profile is read only (docs/07-payments-and-judge-mode.md), so a
+   * judge reading it composes without writing: no row is inserted, no rationale
+   * is updated on it, and nothing of the seed is deleted. The looks still render
+   * from their composed ids, and "Save this look" answers with the read only
+   * line rather than flipping a flag on somebody else's row.
+   */
+  const assigned =
+    plan.source === "database"
+      ? []
+      : await persistComposition({ session, occasion, composed, rows });
 
   const composedViews = composed.map((entry, index) => {
     const record = assigned[index];
@@ -419,12 +427,12 @@ export async function buildLooksView(
 
 /** The rows for this occasion, or none when the table cannot be read. */
 async function readLooksRows(
-  session: AppSession,
+  ownerId: string,
   occasion: Occasion,
 ): Promise<Look[]> {
   try {
     return await listLooksForOccasion({
-      ownerId: session.id,
+      ownerId,
       occasion,
     });
   } catch {
@@ -445,6 +453,8 @@ async function composeFromWardrobe(args: {
   readonly candidates: readonly Candidate[];
   readonly garmentsById: ReadonlyMap<string, GarmentView>;
   readonly captureId: string | null;
+  /** Owner of the stored renders, which is not the caller on a demo read. */
+  readonly renderOwnerId: string;
 }): Promise<ComposedLook[]> {
   const ranked = await rankLooks({
     session: args.session,
@@ -479,7 +489,9 @@ async function composeFromWardrobe(args: {
     }
   }
   const renders = await clothRendersByHash({
-    ownerId: args.session.id,
+    // The renders belong to whoever owns the profile being read, which is the
+    // demo owner when a judge session is reading the saved demo profile.
+    ownerId: args.renderOwnerId,
     hashes: [...heroHashes.values()],
   });
 
