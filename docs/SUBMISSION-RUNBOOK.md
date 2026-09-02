@@ -31,7 +31,7 @@ bash: `cp .env.example .env.local`
 
 The console also issues a secret. Leave `PERFECTCORP_API_SECRET` blank. Settled against the live API on 2026-09-02: the key alone authenticates as `Authorization: Bearer <key>`, and the RSA token exchange the secret is for works but buys nothing. The evidence is in `docs/04-integrations.md` ("Authentication") and in `PERFECTCORP_AUTH` in `src/lib/server/providers/perfectcorp/endpoints.ts`. Nothing further to verify here.
 
-**A3. Read the real credit costs out of the API console** and write them into `src/lib/server/providers/perfectcorp/endpoints.ts` (`unitCost`) and the credit table in `docs/04-integrations.md`. The rows still marked TBD are `skinAnalysis`, `clothTryOn`, and the accessory APIs other than the watch. Until `skinAnalysis` has a number, the cost of one capture set cannot be computed and A9 cannot be finished. Spends nothing.
+**A3. Read the real credit costs out of the API console** and write them into `src/lib/server/providers/perfectcorp/endpoints.ts` (`unitCost`) and the credit table in `docs/04-integrations.md`. The rows still marked TBD are `clothTryOn` and the accessory APIs other than the watch. `skinAnalysis` left that list on 2026-09-02: one live task with all 16 SD concern keys took the balance from 40 to 24, so it is recorded as 16 units, measured rather than published. One capture set is therefore 58 units, which is more than the account holds, and A9 can now be finished with a real number. Spends nothing.
 
 **A4. Confirm the endpoint surface against the live docs.** Open https://docs.perfectcorp.com/develop/introduction and the reference page for each API, or add the MCP server from https://docs.perfectcorp.com/develop/mcp with your key and list its tools. For every entry in `endpoints.ts` whose paths, request fields, and result fields you have now read, set `verification.state` to `"confirmed"` and update the note with the source and the date. Spends nothing.
 
@@ -73,9 +73,9 @@ The script prints its plan and exits non zero until that manifest exists, and it
 
     npm run eval:budget
 
-Read `evals/results/budget-local.json`. With the table as it stands today, the numbers are: capture set 42 units of confirmed rows plus 1 reserved for the unpriced skin analysis row, the documented six renders (four hairstyles at 2, two hair colours at 1) 10 units, so one session is 53 units, and `requiredCapUnits` is `ceil(53 x 3 x 1.2) = 191` against the 120 in `.env.example`. The four assertions that check the cap are marked `it.fails` for exactly that reason: the suite is green only while the cap is still too low.
+Read `evals/results/budget-local.json`. With the table as it stands today, every row of the capture set is priced: skin analysis 16 (measured 2026-09-02), fitzpatrick 10, facial color tones 20, face attributes 10, hair type 2, so the capture set is 58 units. The documented six renders (four hairstyles at 2, two hair colours at 1) are 10, so one session is 68 units and `requiredCapUnits` is `ceil(68 x 3 x 1.2) = 245` against the 120 in `.env.example`. The four assertions that check the cap are marked `it.fails` for exactly that reason: the suite is green only while the cap is still too low. Pricing skin analysis honestly widened the gap by 54 units, which is the point of pricing it.
 
-Once A3 has replaced the unpriced rows with real figures, redo it with them:
+Once A3 has replaced the last unpriced row (cloth try on) with a real figure, redo it with it:
 
 1. Take `documentedSessionUnits` from the results file. Call it S.
 2. Set `JUDGE_CREDITS_CAP` to `ceil(S x 3.6)`. That is the cap the doc asks for: three full sessions with 20 percent headroom.
@@ -123,7 +123,8 @@ Any failure stops the run, prints what was spent, and writes the manifest anyway
 | `--steps <list>` | `skin,tone,attr` | Any of `skin`, `tone`, `attr`, `makeup`, `hairstyle`. Order does not matter; the catalog order is used. |
 | `--out <dir>` | `evals/fixtures/golden` | Where the fixture, the manifest, the masks, and the renders land. |
 | `--confirm` | off | Answers the typed confirmation in advance. |
-| `--assume-unknown <units>` | 1 | What a row the cost table cannot price yet counts as. Only `skinAnalysis` is in that state today (A3). |
+| `--assume-unknown <units>` | 1 | What a row the cost table cannot price yet counts as. No step in the golden run is in that state any more: `skinAnalysis` was measured at 16 units on 2026-09-02 (A3). |
+| `--ingest-skin <path>` | none | Rebuilds the skin step from a saved response instead of calling anything. See A13a. |
 | `--capture-id <id>` | `golden-01` | Names the uploaded file. |
 | `--fixture-id <id>` | `live-01` | Names the fixture file. |
 | `--makeup-categories <list>` | all four | Which of `lip`, `blush`, `foundation`, `eye` go into the one makeup call. All four still cost 1 unit together. |
@@ -136,9 +137,21 @@ Three things to know before running it:
 - **`tone` and `attr` are unverified endpoints.** `facialColorTones` and `faceAttributes` are still marked `"unverified"` in `endpoints.ts` (their task paths were inferred), so the client refuses them unless `PERFECTCORP_ALLOW_UNVERIFIED=true` is set for this run. Set it, run, then write the real paths into `endpoints.ts` from `raw/tone.json` and `raw/attr.json` and unset it again. That is A4 finished with evidence rather than reading.
 - **The hairstyle step needs a template id.** `HAIRSTYLE_TEMPLATE_ID` in `src/lib/server/renders/hair.ts` is still all nulls, so the plan aborts before the upload unless `--hairstyle-template` is passed. List the hair transfer templates in the API playground first, which costs nothing.
 
-At the documented prices one default pass is `skinAnalysis` (unpriced, counted as 1) plus `facialColorTones` (20) plus `faceAttributes` at one attribute (10), so 31 units of the 40. Adding both renders is 3 more. If A3 has produced a real figure for skin analysis by then, put it in `endpoints.ts` first and the plan prices itself correctly.
+At the priced table one default pass is `skinAnalysis` (16) plus `facialColorTones` (20) plus `faceAttributes` at one attribute (10), so 46 units. The account held 40 and 16 of them are already spent, so a full default pass no longer fits: `skin` is done (see A13a) and what is left to buy is `tone` and `attr` at 30 units against a balance of 24. Top the account up, or run `--steps attr` alone, before deciding.
 
 Afterwards: read `manifest.json` for what each call actually cost and put those numbers in the credit table, confirm the `expected` block in `live-01.json` by eye (it is derived from the recording itself, which is why the file flags it), and use the recorded set for A8.
+
+**A13a. Ingest a response that was already paid for.** Spends nothing.
+
+A task that succeeds on the provider's side is charged whether or not we can read the answer. On 2026-09-02 the first skin analysis task cost 16 units and was recorded as failed, because the status schema declared `data.error` as an optional string and the real body sends it as `null`. The response was saved. Ingest mode rebuilds the skin step from it:
+
+    npm run golden:run -- --ingest-skin evals\fixtures\golden\raw\skin\result.json --image evals\fixtures\golden\input-01.jpg
+
+bash: `npm run golden:run -- --ingest-skin evals/fixtures/golden/raw/skin/result.json --image evals/fixtures/golden/input-01.jpg`
+
+It makes no HTTP request of any kind, so it needs no key and does not read `PROVIDER_CALLS_ENABLED`. It parses the saved body with the same schema the poll uses, normalizes it with the same `normalize()` the jobs layer calls, copies the mask PNGs saved beside the response (the result URLs have expired and a download would be a request), writes `live-01.json`, `raw/skin.json`, and `masks/`, and rewrites `manifest.json` so the skin step reads `succeeded` at its 16 measured units. The image has to be the one the task ran on: the manifest records its SHA 256 and the ingest refuses a different file rather than attaching a reading to the wrong face.
+
+After it, `npm run seed:demo -- --from-golden evals/fixtures/golden --image evals/fixtures/golden/input-01.jpg` has a real skin analysis to seed. It still has no tone and no attributes, so the palette half of the demo profile needs A13 to run `tone` and `attr`.
 
 **A14. Record the SerpApi responses.**
 

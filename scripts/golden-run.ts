@@ -34,11 +34,26 @@
  *     npm run golden:run -- --image path\to\selfie.jpg --spend 34
  *
  * The flags are documented in docs/SUBMISSION-RUNBOOK.md, section A13.
+ *
+ * INGEST MODE, which spends nothing
+ *
+ * A task that succeeds on the provider's side is charged whether or not we can
+ * read the answer. On 2026-09-02 one skin analysis task cost 16 units and was
+ * recorded as failed here, because the status schema rejected the real body. The
+ * response itself was saved. Ingest mode turns a saved response into the same
+ * output a live run would have written, without calling anything:
+ *
+ *     npm run golden:run -- --ingest-skin evals\fixtures\golden\raw\skin\result.json --image path\to\selfie.jpg
+ *
+ * It makes no HTTP request of any kind, so it needs no key and does not read
+ * PROVIDER_CALLS_ENABLED. Masks are copied from files sitting beside the saved
+ * response rather than downloaded, because the result URLs expire and because
+ * the bytes are already on disk.
  */
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -58,11 +73,16 @@ import {
   downloadResultAssets,
   getEndpoint,
   getTaskSnapshot,
+  normalizeTaskState,
   parseRenderUrls,
+  parseSkinAnalysisResult,
+  readSkinAnalysis,
+  taskStatusResponseSchema,
   unitsForCall,
   type PerfectCorpEndpointKey,
   type TaskSnapshot,
 } from "@/lib/server/providers/perfectcorp";
+import { mapProviderConcern } from "@/lib/shared/concerns";
 import { buildMakeupCategoryViews } from "@/lib/server/profile/shades";
 import { detectUndertone } from "@/lib/server/profile/undertone";
 import { hairstyleTemplateFor } from "@/lib/server/renders/hair";
@@ -194,6 +214,11 @@ export interface GoldenOptions {
   readonly hairstyleStyleId: string;
   /** A provider template id read from the API playground, which costs nothing. */
   readonly hairstyleTemplateId: string | null;
+  /**
+   * Path to a saved skin analysis status response. When set, the script calls
+   * nothing at all and rebuilds its output from that file instead.
+   */
+  readonly ingestSkinPath: string | null;
 }
 
 const DEFAULT_OUT_DIR = "evals/fixtures/golden";
@@ -243,6 +268,7 @@ export function parseArgs(argv: readonly string[]): GoldenOptions {
   let makeupCategories: MakeupCategory[] = [...MAKEUP_CATEGORIES];
   let hairstyleStyleId = DEFAULT_HAIRSTYLE_STYLE_ID;
   let hairstyleTemplateId: string | null = null;
+  let ingestSkinPath: string | null = null;
 
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
@@ -313,6 +339,10 @@ export function parseArgs(argv: readonly string[]): GoldenOptions {
         hairstyleTemplateId = requireValue(flag, argv[index + 1]);
         index += 1;
         break;
+      case "--ingest-skin":
+        ingestSkinPath = requireValue(flag, argv[index + 1]);
+        index += 1;
+        break;
       default:
         throw new GoldenRunError("bad_argument", `Unknown argument ${String(flag)}.`);
     }
@@ -321,7 +351,12 @@ export function parseArgs(argv: readonly string[]): GoldenOptions {
   if (imagePath === null) {
     throw new GoldenRunError("bad_argument", "--image is required.");
   }
-  if (spendUnits === null) {
+  /*
+   * A ceiling is required for a run that spends and meaningless for one that
+   * cannot. Ingest mode makes no request, so it is given a ceiling of zero
+   * rather than being asked for one.
+   */
+  if (spendUnits === null && ingestSkinPath === null) {
     throw new GoldenRunError(
       "bad_argument",
       "--spend is required. It is the hard ceiling in units, and the run aborts rather than crossing it.",
@@ -333,7 +368,7 @@ export function parseArgs(argv: readonly string[]): GoldenOptions {
 
   return {
     imagePath,
-    spendUnits,
+    spendUnits: spendUnits ?? 0,
     steps: dedupeSteps(steps),
     outDir,
     confirm,
@@ -343,6 +378,7 @@ export function parseArgs(argv: readonly string[]): GoldenOptions {
     makeupCategories,
     hairstyleStyleId,
     hairstyleTemplateId,
+    ingestSkinPath,
   };
 }
 
@@ -778,6 +814,20 @@ export const goldenFixtureSchema = z.object({
         concerns: z.array(concernSchema),
         skinAge: z.number().nullable(),
         overallScore: z.number().nullable(),
+        /**
+         * The provider's own skin type by zone, once the provider module maps
+         * it. Optional because the twelve hand written fixtures predate it.
+         * Without this field the parse below would drop the zones on the floor,
+         * and the demo profile would fall back to deriving them from oiliness
+         * and moisture when the provider had already answered.
+         */
+        skinTypeZones: z
+          .object({
+            tZone: z.string().nullable(),
+            cheeks: z.string().nullable(),
+          })
+          .nullable()
+          .optional(),
       })
       .nullable(),
     fitzpatrick: z.object({ fitzpatrick: z.number().nullable() }).nullable(),
@@ -924,6 +974,8 @@ export interface GoldenRunIo {
   readonly readFile: (path: string) => Uint8Array;
   readonly writeFile: (path: string, bytes: Uint8Array | string) => void;
   readonly ensureDir: (path: string) => void;
+  /** True when a file is readable. Ingest mode uses it to find saved masks. */
+  readonly exists: (path: string) => boolean;
   /** Returns true when the operator agreed to the plan. */
   readonly confirm: (question: string) => Promise<boolean>;
 }
@@ -1473,6 +1525,364 @@ function messageOf(thrown: unknown): string {
 }
 
 /* ------------------------------------------------------------------ */
+/* Ingest: making an already paid response usable, for free            */
+/* ------------------------------------------------------------------ */
+
+/** The step an ingested skin analysis lands on, matching a live run. */
+export const INGEST_STEP: GoldenStep = "skin";
+
+/** Extensions a saved mask is looked for under, in order. */
+export const INGEST_MASK_EXTENSIONS: readonly string[] = ["png", "jpg", "jpeg", "webp"];
+
+/**
+ * The file a mask was saved to beside the recorded response.
+ *
+ * The convention is the provider's own type and the index within that entry's
+ * mask_urls, for example "dark_circle_v2-0.png". Returns null when no file with
+ * a known extension is there, which is a warning and not a failure: the scores
+ * are the reading, the masks illustrate it.
+ */
+export function localMaskFileFor(args: {
+  readonly io: GoldenRunIo;
+  readonly directory: string;
+  readonly providerType: string;
+  readonly index?: number;
+}): string | null {
+  const index = args.index ?? 0;
+  for (const extension of INGEST_MASK_EXTENSIONS) {
+    const candidate = `${args.directory}/${args.providerType}-${String(index)}.${extension}`;
+    if (args.io.exists(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/** One call as the manifest records it, read back loosely from a previous run. */
+const previousManifestSchema = z.object({
+  recordedOn: z.string().min(1).optional(),
+  spend: z.unknown().optional(),
+  calls: z
+    .array(
+      z.object({
+        step: z.string(),
+        taskId: z.string().nullable().optional(),
+      }).loose(),
+    )
+    .optional(),
+  image: z.object({ sha256: z.string() }).loose().optional(),
+});
+
+export type PreviousManifest = z.infer<typeof previousManifestSchema>;
+
+/** The previous manifest, or null when there is none that can be read. */
+export function readPreviousManifest(
+  io: GoldenRunIo,
+  outDir: string,
+): PreviousManifest | null {
+  const path = resolve(outDir, "manifest.json");
+  if (!io.exists(path)) {
+    return null;
+  }
+  try {
+    const text = new TextDecoder().decode(io.readFile(path)).replace(/^﻿/u, "");
+    const parsed = previousManifestSchema.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface IngestManifestInput {
+  readonly previous: PreviousManifest | null;
+  readonly options: GoldenOptions;
+  /** When the response was recorded: the previous run's time, when known. */
+  readonly recordedOn: string;
+  /** When this ingest ran. */
+  readonly ingestedAt: string;
+  readonly image: ImageHeader;
+  readonly imageSha256: string;
+  readonly taskId: string | null;
+  readonly units: number;
+  readonly outputs: readonly string[];
+  readonly fixtureFile: string | null;
+  readonly sourcePath: string;
+}
+
+/**
+ * The manifest an ingest writes.
+ *
+ * Pure, so what it claims can be tested without a disk. Two rules it keeps:
+ *
+ * 1. It never invents a spend. The previous run's spend block recorded real
+ *    balances read from the account, so it is carried over untouched. Without
+ *    one, the spend is reported from the cost table and flagged as unmeasured.
+ * 2. It replaces the skin call rather than appending one, so ingesting twice
+ *    leaves one entry and not three.
+ */
+export function buildIngestManifest(
+  input: IngestManifestInput,
+): Record<string, unknown> {
+  const previousCalls = input.previous?.calls ?? [];
+  const skinCall = {
+    step: INGEST_STEP,
+    endpointKey: "skinAnalysis",
+    taskId: input.taskId,
+    state: "succeeded",
+    tableUnits: input.units,
+    measuredUnits: input.units,
+    startedAt: input.recordedOn,
+    finishedAt: input.recordedOn,
+    outputs: [...input.outputs],
+    error: null,
+  };
+
+  const calls: unknown[] = previousCalls.map((call) =>
+    call.step === INGEST_STEP ? skinCall : call,
+  );
+  if (!previousCalls.some((call) => call.step === INGEST_STEP)) {
+    calls.unshift(skinCall);
+  }
+
+  const spend = input.previous?.spend ?? {
+    ceilingUnits: 0,
+    plannedUnits: 0,
+    measured: false,
+    spentUnits: input.units,
+    balanceBeforeUnits: null,
+    balanceAfterUnits: null,
+  };
+
+  return {
+    recordedOn: input.recordedOn,
+    captureId: input.options.captureId,
+    fixtureFile: input.fixtureFile,
+    image: {
+      sha256: input.imageSha256,
+      contentType: input.image.contentType,
+      width: input.image.width,
+      height: input.image.height,
+      byteLength: input.image.byteLength,
+    },
+    spend,
+    skippedAnalyses: SKIPPED_ANALYSES,
+    calls,
+    ingest: {
+      at: input.ingestedAt,
+      sourceFile: input.sourcePath,
+      units: input.units,
+      note:
+        "Rebuilt from a saved provider response. No task was created, no request was made, and " +
+        "nothing was charged: the units below were charged by the original task, which succeeded " +
+        "on the provider's side and was recorded as failed here because the status schema " +
+        "rejected the real body.",
+    },
+  };
+}
+
+/**
+ * Rebuilds the skin half of a golden run from a response that was already paid
+ * for. Reaches no network. Returns a process exit code.
+ */
+export function runSkinIngest(options: GoldenOptions, io: GoldenRunIo): number {
+  const sourcePath = options.ingestSkinPath;
+  if (sourcePath === null) {
+    io.errorLog("runSkinIngest was called without --ingest-skin.");
+    return 1;
+  }
+
+  io.log("Ingesting a saved skin analysis response.");
+  io.log(`Source: ${sourcePath}`);
+  io.log(`Image: ${options.imagePath}`);
+  io.log(`Output: ${options.outDir}`);
+  io.log("No provider call is made. Nothing is charged.");
+  io.log("");
+
+  let imageBytes: Uint8Array;
+  try {
+    imageBytes = io.readFile(options.imagePath);
+  } catch {
+    io.errorLog(`The image at ${options.imagePath} could not be read.`);
+    return 1;
+  }
+  const header = readImageHeader(imageBytes);
+  if (header === null) {
+    io.errorLog("The image is not a JPEG or a PNG, so its header cannot be recorded.");
+    return 1;
+  }
+  const imageSha256 = createHash("sha256").update(imageBytes).digest("hex");
+
+  const previous = readPreviousManifest(io, options.outDir);
+  const previousSha = previous?.image?.sha256;
+  if (typeof previousSha === "string" && previousSha !== imageSha256) {
+    io.errorLog(
+      `The manifest in ${options.outDir} records a different selfie than the one at ${options.imagePath}. ` +
+        "The saved response was produced from that other image, so ingesting this one would attach a " +
+        "reading to the wrong face. Pass the image the run was given. Nothing was written.",
+    );
+    return 1;
+  }
+
+  let body: unknown;
+  try {
+    const text = new TextDecoder().decode(io.readFile(sourcePath)).replace(/^﻿/u, "");
+    body = JSON.parse(text);
+  } catch {
+    io.errorLog(`${sourcePath} could not be read as JSON. Nothing was written.`);
+    return 1;
+  }
+
+  const envelope = taskStatusResponseSchema.safeParse(body);
+  if (!envelope.success) {
+    io.errorLog(
+      `${sourcePath} does not match the task status envelope: ` +
+        `${envelope.error.issues.map((issue) => issue.path.join(".")).join(", ")}. Nothing was written.`,
+    );
+    return 1;
+  }
+
+  const state = normalizeTaskState(envelope.data.data.task_status);
+  if (state !== "succeeded") {
+    io.errorLog(
+      `The saved response says the task is ${state}, so there is no result to ingest. Nothing was written.`,
+    );
+    return 1;
+  }
+
+  const snapshot: TaskSnapshot = {
+    endpointKey: "skinAnalysis",
+    taskId: previousTaskId(previous) ?? "recorded-response",
+    state: "succeeded",
+    results: envelope.data.data.results ?? undefined,
+    errorCode: null,
+    pollingIntervalSeconds: null,
+  };
+
+  let normalized: ReturnType<typeof normalize>;
+  let reading: ReturnType<typeof readSkinAnalysis>;
+  try {
+    normalized = normalize("skin", snapshot);
+    reading = readSkinAnalysis(parseSkinAnalysisResult(snapshot));
+  } catch (thrown) {
+    io.errorLog(`The saved response could not be normalized: ${messageOf(thrown)}`);
+    return 1;
+  }
+
+  io.ensureDir(options.outDir);
+  io.ensureDir(resolve(options.outDir, "raw"));
+
+  const outputs: string[] = [];
+  const rawName = `raw/${INGEST_STEP}.json`;
+  writeJson(io, resolve(options.outDir, rawName), normalized.raw);
+  outputs.push(rawName);
+
+  /*
+   * The first provider type that claimed each concern key, in the order
+   * normalize walked them, so the mask files here are the ones normalize chose.
+   */
+  const typeForKey = new Map<string, string>();
+  for (const concern of reading.concerns) {
+    const key = mapProviderConcern(concern.type);
+    if (key !== null && !typeForKey.has(key)) {
+      typeForKey.set(key, concern.type);
+    }
+  }
+
+  const maskDirectory = dirname(sourcePath);
+  const missingMasks: string[] = [];
+  if (normalized.maskUrls.length > 0) {
+    io.ensureDir(resolve(options.outDir, "masks"));
+  }
+  for (const mask of normalized.maskUrls) {
+    const providerType = typeForKey.get(mask.key);
+    const found =
+      providerType === undefined
+        ? null
+        : localMaskFileFor({ io, directory: maskDirectory, providerType });
+    if (found === null) {
+      missingMasks.push(mask.key);
+      continue;
+    }
+    const extension = found.slice(found.lastIndexOf(".") + 1);
+    const name = `masks/${mask.key}.${extension}`;
+    io.writeFile(resolve(options.outDir, name), io.readFile(found));
+    outputs.push(name);
+  }
+
+  const summaries: Partial<Record<AnalysisKind, unknown>> = {
+    skin: normalized.summary,
+  };
+  const recordedOn = previous?.recordedOn ?? io.nowIso();
+
+  let fixtureFile: string | null = null;
+  try {
+    const fixture = buildGoldenFixture({
+      options,
+      imageSha256,
+      recordedOn,
+      stepsRun: [INGEST_STEP],
+      summaries,
+    });
+    fixtureFile = `${options.fixtureId}.json`;
+    writeJson(io, resolve(options.outDir, fixtureFile), fixture);
+  } catch (thrown) {
+    io.errorLog(`The fixture was not written: ${messageOf(thrown)}`);
+    return 1;
+  }
+
+  const units = unitsForCall("skinAnalysis", 1) ?? 0;
+  const manifest = buildIngestManifest({
+    previous,
+    options,
+    recordedOn,
+    ingestedAt: io.nowIso(),
+    image: header,
+    imageSha256,
+    taskId: previousTaskId(previous),
+    units,
+    outputs,
+    fixtureFile,
+    sourcePath,
+  });
+  writeJson(io, resolve(options.outDir, "manifest.json"), manifest);
+
+  io.log(`Concerns read: ${String(reading.concerns.length)}.`);
+  io.log(
+    `Skin age: ${String(reading.skinAge ?? "not reported")}. Overall score: ${String(reading.overallScore ?? "not reported")}.`,
+  );
+  io.log(
+    `Skin type by zone: ${
+      reading.skinTypeZones.length === 0
+        ? "not reported"
+        : reading.skinTypeZones
+            .map((zone) => `${zone.region} ${zone.value}`)
+            .join(", ")
+    }.`,
+  );
+  io.log(`Files written: ${String(outputs.length + 2)} (${outputs.join(", ")}, ${String(fixtureFile)}, manifest.json).`);
+  if (missingMasks.length > 0) {
+    io.log(
+      `No saved mask file for: ${missingMasks.join(", ")}. The scores are unaffected; the masks are the illustration.`,
+    );
+  }
+  io.log(
+    `Recorded as ${String(units)} units, which the original task already spent. This ingest spent nothing.`,
+  );
+  io.log("");
+  io.log(
+    "Read the fixture before seeding from it. ui_score is a condition score on the provider's " +
+      "scale, where higher is better, and our ranking treats a higher score as more present. " +
+      "expected.topConcernKey in the fixture is therefore not yet a claim about this face.",
+  );
+  return 0;
+}
+
+function previousTaskId(previous: PreviousManifest | null): string | null {
+  const call = previous?.calls?.find((entry) => entry.step === INGEST_STEP);
+  return call?.taskId ?? null;
+}
+
+/* ------------------------------------------------------------------ */
 /* Entry point                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -1496,6 +1906,7 @@ export function realIo(): GoldenRunIo {
     ensureDir: (path) => {
       mkdirSync(path, { recursive: true });
     },
+    exists: (path) => existsSync(path),
     confirm: async (question) => {
       if (!process.stdin.isTTY) {
         return false;
@@ -1516,19 +1927,36 @@ export function realIo(): GoldenRunIo {
   };
 }
 
+export const USAGE = [
+  "Usage:",
+  "  npm run golden:run -- --image <path> --spend <units> [--steps skin,tone,attr] [--out <dir>] [--confirm]",
+  "  npm run golden:run -- --ingest-skin <saved response.json> --image <path> [--out <dir>]",
+  "",
+  "  --ingest-skin   Rebuild the skin step from a response that was already paid for.",
+  "                  Makes no provider call, needs no key, and spends nothing.",
+].join("\n");
+
 export async function main(argv: readonly string[]): Promise<number> {
   const io = realIo();
   let options: GoldenOptions;
   try {
     loadEnvLocal();
-    assertProviderCallsEnabled();
     options = parseArgs(argv);
+    /*
+     * The kill switch guards spending. Ingest mode cannot spend, so requiring
+     * the switch would only tempt an operator to turn it on for a run that does
+     * not need it.
+     */
+    if (options.ingestSkinPath === null) {
+      assertProviderCallsEnabled();
+    }
   } catch (thrown) {
     io.errorLog(messageOf(thrown));
-    io.errorLog(
-      "Usage: npm run golden:run -- --image <path> --spend <units> [--steps skin,tone,attr] [--out <dir>] [--confirm]",
-    );
+    io.errorLog(USAGE);
     return 1;
+  }
+  if (options.ingestSkinPath !== null) {
+    return runSkinIngest(options, io);
   }
   return runGoldenRun(options, io);
 }

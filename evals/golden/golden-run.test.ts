@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -93,14 +95,19 @@ import {
   formatPlan,
   goldenFixtureSchema,
   hairstyleBodyFor,
+  buildIngestManifest,
+  localMaskFileFor,
   parseArgs,
   parseEnvFile,
   readImageHeader,
+  readPreviousManifest,
   runGoldenRun,
+  runSkinIngest,
   topConcernKeyOf,
   type GoldenOptions,
   type GoldenRunIo,
 } from "../../scripts/golden-run";
+import { loadSkinAnalysisStatus } from "../fixtures/perfectcorp";
 import {
   DEFAULT_MAX_SEARCHES,
   assertWithinMax,
@@ -127,19 +134,39 @@ function makeIo(args: {
   readonly recorder: Recorder;
   readonly image: Uint8Array;
   readonly confirmAnswer?: boolean;
+  /** Files the ingest tests put on the fake disk, keyed by forward slash path. */
+  readonly files?: ReadonlyMap<string, Uint8Array | string>;
 }): GoldenRunIo {
+  const key = (path: string): string => path.replace(/\\/gu, "/");
+  const files = args.files ?? new Map<string, Uint8Array | string>();
+  const find = (path: string): Uint8Array | string | undefined => {
+    const wanted = key(path);
+    for (const [name, value] of files) {
+      if (wanted === name || wanted.endsWith(`/${name}`)) {
+        return value;
+      }
+    }
+    return undefined;
+  };
   return {
     log: (line) => args.recorder.out.push(line),
     errorLog: (line) => args.recorder.errors.push(line),
     sleep: () => Promise.resolve(),
     nowIso: () => "2026-09-02T00:00:00.000Z",
-    readFile: () => args.image,
+    readFile: (path) => {
+      const found = find(path);
+      if (found === undefined) {
+        return args.image;
+      }
+      return typeof found === "string" ? new TextEncoder().encode(found) : found;
+    },
     writeFile: (path, bytes) => {
-      args.recorder.written.set(path.replace(/\\/gu, "/"), bytes);
+      args.recorder.written.set(key(path), bytes);
     },
     ensureDir: (path) => {
       args.recorder.dirs.push(path);
     },
+    exists: (path) => find(path) !== undefined,
     confirm: () => Promise.resolve(args.confirmAnswer ?? true),
   };
 }
@@ -177,7 +204,11 @@ function pngBytes(width: number, height: number, padTo = 4096): Uint8Array {
 function optionsFor(overrides: Partial<GoldenOptions> = {}): GoldenOptions {
   return {
     imagePath: "selfie.jpg",
-    spendUnits: 40,
+    /*
+     * Above the 46 units the three default steps now come to (skin 16, tone 20,
+     * attr 10). It was 40 while skin analysis was unpriced and counted as one.
+     */
+    spendUnits: 60,
     steps: [...DEFAULT_STEPS],
     outDir: "out",
     confirm: true,
@@ -187,6 +218,7 @@ function optionsFor(overrides: Partial<GoldenOptions> = {}): GoldenOptions {
     makeupCategories: ["lip"],
     hairstyleStyleId: "textured-crop",
     hairstyleTemplateId: null,
+    ingestSkinPath: null,
     ...overrides,
   };
 }
@@ -199,7 +231,14 @@ const creditBalanceMock = (
   perfectcorpModule as unknown as Record<string, ReturnType<typeof vi.fn>>
 ).getCreditBalance;
 
-/** The skin analysis payload shape the provider schema accepts. */
+/**
+ * The skin analysis payload, in the shape the live API really sends.
+ *
+ * It used to be a guess: two scored entries plus skin_age and all as siblings
+ * of output. The recorded response says otherwise, so this now mirrors it:
+ * every value lives inside output, "all" and "skin_age" carry their number
+ * under "score", and skin_type repeats per zone with no score at all.
+ */
 function skinSnapshot() {
   return {
     endpointKey: "skinAnalysis" as const,
@@ -210,13 +249,21 @@ function skinSnapshot() {
         {
           type: "age_spot",
           ui_score: 71,
-          raw_score: 0.71,
+          raw_score: 71.4,
           mask_urls: ["https://example.invalid/mask-spot.png"],
+          url: null,
         },
-        { type: "wrinkle", ui_score: 22, raw_score: 0.22 },
+        { type: "wrinkle", ui_score: 22, raw_score: 22.3, url: null },
+        {
+          type: "skin_type",
+          region: "t_zone",
+          skin_type: "Normal",
+          mask_urls: ["https://example.invalid/mask-zone.png"],
+          url: null,
+        },
+        { type: "all", score: 80, url: null },
+        { type: "skin_age", score: 31, url: null },
       ],
-      skin_age: 31,
-      all: { score: 80 },
     },
     errorCode: null,
     pollingIntervalSeconds: null,
@@ -340,6 +387,8 @@ describe("golden-run plan arithmetic", () => {
     expect(byStep.get("attr")?.endpointKey).toBe("faceAttributes");
     expect(byStep.get("attr")?.tableUnits).toBe(unitsForCall("faceAttributes", 1));
     expect(byStep.get("skin")?.endpointKey).toBe("skinAnalysis");
+    // Measured live on 2026-09-02: one task took the balance from 40 to 24.
+    expect(byStep.get("skin")?.tableUnits).toBe(16);
   });
 
   it("adds up to the sum of the rows, with the unknown row counted as assumed", () => {
@@ -355,10 +404,16 @@ describe("golden-run plan arithmetic", () => {
     }
   });
 
-  it("names the rows the cost table cannot price yet", () => {
-    const plan = buildPlan(optionsFor({ steps: ["skin", "tone"] }));
-    expect(plan.unknownCostSteps).toContain("skin");
-    expect(plan.unknownCostSteps).not.toContain("tone");
+  it("has no unpriced row left among the steps it can run", () => {
+    /*
+     * skin was the one unpriced step until 2026-09-02, when one live task
+     * measured it at 16 units. Every golden step is now priced from the table,
+     * so the plan names nothing. The mechanism that reports an unpriced row is
+     * still exercised by the assumed units test above.
+     */
+    const plan = buildPlan(optionsFor({ steps: GOLDEN_STEP_KEYS }));
+    expect(plan.unknownCostSteps).toEqual([]);
+    expect(unitsForCall("skinAnalysis")).toBe(16);
   });
 
   it("names the endpoints that are not confirmed against the live docs", () => {
@@ -802,6 +857,322 @@ describe("golden-run fixture", () => {
         summaries: { attributes: {} },
       }),
     ).toThrow(GoldenRunError);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Ingest, which spends nothing                                        */
+/* ------------------------------------------------------------------ */
+
+describe("golden-run ingest", () => {
+  const SOURCE = "in/skin/result.json";
+  const IMAGE = jpegBytes(1024, 1024);
+  const IMAGE_SHA = createHash("sha256").update(IMAGE).digest("hex");
+
+  function ingestFiles(
+    extra: ReadonlyArray<readonly [string, string | Uint8Array]> = [],
+  ): Map<string, Uint8Array | string> {
+    return new Map<string, Uint8Array | string>([
+      [SOURCE, JSON.stringify(loadSkinAnalysisStatus())],
+      ...extra,
+    ]);
+  }
+
+  function ingestOptions(): GoldenOptions {
+    return optionsFor({ ingestSkinPath: SOURCE, outDir: "out", steps: ["skin"] });
+  }
+
+  function writtenPath(recorder: Recorder, suffix: string): string | undefined {
+    return [...recorder.written.keys()].find((path) => path.endsWith(suffix));
+  }
+
+  it("takes --ingest-skin without a spend ceiling", () => {
+    const parsed = parseArgs(["--ingest-skin", SOURCE, "--image", "a.jpg"]);
+    expect(parsed.ingestSkinPath).toBe(SOURCE);
+    expect(parsed.spendUnits).toBe(0);
+  });
+
+  it("still requires a spend ceiling for a run that can spend", () => {
+    expect(() => parseArgs(["--image", "a.jpg"])).toThrow(/--spend is required/u);
+  });
+
+  it("calls no provider function at all", () => {
+    const recorder = makeRecorder();
+    const code = runSkinIngest(
+      ingestOptions(),
+      makeIo({ recorder, image: IMAGE, files: ingestFiles() }),
+    );
+    expect(code).toBe(0);
+    expect(vi.mocked(uploadImage)).not.toHaveBeenCalled();
+    expect(vi.mocked(createTask)).not.toHaveBeenCalled();
+    expect(vi.mocked(getTaskSnapshot)).not.toHaveBeenCalled();
+    expect(vi.mocked(downloadResultAssets)).not.toHaveBeenCalled();
+    expect(creditBalanceMock).not.toHaveBeenCalled();
+  });
+
+  it("writes the analyses fixture, the raw response, and the manifest", () => {
+    const recorder = makeRecorder();
+    runSkinIngest(
+      ingestOptions(),
+      makeIo({ recorder, image: IMAGE, files: ingestFiles() }),
+    );
+
+    const fixturePath = writtenPath(recorder, "live-01.json");
+    expect(fixturePath).toBeDefined();
+    expect(() =>
+      goldenFixtureSchema.parse(
+        JSON.parse(String(recorder.written.get(fixturePath ?? ""))),
+      ),
+    ).not.toThrow();
+    expect(writtenPath(recorder, "/raw/skin.json")).toBeDefined();
+    expect(writtenPath(recorder, "manifest.json")).toBeDefined();
+  });
+
+  it("carries the real reading into the fixture", () => {
+    const recorder = makeRecorder();
+    runSkinIngest(
+      ingestOptions(),
+      makeIo({ recorder, image: IMAGE, files: ingestFiles() }),
+    );
+    const fixture = JSON.parse(
+      String(recorder.written.get(writtenPath(recorder, "live-01.json") ?? "")),
+    ) as {
+      readonly synthetic: boolean;
+      readonly summaries: {
+        readonly skin: {
+          readonly concerns: readonly unknown[];
+          readonly skinAge: number;
+          readonly overallScore: number;
+          readonly skinTypeZones: {
+            readonly tZone: string | null;
+            readonly cheeks: string | null;
+          } | null;
+        };
+      };
+      readonly _golden: { readonly stepsRun: readonly string[] };
+    };
+
+    expect(fixture.synthetic).toBe(false);
+    expect(fixture.summaries.skin.concerns).toHaveLength(15);
+    expect(fixture.summaries.skin.skinAge).toBe(28);
+    expect(fixture.summaries.skin.overallScore).toBe(85.4);
+    // The provider's own zones survive into the fixture, so the demo profile
+    // reads them instead of deriving a skin type from oiliness and moisture.
+    expect(fixture.summaries.skin.skinTypeZones).toEqual({
+      tZone: "balanced",
+      cheeks: "balanced",
+    });
+    expect(fixture._golden.stepsRun).toEqual(["skin"]);
+  });
+
+  it("copies the masks saved beside the response and names the ones that were not", () => {
+    const recorder = makeRecorder();
+    const io = makeIo({
+      recorder,
+      image: IMAGE,
+      files: ingestFiles([
+        ["in/skin/eye_bag-0.png", new Uint8Array([1, 2, 3])],
+        ["in/skin/dark_circle_v2-0.png", new Uint8Array([4, 5, 6])],
+      ]),
+    });
+    runSkinIngest(ingestOptions(), io);
+
+    expect(writtenPath(recorder, "/masks/eye_bags.png")).toBeDefined();
+    expect(writtenPath(recorder, "/masks/dark_circles.png")).toBeDefined();
+    expect(writtenPath(recorder, "/masks/texture.png")).toBeUndefined();
+    expect(recorder.out.join("\n")).toMatch(/No saved mask file for/u);
+  });
+
+  it("records the skin step as succeeded with the units it really cost", () => {
+    const recorder = makeRecorder();
+    runSkinIngest(
+      ingestOptions(),
+      makeIo({ recorder, image: IMAGE, files: ingestFiles() }),
+    );
+    const manifest = JSON.parse(
+      String(recorder.written.get(writtenPath(recorder, "manifest.json") ?? "")),
+    ) as {
+      readonly fixtureFile: string;
+      readonly calls: ReadonlyArray<{
+        readonly step: string;
+        readonly state: string;
+        readonly measuredUnits: number;
+        readonly outputs: readonly string[];
+      }>;
+      readonly ingest: { readonly units: number; readonly sourceFile: string };
+    };
+
+    expect(manifest.fixtureFile).toBe("live-01.json");
+    expect(manifest.calls).toHaveLength(1);
+    expect(manifest.calls[0]?.step).toBe("skin");
+    expect(manifest.calls[0]?.state).toBe("succeeded");
+    expect(manifest.calls[0]?.measuredUnits).toBe(16);
+    expect(manifest.calls[0]?.outputs).toContain("raw/skin.json");
+    expect(manifest.ingest.units).toBe(16);
+    expect(manifest.ingest.sourceFile).toBe(SOURCE);
+  });
+
+  it("refuses when the manifest in the output folder names a different selfie", () => {
+    const recorder = makeRecorder();
+    const code = runSkinIngest(
+      ingestOptions(),
+      makeIo({
+        recorder,
+        image: IMAGE,
+        files: ingestFiles([
+          [
+            "manifest.json",
+            JSON.stringify({
+              recordedOn: "2026-09-02T09:17:41.749Z",
+              image: { sha256: "b".repeat(64) },
+              calls: [],
+            }),
+          ],
+        ]),
+      }),
+    );
+    expect(code).toBe(1);
+    expect(recorder.errors.join("\n")).toMatch(/different selfie/u);
+    expect(recorder.written.size).toBe(0);
+  });
+
+  it("keeps the paid run's own spend record and its task id", () => {
+    const recorder = makeRecorder();
+    runSkinIngest(
+      ingestOptions(),
+      makeIo({
+        recorder,
+        image: IMAGE,
+        files: ingestFiles([
+          [
+            "manifest.json",
+            JSON.stringify({
+              recordedOn: "2026-09-02T09:17:41.749Z",
+              image: { sha256: IMAGE_SHA },
+              spend: {
+                measured: true,
+                spentUnits: 16,
+                balanceBeforeUnits: 40,
+                balanceAfterUnits: 24,
+              },
+              calls: [
+                {
+                  step: "skin",
+                  state: "failed",
+                  taskId: "task-that-was-charged",
+                  measuredUnits: 16,
+                  outputs: [],
+                },
+              ],
+            }),
+          ],
+        ]),
+      }),
+    );
+    const manifest = JSON.parse(
+      String(recorder.written.get(writtenPath(recorder, "manifest.json") ?? "")),
+    ) as {
+      readonly recordedOn: string;
+      readonly spend: { readonly balanceAfterUnits: number };
+      readonly calls: ReadonlyArray<{
+        readonly state: string;
+        readonly taskId: string;
+      }>;
+    };
+    expect(manifest.recordedOn).toBe("2026-09-02T09:17:41.749Z");
+    expect(manifest.spend.balanceAfterUnits).toBe(24);
+    expect(manifest.calls).toHaveLength(1);
+    expect(manifest.calls[0]?.state).toBe("succeeded");
+    expect(manifest.calls[0]?.taskId).toBe("task-that-was-charged");
+  });
+
+  it("refuses a saved response whose task did not succeed", () => {
+    const recorder = makeRecorder();
+    const code = runSkinIngest(
+      ingestOptions(),
+      makeIo({
+        recorder,
+        image: IMAGE,
+        files: new Map<string, Uint8Array | string>([
+          [
+            SOURCE,
+            JSON.stringify({
+              status: 200,
+              data: { error: "InternalError", task_status: "error" },
+            }),
+          ],
+        ]),
+      }),
+    );
+    expect(code).toBe(1);
+    expect(recorder.errors.join("\n")).toMatch(/no result to ingest/u);
+    expect(recorder.written.size).toBe(0);
+  });
+
+  it("refuses a file that is not a task status envelope", () => {
+    const recorder = makeRecorder();
+    const code = runSkinIngest(
+      ingestOptions(),
+      makeIo({
+        recorder,
+        image: IMAGE,
+        files: new Map<string, Uint8Array | string>([[SOURCE, '{"nope":true}']]),
+      }),
+    );
+    expect(code).toBe(1);
+    expect(recorder.written.size).toBe(0);
+  });
+
+  it("reads a previous manifest back, and shrugs at a missing one", () => {
+    const recorder = makeRecorder();
+    const io = makeIo({ recorder, image: IMAGE, files: ingestFiles() });
+    expect(readPreviousManifest(io, "out")).toBeNull();
+  });
+
+  it("finds a saved mask by provider type and extension", () => {
+    const recorder = makeRecorder();
+    const io = makeIo({
+      recorder,
+      image: IMAGE,
+      files: new Map<string, Uint8Array | string>([
+        ["in/skin/acne-0.png", new Uint8Array([1])],
+      ]),
+    });
+    expect(
+      localMaskFileFor({ io, directory: "in/skin", providerType: "acne" }),
+    ).toBe("in/skin/acne-0.png");
+    expect(
+      localMaskFileFor({ io, directory: "in/skin", providerType: "wrinkle" }),
+    ).toBeNull();
+  });
+
+  it("replaces the skin call rather than adding a second one", () => {
+    const manifest = buildIngestManifest({
+      previous: {
+        recordedOn: "2026-09-02T09:17:41.749Z",
+        calls: [
+          { step: "skin", state: "failed", taskId: "t-1", outputs: [] },
+          { step: "tone", state: "succeeded", taskId: "t-2", outputs: [] },
+        ],
+      },
+      options: ingestOptions(),
+      recordedOn: "2026-09-02T09:17:41.749Z",
+      ingestedAt: "2026-09-03T00:00:00.000Z",
+      image: {
+        contentType: "image/jpeg",
+        width: 767,
+        height: 1024,
+        byteLength: 98567,
+      },
+      imageSha256: "a".repeat(64),
+      taskId: "t-1",
+      units: 16,
+      outputs: ["raw/skin.json"],
+      fixtureFile: "live-01.json",
+      sourcePath: SOURCE,
+    });
+    const calls = manifest.calls as ReadonlyArray<{ readonly step: string }>;
+    expect(calls.map((call) => call.step)).toEqual(["skin", "tone"]);
   });
 });
 
