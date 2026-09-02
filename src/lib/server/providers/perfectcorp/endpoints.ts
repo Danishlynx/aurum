@@ -129,6 +129,30 @@ const LIVE_API = "live API probe against https://yce-api-01.makeupar.com";
 const AUTH_CHECKED_ON = "2026-09-02";
 
 /**
+ * The OpenAPI bundle behind a reference page, for example
+ * https://docs.makeupar.com/_bundle/reference/ai_hair_color.json.
+ *
+ * It is the same documentation the page renders from, and it carries the request
+ * schemas the page itself sometimes fails to draw: the hair colour task path and
+ * the hair colour colour fields, which this file called a placeholder for two
+ * days, are stated outright in it. A plain GET, no task, no credit spent.
+ */
+const OPENAPI = `${MAKEUPAR}/_bundle/reference`;
+
+/**
+ * The day every render request body below was driven through the free oracle.
+ *
+ * The oracle: a task creation that is rejected costs nothing, and a src_file_id
+ * the file service cannot resolve is always rejected, so a bogus file id turns
+ * a create endpoint into a validator that answers for free. A wrong body answers
+ * with a detailed enumeration naming the fields it wanted. A right body with a
+ * wrong file id answers the generic "One or more parameters in this request are
+ * invalid." The credit balance was 0 units before the probes and 0 after, so
+ * every answer below was free and no task was ever created.
+ */
+const PROBED_ON = "2026-09-02";
+
+/**
  * How we authenticate.
  *
  * The API console issues a key and a secret, which looks like a token exchange.
@@ -475,7 +499,14 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
         "the file service cannot resolve is always rejected, and the 400 body distinguishes a wrong " +
         "effects array (a detailed \"... is required but wasn't included\" enumeration) from a right " +
         "one (\"One or more parameters in this request are invalid.\"). Result is data.results.url. " +
-        "Cost is 1 unit per successful call, reserved at creation and refunded if the engine errors.",
+        "Cost is 1 unit per successful call, reserved at creation and refunded if the engine errors. " +
+        "Checked again on 2026-09-02 against the OpenAPI bundle and the same oracle, because only " +
+        "lip_color and blush had ever run: the foundation body this app sends passes, and dropping " +
+        "coverageIntensity from it answers \"coverageIntensity is required but wasn't included in " +
+        "your request.\", so all four of its palette fields are real and required; the eye_shadow " +
+        "body passes; and all four rows in one task pass together. One warning worth keeping: an " +
+        "invented pattern name passes creation, so a wrong pattern is not caught here and only " +
+        "shows up as a failed task later. The names this app sends come from the live catalogs.",
     },
     analysisKind: null,
   },
@@ -530,14 +561,29 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
       imagesPerCall: 1,
     },
     verification: {
-      state: "unverified",
-      source: `${MAKEUPAR}/reference/ai_hair_color`,
-      checkedOn: CHECKED_ON,
+      state: "confirmed",
+      source: `${OPENAPI}/ai_hair_color.json and ${LIVE_API}`,
+      checkedOn: PROBED_ON,
       note:
-        "Image limits, the preset versus pattern and palette choice, and the cost of 1 unit for " +
-        "both full and ombre mode are confirmed. The task path did not render on the reference " +
-        "page, so the path above is a placeholder. Read the path and the colour request fields " +
-        "from the API playground.",
+        "The path is /s2s/v2.0/task/hair-color. The reference page never rendered it, which is " +
+        "why this row sat unverified with a placeholder; the OpenAPI bundle behind that page " +
+        "states it outright, and the live API agrees (a body with no source answers 400 naming " +
+        "src_file_url and src_file_id, so the path exists and reads a source). Request body is " +
+        "{ src_file_id or src_file_url, then either preset, or pattern plus palettes }. pattern " +
+        "is { name: \"full\" or \"ombre\" }, with blend_strength, line_offset, and " +
+        "coloring_section required for ombre. palettes is a flat list, one entry for full mode " +
+        "and two for ombre, each { color: \"#RRGGBB\", color_intensity 0 to 100, shine_intensity " +
+        "0 to 100 }. The snake case is the point: this endpoint does not spell it colorIntensity " +
+        "the way makeup-vto does. Driven out for free with an unresolvable src_file_id: the body " +
+        "this app used to send ({ mode, palettes: [{ color, colorIntensity }] }) answers " +
+        "\"'pattern' is required and can't be null.\"; a camel case colorIntensity of 500 passes " +
+        "validation, so that field was being ignored; a snake case color_intensity of 500 answers " +
+        "\"color_intensity is above the allowed maximum.\"; an invented pattern name answers " +
+        "\"name is not one of the accepted values.\"; a colour without its leading hash answers " +
+        "\"color doesn't match the required format.\"; and the corrected body answers the generic " +
+        "\"One or more parameters in this request are invalid.\", which is what a right body with " +
+        "a wrong file id says. Result is data.results.url. Cost is 1 unit for full and for ombre. " +
+        "Still unwatched: what the render looks like, which only looking at one settles.",
     },
     analysisKind: null,
   },
@@ -563,13 +609,20 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
     },
     verification: {
       state: "confirmed",
-      source: `${MAKEUPAR}/reference/ai_clothes`,
-      checkedOn: CHECKED_ON,
+      source: `${OPENAPI}/ai_clothes.json and ${LIVE_API}`,
+      checkedOn: PROBED_ON,
       note:
-        "One garment_category per call. Categories include full_body, upper body, and lower body. " +
-        "A multi garment outfit needs one call per garment, so a Look renders as a sequence of " +
-        "renders, not a single call. Request takes src_file_id or src_file_url plus ref_file_id, " +
-        "ref_file_url, or template_id. Result is data.results.url.",
+        "Request body is { src_file_id or src_file_url, ref_file_id or ref_file_url, " +
+        "garment_category }, with an optional change_shoes boolean that defaults to true and only " +
+        "has an effect on full_body and lower_body. One garment_category per call, so a multi " +
+        "garment outfit needs one call per garment and a Look renders as a sequence of renders. " +
+        "garment_category is an enum, and the whole enum is now known rather than read out of " +
+        "prose: full_body, lower_body, upper_body, shoes, auto, outer. Confirmed live for free " +
+        "with an unresolvable src_file_id: all six accepted values answer the generic \"One or " +
+        "more parameters in this request are invalid.\", and \"torso\" answers " +
+        "\"garment_category is not one of the accepted values.\", so the value really is read and " +
+        "checked at creation. Result is data.results.url. The unit cost is still unpublished: the " +
+        "consumption table lists 2 units for V2.0 and V3.0 and omits V4.0 entirely.",
     },
     analysisKind: null,
   },
@@ -597,36 +650,103 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
       imagesPerCall: 1,
     },
     verification: {
-      state: "unverified",
-      source: `${MAKEUPAR}/reference/ai_skin_simulation`,
-      checkedOn: CHECKED_ON,
+      state: "confirmed",
+      source: `${OPENAPI}/ai_skin_simulation.json and ${LIVE_API}`,
+      checkedOn: PROBED_ON,
       note:
-        "Paths, image limits, the ten simulatable concerns (radiance, acne, oiliness, eye bags, " +
-        "dark circles, spots, pores, texture, wrinkles, redness), the 0.0 to 1.0 intensity scale, " +
-        "and the 4 and 6 unit tiers are confirmed. The request field that carries the concern to " +
-        "intensity map and the result field that carries the render URL are not confirmed.",
+        "There is no concern to intensity map: the concerns are top level fields on the request " +
+        "itself. The body is { src_file_id or src_file_url } plus one field per concern, each a " +
+        "number from 0.0 to 1.0, and at least one of them has to be above zero. The ten field " +
+        "names are wrinkle, radiance, oiliness, acne, eye_bags, dark_circle, spots, pores, " +
+        "texture, redness. Two of those are singular where our own concern keys are plural, which " +
+        "is the whole reason this was worth probing. Confirmed live for free with an unresolvable " +
+        "src_file_id: the array shape this app used to send ({ simulations: [{ concern, " +
+        "intensity }] }) answers \"Simulation intensity cannot be all zero\", and so do the " +
+        "spellings wrinkles and dark_circles, because an unknown field is dropped and nothing is " +
+        "left above zero; the ten documented names answer the generic \"One or more parameters in " +
+        "this request are invalid.\"; and a texture of 5 answers \"texture is above the allowed " +
+        "maximum.\", so the value is read and range checked. Result is data.results.url, the same " +
+        "single url shape as the other renders. Cost is 4 units for 1 to 4 concerns and 6 for 5 " +
+        "to 10.",
     },
     analysisKind: null,
   },
 
-  watchTryOn: accessoryEndpoint("watchTryOn", "watch", {
+  watchTryOn: accessoryEndpoint("watchTryOn", "/s2s/v2.0/task/2d-vto/watch", {
     state: "confirmed",
-    source: `${MAKEUPAR}/reference/ai_watch`,
-    checkedOn: CHECKED_ON,
+    source: `${OPENAPI}/ai_watch.json and ${LIVE_API}`,
+    checkedOn: PROBED_ON,
     note:
-      "Path is /s2s/v2.0/task/2d-vto/watch. Request takes src_file_id or src_file_url plus " +
-      "ref_file_ids or ref_file_urls, with optional watch_wearing_location, " +
-      "watch_shadow_intensity, watch_ambient_light_intensity, watch_anchor_points, and " +
-      "segmentation masks. Cost is 1 unit per single item simulation.",
+      "Path is /s2s/v2.0/task/2d-vto/watch. The request needs four things and not two: a source " +
+      "(src_file_id or src_file_url), the product (ref_file_ids or ref_file_urls), " +
+      "source_info { name }, and object_infos [{ name }]. Each name repeats the file id or URL it " +
+      "points at, which is how the engine matches a source to its mask and a product to its mask; " +
+      "an object_infos entry also takes an optional parameter object " +
+      "(watch_need_remove_background, watch_anchor_point, watch_wearing_location, " +
+      "watch_shadow_intensity, watch_ambient_light_intensity). Confirmed live for free with an " +
+      "unresolvable src_file_id: the body this app used to send ({ src_file_id, ref_file_ids }) " +
+      "answers \"source_info is required but wasn't included in your request., or object_infos is " +
+      "required but wasn't included in your request.\", and adding both answers the generic \"One " +
+      "or more parameters in this request are invalid.\" The masks (srcmsk_file_id, " +
+      "refmsk_file_ids) are optional. Result is data.results.url. Cost is 1 unit per single item " +
+      "simulation.",
   }),
-  braceletTryOn: accessoryEndpoint("braceletTryOn", "bracelet", inferredAccessoryNote("ai_bracelet")),
-  ringTryOn: accessoryEndpoint("ringTryOn", "ring", inferredAccessoryNote("ring_vto")),
-  earringsTryOn: accessoryEndpoint("earringsTryOn", "earrings", inferredAccessoryNote("ai_earrings")),
-  necklaceTryOn: accessoryEndpoint("necklaceTryOn", "necklace", inferredAccessoryNote("ai_necklace")),
-  scarfTryOn: accessoryEndpoint("scarfTryOn", "scarf", inferredAccessoryNote("ai_scarf")),
-  hatTryOn: accessoryEndpoint("hatTryOn", "hat", inferredAccessoryNote("ai_hat")),
-  shoesTryOn: accessoryEndpoint("shoesTryOn", "shoes", inferredAccessoryNote("ai_shoes")),
-  bagTryOn: accessoryEndpoint("bagTryOn", "bag", inferredAccessoryNote("ai_bag")),
+  braceletTryOn: accessoryEndpoint(
+    "braceletTryOn",
+    "/s2s/v2.0/task/2d-vto/bracelet",
+    inferredAccessoryNote("ai_bracelet"),
+  ),
+  ringTryOn: accessoryEndpoint(
+    "ringTryOn",
+    "/s2s/v2.0/task/2d-vto/ring",
+    inferredAccessoryNote("ring_vto"),
+  ),
+  earringsTryOn: accessoryEndpoint("earringsTryOn", "/s2s/v2.0/task/2d-vto/earring", {
+    state: "unverified",
+    source: `${OPENAPI}/ai_earrings.json and ${LIVE_API}`,
+    checkedOn: PROBED_ON,
+    note:
+      "The path is corrected and now real: 2d-vto/earring, singular. The spelling this file " +
+      "carried before (2d-vto/earrings) answers 404 NotFound, so the request would have failed " +
+      "with no picture and nothing to read. The body is the same 2d-vto shape as the watch, and " +
+      "the server names all of it in one free rejection: a source, ref_file_ids or ref_file_urls, " +
+      "source_info, and object_infos. This row stays unverified, and so refused, because the unit " +
+      "cost is published nowhere we can read: the credits layer would have nothing true to " +
+      "reserve against it.",
+  }),
+  necklaceTryOn: accessoryEndpoint(
+    "necklaceTryOn",
+    "/s2s/v2.0/task/2d-vto/necklace",
+    inferredAccessoryNote("ai_necklace"),
+  ),
+  scarfTryOn: accessoryEndpoint(
+    "scarfTryOn",
+    "/s2s/v2.0/task/2d-vto/scarf",
+    inferredAccessoryNote("ai_scarf"),
+  ),
+  hatTryOn: accessoryEndpoint(
+    "hatTryOn",
+    "/s2s/v2.0/task/2d-vto/hat",
+    inferredAccessoryNote("ai_hat"),
+  ),
+  shoesTryOn: accessoryEndpoint(
+    "shoesTryOn",
+    "/s2s/v2.0/task/2d-vto/shoes",
+    inferredAccessoryNote("ai_shoes"),
+  ),
+  bagTryOn: accessoryEndpoint("bagTryOn", "/s2s/v2.0/task/bag", {
+    state: "unverified",
+    source: `${OPENAPI}/ai_bag.json and ${LIVE_API}`,
+    checkedOn: PROBED_ON,
+    note:
+      "The path is corrected: /s2s/v2.0/task/bag, which is not a 2d-vto endpoint at all. The " +
+      "spelling this file carried before (2d-vto/bag) answers 404 NotFound. This is also not the " +
+      "same API as the watch and the earrings: one free rejection has it asking for a source, " +
+      "ref_file_id or ref_file_url, and gender, and gender is required. This app does not hold a " +
+      "gender and does not ask anyone for one, so the row stays unverified and stays refused, and " +
+      "accessoryTaskBody deliberately sends nothing for it rather than sending the 2d-vto body, " +
+      "which would be the wrong body for this endpoint.",
+  }),
 };
 
 function inferredAccessoryNote(referenceSlug: string): Verification {
@@ -635,18 +755,20 @@ function inferredAccessoryNote(referenceSlug: string): Verification {
     source: `${MAKEUPAR}/reference/${referenceSlug}`,
     checkedOn: CHECKED_ON,
     note:
-      "The path follows the 2d-vto pattern confirmed for the watch endpoint, but this specific " +
-      "reference page was not read. Confirm the path, the reference file fields, and the unit " +
-      "cost before enabling it.",
+      "The path is a guess from the 2d-vto pattern the watch endpoint confirms, and that pattern " +
+      "is not reliable: the earrings endpoint turned out to be 2d-vto/earring, singular, and the " +
+      "bag endpoint is not under 2d-vto at all, and both of this file's guesses for those two " +
+      "answered 404 NotFound. So read this path as probably wrong until a probe says otherwise. " +
+      "Confirm the path, the request fields, and the unit cost before enabling it. The bundle at " +
+      "docs.makeupar.com/_bundle/reference/<page>.json answers the first two for free.",
   };
 }
 
 function accessoryEndpoint(
   key: PerfectCorpEndpointKey,
-  slug: string,
+  path: string,
   verification: Verification,
 ): PerfectCorpEndpoint {
-  const path = `/s2s/v2.0/task/2d-vto/${slug}`;
   return {
     key,
     createPath: path,

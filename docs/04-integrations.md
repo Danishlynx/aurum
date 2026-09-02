@@ -81,7 +81,7 @@ Read from the public reference pages on 2026-09-01. Note that docs.perfectcorp.c
     hair color try on           1                 ai_hair_color             per render, full mode and ombre mode both cost 1
     cloth try on                TBD               ai_clothes                2 units is published for V2.0 and V3.0. The current path is cloth-v4 and its cost is not published.
     accessory try on (watch)    1                 ai_watch                  per render, per single item
-    accessory try on (others)   TBD               per accessory page        Only the watch page was read. Confirm bracelet, ring, earrings, necklace, scarf, hat, shoes, and bag.
+    accessory try on (others)   TBD               per accessory page        Paths corrected on 2026-09-02: earrings is 2d-vto/earring (singular) and bag is task/bag, which is not a 2d-vto endpoint at all and requires a gender field we do not hold. Both still cost TBD, so both stay refused. The other six paths are still guesses from the watch pattern, and that pattern is now known to be unreliable.
     skin simulation             4 / 6             ai_skin_simulation        4 for 1 to 4 concerns, 6 for 5 to 10 concerns.
 
 Known cost of one capture set, with the rows above: skin analysis 16, fitzpatrick 10, facial color tones 20, face attributes 10 at one attribute (10 to 30 depending on how many are asked for), hair type 2 (only if three photos exist). That is 58 units for the five analyses, before a single render. src/lib/server/providers/perfectcorp/endpoints.ts returns null from unitsForCall for every row still marked TBD, which the credits layer reads as "do not reserve, do not call".
@@ -113,8 +113,20 @@ Budget per full session (target): one capture set (5 analyses) plus up to 6 rend
 
 Answers to the two open questions in "verify first"
 
-- Cloth try on takes one garment_category per call (full_body, upper body, or lower body). A multi garment outfit needs one call per garment, so a Look renders as a sequence of renders, not as one call.
+- Cloth try on takes one garment_category per call. A multi garment outfit needs one call per garment, so a Look renders as a sequence of renders, not as one call. The accepted values are the full enum, confirmed live on 2026-09-02: full_body, lower_body, upper_body, shoes, auto, outer. A value outside it answers 400 "garment_category is not one of the accepted values."
 - Image input constraints per API are recorded on each entry in src/lib/server/providers/perfectcorp/endpoints.ts. The tightest ones are hairstyle try on (long side 1024px, face width at least 128px) and makeup try on (long side 1920px, face width at least 100px, head tilt within 10 degrees). Skin analysis needs a short side of 480px for SD and 1080px for HD, and a face wider than 60 percent of the frame.
+
+Render request bodies, confirmed for free on 2026-09-02
+
+Every render the person can trigger creates a real task, so a wrong body is money or a picture that never arrives. All five were driven through the provider's own validator without spending a unit, using the oracle the makeup body was corrected with: a task creation that is rejected costs nothing, and a src_file_id the file service cannot resolve is always rejected, so a bogus file id turns a create endpoint into a validator. A wrong body answers with a detailed "... is required but wasn't included in your request." enumeration; a right body with a wrong file id answers the generic "One or more parameters in this request are invalid." The balance was 0 units before the probes and 0 after.
+
+Where the reference page would not render a request schema, the OpenAPI bundle behind it did: https://docs.makeupar.com/_bundle/reference/<page>.json is a plain GET and carries the same documentation the page is built from.
+
+    makeup try on      { src_file_id, version: "1.0", effects: [...] }. foundation needs no shape selector and its palette entry needs color, colorIntensity, coverageIntensity, and glowIntensity (dropping coverageIntensity is refused by name). eye_shadow takes pattern: { name } plus palettes: [{ color, texture, colorIntensity }]. All four rows pass in one task. An invented pattern name passes creation, so pattern names are read from the live catalogs, not trusted.
+    hair color try on  { src_file_id, pattern: { name: "full" }, palettes: [{ color: "#RRGGBB", color_intensity }] }. The path is /s2s/v2.0/task/hair-color, which the reference page never rendered and the bundle states. Note color_intensity in snake case: this endpoint is not makeup-vto. The body we sent before ({ mode, palettes: [{ colorIntensity }] }) is refused with "'pattern' is required and can't be null.", and a camel case colorIntensity is silently ignored.
+    cloth try on       { src_file_id, ref_file_id, garment_category }. Optional change_shoes defaults to true and only affects full_body and lower_body; we do not send it.
+    skin simulation    { src_file_id } plus one top level field per concern, each 0.0 to 1.0, at least one above zero. The field names are wrinkle, radiance, oiliness, acne, eye_bags, dark_circle, spots, pores, texture, redness. Note wrinkle and dark_circle in the singular. There is no concerns array: the array we sent before was dropped whole and answered "Simulation intensity cannot be all zero".
+    accessory try on   { src_file_id, ref_file_ids: [...], source_info: { name }, object_infos: [{ name }] }. All four are required. The body we sent before was refused for the last two by name, so the watch try on would have failed on every tap.
 
 Error handling
 

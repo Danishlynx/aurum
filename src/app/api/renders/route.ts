@@ -205,10 +205,12 @@ export async function POST(request: NextRequest): Promise<Response> {
         });
       case "endpoint_unverified":
         // The endpoint behind this kind has not been verified against the live
-        // docs, and PERFECTCORP_ALLOW_UNVERIFIED is not set. Hair color is the
-        // one this refuses today. Same answer as a missing key, because from the
-        // person's side it is the same thing: there is no preview, and nothing
-        // was invented in its place.
+        // docs, and PERFECTCORP_ALLOW_UNVERIFIED is not set. As of 2026-09-02
+        // that is the earrings and the bag, whose unit costs are published
+        // nowhere we can read; /looks offers neither, so this is the answer to a
+        // request that did not come from a screen. Same answer as a missing key,
+        // because from the person's side it is the same thing: there is no
+        // preview, and nothing was invented in its place.
         throw new HttpError({
           status: 503,
           message: messages.tryOnUnavailable,

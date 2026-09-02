@@ -205,9 +205,13 @@ export function makeupRenderUnits(): number {
  * typed refusal the screen can render, taken before a credit is reserved and a
  * row is written, rather than a provider exception after both.
  *
- * Today this is what stops a hair colour render: the hair colour task path did
- * not render on the reference page, so its entry in endpoints.ts is unverified
- * and calling it needs PERFECTCORP_ALLOW_UNVERIFIED=true.
+ * As of 2026-09-02 every fixed kind is callable: makeup, hairstyle, hair colour,
+ * cloth, and the skin simulation all have a confirmed path and a confirmed
+ * request body (endpoints.ts records how each was settled, and all of it was
+ * settled for free). What this still stops is the accessory kinds behind the
+ * earrings and the bag, whose unit costs are published nowhere we can read, so
+ * the credits layer would have nothing true to reserve. They need
+ * PERFECTCORP_ALLOW_UNVERIFIED=true, and the screens offer neither.
  */
 export function isRenderEndpointCallable(key: PerfectCorpEndpointKey): boolean {
   return (

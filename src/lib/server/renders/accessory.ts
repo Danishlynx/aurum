@@ -21,24 +21,33 @@ import type { StoredAccessoryParams } from "./params";
  * docs/09-build-order-and-demo.md, Layer 6: "One accessory try on in the top
  * look (earrings or a bag) from the fashion APIs".
  *
- * CONFIRMED, from src/lib/server/providers/perfectcorp/endpoints.ts, for the
- * watch and the watch alone: the path is /s2s/v2.0/task/2d-vto/watch, the
- * request takes src_file_id or src_file_url plus ref_file_ids or ref_file_urls,
- * and one single item simulation costs 1 unit.
+ * CONFIRMED on 2026-09-02, for the watch: the path is /s2s/v2.0/task/2d-vto/watch
+ * and one single item simulation costs 1 unit, and the request needs four things
+ * rather than the two this file used to send. The body it sent before,
+ * { src_file_id, ref_file_ids }, is refused:
  *
- * UNVERIFIED: every other accessory page. Their paths follow the same 2d-vto
- * pattern, which is why endpoints.ts records them, but no reference page was
- * read for them and their unit costs are not published. So the two categories
- * docs/09 names, earrings and bag, are gated today and the watch is not.
+ *   "source_info is required but wasn't included in your request., or
+ *    object_infos is required but wasn't included in your request."
+ *
+ * So the watch try on, the one accessory this build offers, would have failed on
+ * every tap. Adding source_info and object_infos answers the generic "One or
+ * more parameters in this request are invalid.", which is what a right body with
+ * a wrong file id says. Free, with the oracle the makeup body was corrected with
+ * (src/lib/server/renders/makeup.ts): a rejected task creation costs nothing.
+ *
+ * The earrings endpoint takes the same four fields, at a corrected path
+ * (2d-vto/earring, singular). It stays gated because its unit cost is published
+ * nowhere we can read.
+ *
+ * The bag endpoint is not this API at all: it is /s2s/v2.0/task/bag, it takes a
+ * single ref_file_id rather than a list, and it requires a gender field this app
+ * does not hold and does not ask anyone for. It stays gated, and the body
+ * builder below sends nothing for it rather than sending the 2d-vto shape.
  *
  * That is what the map below is for: a category is callable when the endpoint
  * behind it is confirmed (or when PERFECTCORP_ALLOW_UNVERIFIED is set), so
  * whichever endpoint the human verifies first is the one the screen offers, and
  * the rest stay refused rather than guessed at.
- *
- * TODO for the human: read the earrings and bag reference pages, record their
- * paths, reference file fields, and unit costs in endpoints.ts, and mark those
- * entries confirmed. Nothing else has to change.
  */
 
 /** The endpoint behind each accessory category. */
@@ -95,6 +104,16 @@ export function isAccessoryGarmentType(type: string | null): boolean {
 }
 
 /**
+ * The categories whose endpoint takes the 2d-vto request shape.
+ *
+ * The watch confirms that shape and the earrings share it. The bag does not: its
+ * endpoint is a different API with a different body and a required gender field,
+ * so it is left out here rather than served the wrong one.
+ */
+const TWO_D_VTO_CATEGORIES: ReadonlySet<AccessoryCategory> =
+  new Set<AccessoryCategory>(["watch", "earrings"]);
+
+/**
  * The body for one accessory try on.
  *
  * Two files: the person's capture as the source, and their own photo of the
@@ -102,8 +121,16 @@ export function isAccessoryGarmentType(type: string | null): boolean {
  * listing thumbnail, and never someone else's photo, which is the rule in
  * CLAUDE.md and the same rule the cloth try on follows.
  *
- * The reference field is plural (ref_file_ids) because that is what the watch
- * page confirms, and one item is sent in it: one accessory, one picture.
+ * Four fields, all four required, all four named by the server itself in a free
+ * rejection. The reference field is plural (ref_file_ids) and one item is sent
+ * in it: one accessory, one picture. source_info and object_infos repeat those
+ * same ids under a name, which is how the engine pairs a source with its mask
+ * and a product with its mask; we send no masks, so each entry carries only the
+ * name it points at.
+ *
+ * Null for a category whose endpoint is not this API, which today is the bag.
+ * The caller reads null as "there is nothing to render" and refuses before a
+ * credit is reserved.
  */
 export function accessoryTaskBody(args: {
   readonly fileId: string;
@@ -113,10 +140,15 @@ export function accessoryTaskBody(args: {
   if (!isAccessoryCategory(args.params.category)) {
     return null;
   }
+  if (!TWO_D_VTO_CATEGORIES.has(args.params.category)) {
+    return null;
+  }
   const endpoint = getEndpoint(accessoryEndpointFor(args.params.category));
   const fileField = endpoint.sourceFileFields[0] ?? "src_file_id";
   return {
     [fileField]: args.fileId,
     ref_file_ids: [args.referenceFileId],
+    source_info: { name: args.fileId },
+    object_infos: [{ name: args.referenceFileId }],
   };
 }
