@@ -362,17 +362,25 @@ export function normalize(
     }
     case "attributes": {
       const result = parseFacialColorTonesResult(snapshot);
+      /*
+       * Every colour but the skin is optional (the schema says why), so each one
+       * is written as an explicit null rather than left off. JSON.stringify
+       * drops an undefined key, and a summary whose shape changes with what the
+       * provider happened to read is a summary nothing downstream can rely on.
+       * The row keeps what came back and says nothing about what did not.
+       */
+      const color = result.color;
       return {
         raw: toJson(result),
         summary:
           toJson({
-            skinColor: result.color.skin_color,
-            eyeColor: result.color.eye_color,
-            eyeColorName: result.color.eye_color_name,
-            lipColor: result.color.lip_color,
-            eyebrowColor: result.color.eyebrow_color,
-            hairColor: result.color.hair_color,
-            hairColorName: result.color.hair_color_name,
+            skinColor: color.skin_color,
+            eyeColor: color.eye_color ?? null,
+            eyeColorName: color.eye_color_name ?? null,
+            lipColor: color.lip_color ?? null,
+            eyebrowColor: color.eyebrow_color ?? null,
+            hairColor: color.hair_color ?? null,
+            hairColorName: color.hair_color_name ?? null,
           }) ?? {},
         maskUrls: [],
       };

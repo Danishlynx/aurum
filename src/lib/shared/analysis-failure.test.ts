@@ -9,14 +9,21 @@ import {
 import { analysisFailureCopy, COPY_NOT_IN_FLOW_DOC, copy } from "./copy";
 
 /**
- * The three codes at the top are the ones the live API sent on 2026-09-02, and
- * they are the reason this module exists: every one of them used to become the
- * same generic refusal, which told a person nothing they could act on.
+ * The codes at the top are the ones the live API sent, and they are the reason
+ * this module exists: every one of them used to become the same generic refusal,
+ * which told a person nothing they could act on.
+ *
+ * The first three were read on 2026-09-02. faceTooSmall came later, off a photo
+ * picked out of the phone's gallery rather than taken on the capture screen, and
+ * it is what the auto framing in src/lib/shared/quality.ts (autoCropBoxFor) now
+ * exists to stop happening. It is kept here because the framing can only help a
+ * photo that has a findable face in it, so the refusal still has to land well.
  */
 const LIVE_CODES = {
   angleRightward: "error_face_angle_rightward",
   notForward: "error_face_not_forward_facing",
   noFace: "error_no_face",
+  faceTooSmall: "error_src_face_too_small",
 } as const;
 
 describe("analysisFailureReasonFor, against the codes the API really sent", () => {
@@ -39,9 +46,18 @@ describe("analysisFailureReasonFor, against the codes the API really sent", () =
     expect(analysisFailureReasonFor("  ERROR_NO_FACE  ")).toBe("no_face");
   });
 
+  it("reads a face too small in the frame as a frame problem", () => {
+    // The live code, and the two spellings around it, all land on the line that
+    // asks for another photo rather than on the one that blames the provider.
+    expect(analysisFailureReasonFor(LIVE_CODES.faceTooSmall)).toBe("frame");
+    expect(analysisFailureReasonFor("error_face_too_small")).toBe("frame");
+    expect(analysisFailureReasonFor("error_src_face_too_small")).not.toBe(
+      "provider",
+    );
+  });
+
   it("reads an unrecorded code about the photo as a frame problem", () => {
     expect(analysisFailureReasonFor("error_image_resolution_too_low")).toBe("frame");
-    expect(analysisFailureReasonFor("error_face_too_small")).toBe("frame");
   });
 
   it("does not blame the photo for a code that never mentions it", () => {

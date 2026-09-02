@@ -19,6 +19,8 @@ import {
   FACE_COVERAGE_BORDERLINE_MIN,
   FACE_COVERAGE_MIN,
   assessCapture,
+  autoCropBoxFor,
+  cropToBox,
   type Box,
   type CaptureRejectionReason,
   type GrayscaleImage,
@@ -51,8 +53,8 @@ const GOOD_FACE_BOX: Box = { x: 30, y: 24, width: 60, height: 72 };
 
 function image(
   pixel: (x: number, y: number) => number,
-  width = FRAME.width,
-  height = FRAME.height,
+  width: number = FRAME.width,
+  height: number = FRAME.height,
 ): GrayscaleImage {
   const data = new Array<number>(width * height);
   for (let y = 0; y < height; y += 1) {
@@ -186,6 +188,129 @@ describe("eval:capture, gate logic on synthetic frames", () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* The framing the upload path composes for itself                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The camera path has an oval to aim at. The upload path has a photo that was
+ * already taken, and a phone gallery selfie carries the face at 30 to 50 percent
+ * of the frame height when the analyzers want more than 60. On 2026-09-02 one
+ * was sent as it came and the engine answered error_src_face_too_small.
+ *
+ * autoCropBoxFor is what the upload path does about it. This block runs the same
+ * photo through the gate twice, before and after the crop, on the same synthetic
+ * frames the rest of the suite uses.
+ */
+describe("eval:capture, auto framing an uploaded photo", () => {
+  const GALLERY = { width: 300, height: 400 } as const;
+
+  /** Sharp and evenly lit, at the shape and size a phone photo comes in. */
+  const galleryFrame = image(
+    (x, y) => [64, 128, 192][(x + y) % 3] ?? 128,
+    GALLERY.width,
+    GALLERY.height,
+  );
+
+  /** A face filling this share of the frame height, centered. */
+  function galleryFace(coverage: number): Box {
+    const height = Math.round(GALLERY.height * coverage);
+    const width = Math.round(height * 0.72);
+    return {
+      x: Math.round((GALLERY.width - width) / 2),
+      y: Math.round((GALLERY.height - height) / 2),
+      width,
+      height,
+    };
+  }
+
+  /** The crop, and the face box in the cropped frame's own pixels. */
+  function compose(faceBox: Box): {
+    readonly image: GrayscaleImage;
+    readonly faceBox: Box;
+  } {
+    const crop = autoCropBoxFor({ faceBox, frame: GALLERY });
+    if (crop === null) {
+      throw new Error("Expected a crop for a face under the framing rule.");
+    }
+    return {
+      image: cropToBox(galleryFrame, crop),
+      faceBox: {
+        x: faceBox.x - crop.x,
+        y: faceBox.y - crop.y,
+        width: faceBox.width,
+        height: faceBox.height,
+      },
+    };
+  }
+
+  const GALLERY_COVERAGES = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55] as const;
+
+  it.each(GALLERY_COVERAGES)(
+    "refuses a face at %s of the frame height as it came",
+    (coverage) => {
+      const result = assessCapture({
+        image: galleryFrame,
+        faceCount: 1,
+        faceBox: galleryFace(coverage),
+      });
+      expect(result.verdict).not.toBe("accept");
+      expect(result.reason).toBe("too_far");
+    },
+  );
+
+  it.each(GALLERY_COVERAGES)(
+    "accepts the same photo at %s once it is composed around the face",
+    (coverage) => {
+      const composed = compose(galleryFace(coverage));
+      const result = assessCapture({
+        image: composed.image,
+        faceCount: 1,
+        faceBox: composed.faceBox,
+      });
+      expect(result.verdict).toBe("accept");
+      expect(result.reason).toBeNull();
+      expect(result.metrics.faceCoverage).toBeGreaterThanOrEqual(
+        FACE_COVERAGE_MIN,
+      );
+    },
+  );
+
+  it("leaves a photo that was already framed well enough alone", () => {
+    for (const coverage of [FACE_COVERAGE_MIN, 0.7, 0.9]) {
+      expect(
+        autoCropBoxFor({ faceBox: galleryFace(coverage), frame: GALLERY }),
+      ).toBeNull();
+    }
+  });
+
+  it("has nothing to offer a photo with no face, which stays a refusal", () => {
+    expect(autoCropBoxFor({ faceBox: null, frame: GALLERY })).toBeNull();
+    const result = assessCapture({
+      image: galleryFrame,
+      faceCount: 0,
+      faceBox: null,
+    });
+    expect(result.verdict).toBe("reject");
+    expect(result.reason).toBe("no_face");
+    expect(result.canUseAnyway).toBe(false);
+  });
+
+  it("keeps the crop inside the picture and portrait", () => {
+    for (const coverage of GALLERY_COVERAGES) {
+      const faceBox = galleryFace(coverage);
+      const crop = autoCropBoxFor({ faceBox, frame: GALLERY });
+      expect(crop).not.toBeNull();
+      const box = crop as Box;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(GALLERY.width);
+      expect(box.y + box.height).toBeLessThanOrEqual(GALLERY.height);
+      expect(box.width).toBeLessThanOrEqual(box.height);
+    }
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /* The gate the provider runs after ours                               */
 /* ------------------------------------------------------------------ */
 
@@ -204,6 +329,9 @@ describe("eval:capture, what the engine's own refusal says", () => {
     { code: "error_face_angle_rightward", line: copy.capture.facingAway },
     { code: "error_face_not_forward_facing", line: copy.capture.facingAway },
     { code: "error_no_face", line: copy.capture.rejection.no_face },
+    // Read off a gallery upload. The auto framing above is what stops it being
+    // reached; this holds the line it lands on when the framing cannot help.
+    { code: "error_src_face_too_small", line: copy.errors.readingRefused },
   ] as const;
 
   it("answers each live code with the capture screen's own line", () => {

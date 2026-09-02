@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { captureRejectionCopy } from "./copy";
 import {
+  AUTO_CROP_ASPECT,
+  AUTO_CROP_FACE_COVERAGE,
+  AUTO_CROP_MIN_FACE_MARGIN,
   BLOWN_LUMINANCE_AT_OR_ABOVE,
   CAPTURE_REASON_PRECEDENCE,
   CRUSHED_LUMINANCE_AT_OR_BELOW,
@@ -10,11 +13,13 @@ import {
   SHARPNESS_BORDERLINE_BELOW,
   SHARPNESS_REJECT_BELOW,
   assessCapture,
+  autoCropBoxFor,
   clampBox,
   cropToBox,
   exposureStats,
   faceCoverageCheck,
   laplacianVariance,
+  scaleBox,
   type Box,
   type GrayscaleImage,
 } from "./quality";
@@ -218,6 +223,229 @@ describe("clampBox and cropToBox", () => {
     expect(crop.width).toBe(2);
     expect(crop.height).toBe(2);
     expect(Array.from(crop.data)).toEqual([11, 12, 21, 22]);
+  });
+});
+
+describe("autoCropBoxFor", () => {
+  /**
+   * A gallery photo: portrait, and the face at the share of the frame height a
+   * phone selfie taken at arm's length actually lands on.
+   */
+  function gallery(coverage: number, aspect = 0.72) {
+    const frame = { width: 3024, height: 4032 };
+    const height = frame.height * coverage;
+    const width = height * aspect;
+    return {
+      frame,
+      faceBox: {
+        x: (frame.width - width) / 2,
+        y: (frame.height - height) / 2,
+        width,
+        height,
+      },
+    };
+  }
+
+  /** What the gate will measure once the crop has been drawn. */
+  function coverageOf(box: Box, crop: Box): number {
+    return box.height / crop.height;
+  }
+
+  it("does nothing when there is no face box", () => {
+    expect(autoCropBoxFor({ faceBox: null, frame: FRAME })).toBeNull();
+  });
+
+  it("does nothing when the face already meets the rule", () => {
+    for (const coverage of [0.6, 0.62, 0.75, 0.95]) {
+      const { faceBox, frame } = gallery(coverage);
+      expect(autoCropBoxFor({ faceBox, frame })).toBeNull();
+    }
+  });
+
+  it("frames the face at 62 percent of the crop, from 30 to 50 percent", () => {
+    for (const coverage of [0.3, 0.35, 0.4, 0.45, 0.5, 0.59]) {
+      const { faceBox, frame } = gallery(coverage);
+      const crop = autoCropBoxFor({ faceBox, frame });
+      expect(crop).not.toBeNull();
+      expect(coverageOf(faceBox, crop as Box)).toBeCloseTo(
+        AUTO_CROP_FACE_COVERAGE,
+        2,
+      );
+    }
+  });
+
+  it("lands every one of those crops above the gate's own minimum", () => {
+    for (const coverage of [0.3, 0.35, 0.4, 0.45, 0.5, 0.59]) {
+      const { faceBox, frame } = gallery(coverage);
+      const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+      expect(
+        faceCoverageCheck(faceBox, {
+          width: crop.width,
+          height: crop.height,
+        }).meetsMinimum,
+      ).toBe(true);
+    }
+  });
+
+  it("keeps the whole face plus the margin inside the crop", () => {
+    for (const coverage of [0.3, 0.4, 0.5]) {
+      const { faceBox, frame } = gallery(coverage);
+      const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+      const margin = AUTO_CROP_MIN_FACE_MARGIN / 2;
+      expect(crop.x).toBeLessThanOrEqual(faceBox.x - faceBox.width * margin);
+      expect(crop.y).toBeLessThanOrEqual(faceBox.y - faceBox.height * margin);
+      expect(crop.x + crop.width).toBeGreaterThanOrEqual(
+        faceBox.x + faceBox.width * (1 + margin),
+      );
+      expect(crop.y + crop.height).toBeGreaterThanOrEqual(
+        faceBox.y + faceBox.height * (1 + margin),
+      );
+    }
+  });
+
+  it("comes out portrait, never landscape", () => {
+    for (const coverage of [0.3, 0.4, 0.5]) {
+      for (const aspect of [0.55, 0.72, 0.85, 1.1]) {
+        const { faceBox, frame } = gallery(coverage, aspect);
+        const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+        expect(crop.width).toBeLessThanOrEqual(crop.height);
+      }
+    }
+  });
+
+  it("fills the width too, which is the framing the engine asks for", () => {
+    /*
+     * endpoints.ts, facialColorTones: "face width greater than 60 percent of
+     * image width". The height rule alone does not give that on a narrow face,
+     * so the crop is capped on width as well.
+     */
+    for (const coverage of [0.3, 0.4, 0.5]) {
+      for (const aspect of [0.6, 0.72, 0.8]) {
+        const { faceBox, frame } = gallery(coverage, aspect);
+        const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+        expect(faceBox.width / crop.width).toBeGreaterThanOrEqual(
+          FACE_COVERAGE_MIN,
+        );
+      }
+    }
+  });
+
+  it("starts from the 3 by 4 target when nothing pulls it off", () => {
+    // A face box at the aspect the target was chosen for: the width lands on
+    // AUTO_CROP_ASPECT rather than on either margin.
+    const { faceBox, frame } = gallery(0.4, AUTO_CROP_ASPECT);
+    const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+    expect(crop.width / crop.height).toBeCloseTo(AUTO_CROP_ASPECT, 2);
+  });
+
+  it("centers on the face, not on the picture", () => {
+    const frame = { width: 3024, height: 4032 };
+    // A face high in the frame and off to one side, which is where a face in a
+    // photo somebody else took usually is.
+    const faceBox = { x: 400, y: 300, width: 800, height: 1100 };
+    const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+    const faceCenterX = faceBox.x + faceBox.width / 2;
+    const cropCenterX = crop.x + crop.width / 2;
+    expect(Math.abs(cropCenterX - faceCenterX)).toBeLessThanOrEqual(1);
+    expect(crop.y).toBeGreaterThanOrEqual(0);
+    expect(crop.y).toBeLessThan(faceBox.y);
+  });
+
+  it("slides a crop back inside the picture rather than shrinking it", () => {
+    const frame = { width: 1000, height: 1600 };
+    // Hard against the top left corner.
+    const faceBox = { x: 0, y: 0, width: 300, height: 500 };
+    const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+    expect(crop.x).toBe(0);
+    expect(crop.y).toBe(0);
+    expect(coverageOf(faceBox, crop)).toBeGreaterThanOrEqual(FACE_COVERAGE_MIN);
+  });
+
+  it("never runs outside the picture, wherever the face is", () => {
+    const frame = { width: 1200, height: 1600 };
+    const corners: Box[] = [
+      { x: 0, y: 0, width: 300, height: 420 },
+      { x: 900, y: 0, width: 300, height: 420 },
+      { x: 0, y: 1180, width: 300, height: 420 },
+      { x: 900, y: 1180, width: 300, height: 420 },
+      { x: 450, y: 590, width: 300, height: 420 },
+    ];
+    for (const faceBox of corners) {
+      const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+      expect(crop.x).toBeGreaterThanOrEqual(0);
+      expect(crop.y).toBeGreaterThanOrEqual(0);
+      expect(crop.x + crop.width).toBeLessThanOrEqual(frame.width);
+      expect(crop.y + crop.height).toBeLessThanOrEqual(frame.height);
+    }
+  });
+
+  it("stays portrait when the skin region ran into bare shoulders", () => {
+    // The YCbCr fallback's worst case: a region far wider than it is tall,
+    // because the neck and shoulders were lit like the face.
+    const frame = { width: 3000, height: 4000 };
+    const faceBox = { x: 300, y: 1200, width: 2400, height: 1400 };
+    const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+    expect(crop.width).toBeLessThanOrEqual(crop.height);
+    expect(coverageOf(faceBox, crop)).toBeGreaterThanOrEqual(FACE_COVERAGE_MIN);
+  });
+
+  it("refuses a box or a frame with nothing in it", () => {
+    const frame = { width: 100, height: 100 };
+    expect(
+      autoCropBoxFor({ faceBox: { x: 0, y: 0, width: 0, height: 30 }, frame }),
+    ).toBeNull();
+    expect(
+      autoCropBoxFor({ faceBox: { x: 0, y: 0, width: 30, height: 0 }, frame }),
+    ).toBeNull();
+    expect(
+      autoCropBoxFor({
+        faceBox: { x: 0, y: 0, width: 10, height: 10 },
+        frame: { width: 0, height: 0 },
+      }),
+    ).toBeNull();
+  });
+
+  it("is stable: the same face box always gets the same crop", () => {
+    const { faceBox, frame } = gallery(0.38);
+    expect(autoCropBoxFor({ faceBox, frame })).toEqual(
+      autoCropBoxFor({ faceBox, frame }),
+    );
+  });
+
+  it("returns whole pixels", () => {
+    const { faceBox, frame } = gallery(0.41);
+    const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+    for (const value of [crop.x, crop.y, crop.width, crop.height]) {
+      expect(Number.isInteger(value)).toBe(true);
+    }
+  });
+});
+
+describe("scaleBox", () => {
+  it("maps a box into the pixels of a larger copy of the same image", () => {
+    expect(scaleBox({ x: 10, y: 20, width: 30, height: 40 }, 3)).toEqual({
+      x: 30,
+      y: 60,
+      width: 90,
+      height: 120,
+    });
+  });
+
+  it("leaves a box alone at scale one", () => {
+    const box: Box = { x: 1.5, y: 2.5, width: 3, height: 4 };
+    expect(scaleBox(box, 1)).toEqual(box);
+  });
+
+  it("keeps coverage the same on both sides of the scale", () => {
+    const box: Box = { x: 0, y: 0, width: 620, height: 1000 };
+    const frame = { width: 1000, height: 1600 };
+    const scale = 3.5;
+    expect(
+      faceCoverageCheck(scaleBox(box, scale), {
+        width: frame.width * scale,
+        height: frame.height * scale,
+      }).coverage,
+    ).toBeCloseTo(faceCoverageCheck(box, frame).coverage, 10);
   });
 });
 

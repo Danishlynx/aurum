@@ -440,15 +440,44 @@ export type HdSkinConcernKey = (typeof HD_SKIN_CONCERN_KEYS)[number];
 /* Facial colour tones                                                 */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A colour this call may or may not have been able to read.
+ *
+ * Absent, null, or a value of a shape we do not recognise all arrive as null.
+ * The point is the whole result, not the field: this task is charged the moment
+ * the engine succeeds, so a field it could not fill is never allowed to throw
+ * the twenty units away with it. What cannot be read is dropped, never guessed
+ * (src/lib/server/profile/summaries.ts, toHexColor).
+ */
+const optionalColor = () => z.string().nullable().optional().catch(null);
+
+/**
+ * skin_color is the only field this call has to return.
+ *
+ * Why. On 2026-09-02 a live skin tone analysis succeeded, was charged 20 units,
+ * and was thrown away here: every field was declared z.string(), that photo
+ * returned nothing readable for color.hair_color and color.hair_color_name, and
+ * the whole result failed the parse (logged as aurum.analysis_unreadable with
+ * exactly those two issue paths). A result the provider has already charged for
+ * is never discarded over a field the app can do without.
+ *
+ * And it can do without all of them but one. Skin tone and undertone, which are
+ * what this call is bought for, come from skin_color alone
+ * (src/lib/server/profile/color.ts). An unread hair colour is unknown contrast
+ * rather than low contrast, and classifyContrast in src/lib/shared/palette.ts
+ * already answers medium for it. So a missing skin_color means there is nothing
+ * to keep and the task has genuinely failed; anything else means a partial
+ * summary, which is worth more than no summary.
+ */
 export const facialColorTonesResultSchema = z.object({
   color: z.object({
     skin_color: z.string(),
-    eye_color: z.string(),
-    eye_color_name: z.string(),
-    lip_color: z.string(),
-    eyebrow_color: z.string(),
-    hair_color: z.string(),
-    hair_color_name: z.string(),
+    eye_color: optionalColor(),
+    eye_color_name: optionalColor(),
+    lip_color: optionalColor(),
+    eyebrow_color: optionalColor(),
+    hair_color: optionalColor(),
+    hair_color_name: optionalColor(),
   }),
 });
 

@@ -18,8 +18,10 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { normalize } from "@/lib/server/jobs/analysis";
+import { isProviderError } from "@/lib/server/providers/errors";
 import {
   normalizeTaskState,
+  parseFacialColorTonesResult,
   readSkinAnalysis,
   skinAnalysisResultSchema,
   skinTypeZoneFor,
@@ -29,8 +31,13 @@ import {
   type TaskSnapshot,
 } from "@/lib/server/providers/perfectcorp";
 import { PERFECTCORP_ENDPOINTS } from "@/lib/server/providers/perfectcorp/endpoints";
-import { readSkinSummary } from "@/lib/server/profile/summaries";
+import { facialColorTonesResultSchema } from "@/lib/server/providers/perfectcorp/schemas";
+import {
+  readAttributesSummary,
+  readSkinSummary,
+} from "@/lib/server/profile/summaries";
 import { deriveSkinType, skinTypeFromZones } from "@/lib/server/profile/skin-type";
+import { classifyContrast } from "@/lib/shared/palette";
 import {
   VERIFIED_SD_SKIN_CONCERN_TYPES,
   isNonConcernOutputType,
@@ -481,6 +488,163 @@ describe("normalize over the real body", () => {
 /* ------------------------------------------------------------------ */
 /* The measured cost                                                   */
 /* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/* The skin tone result, and the fields it may not be able to fill      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The same failure as the envelope above, one endpoint over.
+ *
+ * A live skin tone analysis succeeded, was charged 20 units, and was thrown
+ * away: facialColorTonesResultSchema declared every colour z.string(), that
+ * photo returned nothing readable for color.hair_color and color.hair_color_name,
+ * and the parse failed on the whole result. The jobs runner logged
+ * aurum.analysis_unreadable with exactly those two issue paths and closed the
+ * analysis, so the capture lost its skin tone, its undertone, and the palette
+ * built on them, over two fields the report does not need.
+ *
+ * The rule this block holds: a result the provider charged for is kept for
+ * whatever it did carry. Only a missing skin_color is a failure, because that is
+ * the field the call is bought for.
+ */
+describe("a skin tone result with fields the engine could not fill", () => {
+  const READABLE = {
+    skin_color: "#997357",
+    eye_color: "#0f0b0f",
+    eye_color_name: "Brown",
+    lip_color: "#b57f7f",
+    eyebrow_color: "#3e3834",
+  } as const;
+
+  function toneSnapshot(color: Record<string, unknown>): TaskSnapshot {
+    return {
+      endpointKey: "facialColorTones",
+      taskId: "charged-and-partial",
+      state: "succeeded",
+      results: { color },
+      errorCode: null,
+      pollingIntervalSeconds: null,
+    };
+  }
+
+  /** The two shapes the live failure could have had. Both are read the same. */
+  const PARTIAL = [
+    {
+      name: "hair fields null",
+      color: { ...READABLE, hair_color: null, hair_color_name: null },
+    },
+    {
+      name: "hair fields absent",
+      color: { ...READABLE },
+    },
+  ] as const;
+
+  it.each(PARTIAL)("parses a result with $name", ({ color }) => {
+    const parsed = facialColorTonesResultSchema.safeParse({ color });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.color.skin_color).toBe(READABLE.skin_color);
+    expect(parsed.data?.color.hair_color ?? null).toBeNull();
+    expect(parsed.data?.color.hair_color_name ?? null).toBeNull();
+  });
+
+  it.each(PARTIAL)("normalizes a result with $name into a summary", ({ color }) => {
+    const normalized = normalize("attributes", toneSnapshot(color));
+    expect(normalized.summary).toMatchObject({
+      skinColor: READABLE.skin_color,
+      eyeColor: READABLE.eye_color,
+      hairColor: null,
+      hairColorName: null,
+    });
+    // The keys are always there, whatever came back, so the stored shape does
+    // not change with the photo.
+    expect(Object.keys(normalized.summary as object).sort()).toEqual([
+      "eyeColor",
+      "eyeColorName",
+      "eyebrowColor",
+      "hairColor",
+      "hairColorName",
+      "lipColor",
+      "skinColor",
+    ]);
+  });
+
+  it.each(PARTIAL)("hands the profile layer the tone it did get, with $name", ({ color }) => {
+    const normalized = normalize("attributes", toneSnapshot(color));
+    const read = readAttributesSummary(normalized.summary);
+    expect(read).not.toBeNull();
+    expect(read?.skinToneHex).toBe("#997357");
+    expect(read?.eyeColorHex).toBe("#0f0b0f");
+    expect(read?.hairColorHex).toBeNull();
+  });
+
+  it("still builds a palette, because unknown hair is medium contrast", () => {
+    const normalized = normalize("attributes", toneSnapshot(PARTIAL[0].color));
+    const read = readAttributesSummary(normalized.summary);
+    expect(
+      classifyContrast({
+        skinToneHex: read?.skinToneHex ?? "",
+        eyeColorHex: read?.eyeColorHex ?? null,
+        hairColorHex: read?.hairColorHex ?? null,
+      }),
+    ).not.toBeNull();
+    // Nothing to compare the skin against at all is medium, not low.
+    expect(
+      classifyContrast({
+        skinToneHex: "#997357",
+        eyeColorHex: null,
+        hairColorHex: null,
+      }),
+    ).toBe("medium");
+  });
+
+  it("keeps a colour it cannot read at all, rather than the result", () => {
+    // Not a shape anyone has seen. It becomes null and the rest survives, which
+    // is the point: the units are already spent either way.
+    const parsed = facialColorTonesResultSchema.safeParse({
+      color: { ...READABLE, hair_color: { r: 12 }, hair_color_name: 7 },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.color.hair_color).toBeNull();
+    expect(parsed.data?.color.skin_color).toBe(READABLE.skin_color);
+  });
+
+  it("fails only when the skin colour itself is missing", () => {
+    const withoutSkin = { ...READABLE } as Record<string, unknown>;
+    delete withoutSkin.skin_color;
+    expect(
+      facialColorTonesResultSchema.safeParse({ color: withoutSkin }).success,
+    ).toBe(false);
+
+    let thrown: unknown = null;
+    try {
+      parseFacialColorTonesResult(toneSnapshot(withoutSkin));
+    } catch (error) {
+      thrown = error;
+    }
+    expect(isProviderError(thrown)).toBe(true);
+    expect(isProviderError(thrown) ? thrown.issuePaths : []).toEqual([
+      "color.skin_color",
+    ]);
+  });
+
+  it("no longer fails on the two fields the live result lost", () => {
+    for (const entry of PARTIAL) {
+      expect(() =>
+        parseFacialColorTonesResult(toneSnapshot(entry.color)),
+      ).not.toThrow();
+    }
+  });
+});
+
+describe("the skin tone analysis cost", () => {
+  it("is the 20 units the discarded result was charged", () => {
+    expect(PERFECTCORP_ENDPOINTS.facialColorTones.unitCost).toEqual({
+      kind: "fixed",
+      units: 20,
+    });
+  });
+});
 
 describe("the skin analysis cost", () => {
   it("is the 16 units the live task was charged", () => {

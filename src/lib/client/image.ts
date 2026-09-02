@@ -11,7 +11,7 @@
  * so the re encoded pixels are already the right way up.
  */
 
-import type { GrayscaleImage } from "@/lib/shared/quality";
+import type { Box, GrayscaleImage } from "@/lib/shared/quality";
 
 /** docs/03-architecture.md: the upload is a 1024px long edge. */
 export const CAPTURE_LONG_EDGE = 1024;
@@ -62,6 +62,48 @@ export function drawToCanvas(
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
   context.drawImage(source, 0, 0, target.width, target.height);
+  return canvas;
+}
+
+/**
+ * Draws one region of an image source into a fresh canvas, scaled to fit
+ * longEdge. The counterpart of drawToCanvas for the auto framed upload
+ * (autoCropBoxFor in src/lib/shared/quality.ts).
+ *
+ * The region is taken off the decoded file rather than off an already downscaled
+ * copy, so a 4000px gallery photo cropped to its face still arrives at the full
+ * 1024px long edge instead of at the fraction of it the crop would have been.
+ * fitWithin never scales up, so a small crop stays its own size rather than
+ * being stretched into a soft frame the sharpness check would then refuse.
+ */
+export function drawCropToCanvas(
+  source: CanvasImageSource,
+  region: Box,
+  longEdge: number,
+): HTMLCanvasElement {
+  const regionWidth = Math.max(1, Math.round(region.width));
+  const regionHeight = Math.max(1, Math.round(region.height));
+  const target = fitWithin(
+    { width: regionWidth, height: regionHeight },
+    longEdge,
+  );
+  const canvas = document.createElement("canvas");
+  canvas.width = target.width;
+  canvas.height = target.height;
+  const context = context2d(canvas);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(
+    source,
+    Math.round(region.x),
+    Math.round(region.y),
+    regionWidth,
+    regionHeight,
+    0,
+    0,
+    target.width,
+    target.height,
+  );
   return canvas;
 }
 

@@ -19,6 +19,17 @@
  * reservation goes back and the person is asked for a better frame
  * (docs/04-integrations.md, "Input errors ... Refund the reservation").
  *
+ * A fourth was read later, off a photo picked out of the phone's gallery rather
+ * than taken on the capture screen:
+ *
+ *     error_src_face_too_small
+ *
+ * It lands on "frame" through the markers below and was refunded correctly, but
+ * a refusal was never the right answer to it: the face in that photo was fine,
+ * it was just small in the picture. The upload path now composes the frame
+ * around the face before anything is sent (autoCropBoxFor in
+ * src/lib/shared/quality.ts). This line stays for the photo no crop can save.
+ *
  * Nothing here treats the provider's text as an instruction or shows it to
  * anyone. The code is matched against the markers below and thrown away; the
  * sentence a person reads comes from copy.ts.

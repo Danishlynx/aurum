@@ -114,6 +114,16 @@ function assertImage(image: GrayscaleImage): void {
   }
 }
 
+/** The same box in the pixels of an image scaled by this factor. */
+export function scaleBox(box: Box, scale: number): Box {
+  return {
+    x: box.x * scale,
+    y: box.y * scale,
+    width: box.width * scale,
+    height: box.height * scale,
+  };
+}
+
 /** Clamps a box to the image bounds. Returns null when nothing is left. */
 export function clampBox(box: Box, frame: Frame): Box | null {
   const left = Math.max(0, Math.floor(box.x));
@@ -255,6 +265,136 @@ export function faceCoverageCheck(faceBox: Box, frame: Frame): FaceCoverage {
     isBorderline:
       coverage < FACE_COVERAGE_MIN && coverage >= FACE_COVERAGE_BORDERLINE_MIN,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Auto framing
+// ---------------------------------------------------------------------------
+
+/**
+ * The share of the crop height the face is framed to fill.
+ *
+ * 62 percent, which is the oval on the camera screen: it is drawn at h-[62%] of
+ * the stage in src/components/capture/CaptureScreen.tsx, and a person who fills
+ * it lands a frame the analyzers read. The upload path has no oval to aim at, so
+ * this is the number it composes to instead. It sits above FACE_COVERAGE_MIN
+ * with room to spare, so a crop that comes out a little loose still clears the
+ * rule rather than landing on the line.
+ */
+export const AUTO_CROP_FACE_COVERAGE = 0.62;
+
+/**
+ * The crop never comes closer to the detected box than this share of it.
+ *
+ * The face box is approximate. The browser detector returns the face without the
+ * hair, and the skin region heuristic in src/lib/client/face.ts returns whatever
+ * lit skin happened to connect, which can miss the crown and can spill down the
+ * neck. Both are wrong in ways a generous margin covers and a tight crop does
+ * not, and a crop that cuts the top off the head buys a worse refusal than the
+ * one it was trying to avoid.
+ */
+export const AUTO_CROP_MIN_FACE_MARGIN = 0.4;
+
+/**
+ * Width over height the crop aims for: 3 by 4, the portrait shape a phone
+ * already takes and the shape the capture stage shows a frame in. It is where
+ * the width starts, not where it always ends: the two margins below can pull it
+ * either way, and a crop is never allowed to come out landscape.
+ */
+export const AUTO_CROP_ASPECT = 0.75;
+
+export type AutoCropInput = {
+  /** The face box in frame pixels, or null when no face was found. */
+  readonly faceBox: Box | null;
+  readonly frame: Frame;
+};
+
+/**
+ * The crop that recomposes a photo around the face it contains, or null when
+ * there is nothing to do.
+ *
+ * Why it exists. The camera path guides framing with the oval; the upload path
+ * has no way to ask a photo already in the gallery to have been taken closer. A
+ * phone gallery selfie carries the face at 30 to 50 percent of the frame height,
+ * the analyzers want more than 60, and on 2026-09-02 one such upload was sent
+ * anyway and came back error_src_face_too_small. So the upload path composes the
+ * frame itself rather than refusing a photo that has a perfectly good face in it.
+ *
+ * The rule, in order:
+ *
+ * 1. No face box, or a face that already meets FACE_COVERAGE_MIN: null. Nothing
+ *    is recomposed on a photo that was framed well enough, and a photo with no
+ *    face is not a framing problem, it is a refusal the person has to hear.
+ * 2. Height is the face height divided by AUTO_CROP_FACE_COVERAGE, which is what
+ *    puts the face at 62 percent of the result. That is 1.61 times the face box,
+ *    so the margin floor is already cleared with room above the crown.
+ * 3. Width starts at that height taken at AUTO_CROP_ASPECT, and is then held
+ *    between three limits:
+ *
+ *    - never closer to the sides of the box than the margin floor, because the
+ *      box is approximate and the hair is usually outside it;
+ *    - never so wide that the face stops filling the width, which is the
+ *      framing the engine itself asks for: the facialColorTones constraints in
+ *      endpoints.ts say "face width greater than 60 percent of image width", so
+ *      the width is capped at the face width over the same 62 percent the
+ *      height uses, and the crop satisfies both readings of the rule;
+ *    - never wider than the crop is tall. The square is the limit because a
+ *      skin region that ran into bare shoulders is wide, and letting it widen
+ *      the crop without bound would push the face back under the rule the crop
+ *      exists to satisfy. What gets trimmed at that limit is shoulder, not face.
+ *
+ * 4. Centered on the face box, slid back inside the picture rather than shrunk,
+ *    and clamped to the frame.
+ *
+ * Pure geometry: no canvas, no pixels. The caller draws it.
+ */
+export function autoCropBoxFor(input: AutoCropInput): Box | null {
+  const { faceBox, frame } = input;
+  if (faceBox === null) {
+    return null;
+  }
+  if (frame.width <= 0 || frame.height <= 0) {
+    return null;
+  }
+  if (faceBox.width <= 0 || faceBox.height <= 0) {
+    return null;
+  }
+  if (faceCoverageCheck(faceBox, frame).meetsMinimum) {
+    return null;
+  }
+
+  const height = Math.min(
+    faceBox.height / AUTO_CROP_FACE_COVERAGE,
+    frame.height,
+  );
+  const width = Math.min(
+    Math.max(
+      height * AUTO_CROP_ASPECT,
+      faceBox.width * (1 + AUTO_CROP_MIN_FACE_MARGIN),
+    ),
+    faceBox.width / AUTO_CROP_FACE_COVERAGE,
+    height,
+    frame.width,
+  );
+
+  const centerX = faceBox.x + faceBox.width / 2;
+  const centerY = faceBox.y + faceBox.height / 2;
+  const x = Math.min(Math.max(centerX - width / 2, 0), frame.width - width);
+  const y = Math.min(Math.max(centerY - height / 2, 0), frame.height - height);
+
+  const crop = clampBox({ x, y, width, height }, frame);
+  if (crop === null) {
+    return null;
+  }
+  /*
+   * A box that covers the whole picture is not a crop. Returning null says so,
+   * which keeps the caller on the untouched frame and off a redraw that would
+   * only cost a canvas pass.
+   */
+  if (crop.width >= frame.width && crop.height >= frame.height) {
+    return null;
+  }
+  return crop;
 }
 
 // ---------------------------------------------------------------------------

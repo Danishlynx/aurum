@@ -20,6 +20,7 @@ import {
   estimateFaceFromSkin,
   SKIN_SAMPLE_LONG_EDGE,
 } from "@/lib/client/face";
+import type { FaceEstimate } from "@/lib/client/face";
 import { guidanceKey, meanLuminanceOf, motionBetween } from "@/lib/client/guidance";
 import type { GuidanceKey } from "@/lib/client/guidance";
 import {
@@ -29,6 +30,7 @@ import {
   PREVIEW_LONG_EDGE,
   decodeImageFile,
   type DecodedImage,
+  drawCropToCanvas,
   drawToCanvas,
   readImageData,
   sha256Hex,
@@ -38,7 +40,7 @@ import {
 } from "@/lib/client/image";
 import { captureRejectionCopy, copy } from "@/lib/shared/copy";
 import { backTargetFor } from "@/lib/shared/navigation";
-import { assessCapture } from "@/lib/shared/quality";
+import { assessCapture, autoCropBoxFor, scaleBox } from "@/lib/shared/quality";
 import type { CaptureAssessment, CaptureRejectionReason } from "@/lib/shared/quality";
 
 /**
@@ -67,6 +69,11 @@ import type { CaptureAssessment, CaptureRejectionReason } from "@/lib/shared/qua
  * anything is sent. docs/04-integrations.md: never send a photo that failed the
  * gate. "Use it anyway" exists for borderline frames only, and never for a frame
  * with no face.
+ *
+ * An uploaded photo goes through the same canvas, the same hash, and the same
+ * gate, with one step in front of them: it is composed around its own face
+ * first. See frameForUpload below. The oval does that job for a live frame and
+ * there is nothing to point an oval at in a photo that was taken last week.
  *
  * analysesExhausted is the server's answer to "may this session take a photo at
  * all" (src/app/(onboarding)/capture/page.tsx). With it true the screen opens in
@@ -111,6 +118,78 @@ function previewDataUrl(canvas: HTMLCanvasElement): string {
       PREVIEW_LONG_EDGE,
     ),
     PREVIEW_JPEG_QUALITY,
+  );
+}
+
+/**
+ * Where the face is in a frame, and the frame's own pixels, measured once.
+ *
+ * Both callers need the estimate and one of them needs the pixels it was taken
+ * from, and reading a 1024px canvas back is the expensive part, so it happens
+ * here rather than twice.
+ */
+async function measure(canvas: HTMLCanvasElement): Promise<{
+  readonly estimate: FaceEstimate;
+  readonly full: ImageData;
+}> {
+  const full = readImageData(canvas);
+  const sample = readImageData(
+    drawToCanvas(
+      canvas,
+      { width: canvas.width, height: canvas.height },
+      SKIN_SAMPLE_LONG_EDGE,
+    ),
+  );
+  return {
+    estimate: await estimateFaceForCapture(canvas, full, sample),
+    full,
+  };
+}
+
+/**
+ * The uploaded photo, composed the way the oval composes a live one.
+ *
+ * A phone gallery selfie carries the face at 30 to 50 percent of the frame
+ * height and the analyzers want more than 60. On 2026-09-02 one was sent as it
+ * came and the engine answered error_src_face_too_small: a refusal, a refund,
+ * and a person told to try again with a photo that was never going to work. The
+ * camera path solves this with the oval. The upload path solves it here, by
+ * finding the face and cropping to it, because the photo already has everything
+ * the reading needs and only the framing is wrong.
+ *
+ * Three cases, and only the middle one changes anything:
+ *
+ * - No face, or more than one: the frame is returned untouched and the gate says
+ *   so in its own words. A photo with no face is not a framing problem, and
+ *   picking one face out of a group is not this screen's decision to make.
+ * - One face under the rule: recomposed by autoCropBoxFor
+ *   (src/lib/shared/quality.ts), taken off the decoded file at full resolution
+ *   and only then downscaled, so the crop does not cost sharpness.
+ * - One face already filling the frame: nothing happens.
+ *
+ * The gate still runs afterwards, on the composed frame, so nothing here decides
+ * that a photo is good enough. It only gives the gate the best framing the photo
+ * contains.
+ */
+async function frameForUpload(
+  decoded: DecodedImage,
+): Promise<HTMLCanvasElement> {
+  const whole = drawToCanvas(decoded.source, decoded.size, CAPTURE_LONG_EDGE);
+  const { estimate } = await measure(whole);
+  if (estimate.faceCount !== 1) {
+    return whole;
+  }
+  const crop = autoCropBoxFor({
+    faceBox: estimate.faceBox,
+    frame: { width: whole.width, height: whole.height },
+  });
+  if (crop === null) {
+    return whole;
+  }
+  return drawCropToCanvas(
+    decoded.source,
+    scaleBox(crop, decoded.size.height / whole.height),
+    CAPTURE_LONG_EDGE,
   );
 }
 
@@ -332,17 +411,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     async (canvas: HTMLCanvasElement) => {
       setPhase({ name: "working" });
 
-      const full = readImageData(canvas);
-      const sampleCanvas = drawToCanvas(
-        canvas,
-        { width: canvas.width, height: canvas.height },
-        SKIN_SAMPLE_LONG_EDGE,
-      );
-      const estimate = await estimateFaceForCapture(
-        canvas,
-        full,
-        readImageData(sampleCanvas),
-      );
+      const { estimate, full } = await measure(canvas);
       const assessment = assessCapture({
         image: toGrayscale(full),
         faceCount: estimate.faceCount,
@@ -404,8 +473,18 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         setPhase({ name: "failed", message: copy.errors.uploadFailed });
         return;
       }
-      const canvas = drawToCanvas(decoded.source, decoded.size, CAPTURE_LONG_EDGE);
-      decoded.release();
+      let canvas: HTMLCanvasElement;
+      try {
+        canvas = await frameForUpload(decoded);
+      } catch {
+        setPhase({ name: "failed", message: copy.errors.uploadFailed });
+        return;
+      } finally {
+        // The decoder holds the picture until it is told not to, and the crop
+        // is read off it, so it is released once and only once the last draw is
+        // done.
+        decoded.release();
+      }
       freeze(canvas);
       await assess(canvas);
     })();
