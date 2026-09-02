@@ -24,11 +24,17 @@ import {
  * and the mask is drawn in Leaf, the one translucent gold in the system.
  *
  * The mask image is used as a CSS mask so the color on the face is always the
- * Leaf token and never whatever the provider painted. UNVERIFIED: Perfect Corp's
- * mask format has not been confirmed against a live response yet (docs/04, the
- * verify first task), so maskMode is set to luminance, which is right for a
- * white on black mask. If the real masks arrive with an alpha channel instead,
- * change the two maskMode lines and nothing else.
+ * Leaf token and never whatever the provider painted. VERIFIED against the
+ * golden run in evals/fixtures/golden/raw/skin: every mask comes back as a 32
+ * bit ARGB PNG, transparent everywhere the concern is not, with the strength of
+ * the mark in the alpha channel and a color of the provider's choosing in the
+ * pixels. So mask-mode is alpha, which is also what match-source resolves to for
+ * a PNG. It was luminance while the format was unverified, and luminance would
+ * have faded every mark by its own color and dropped a dark one entirely.
+ *
+ * Alignment: the mask is the same frame as the capture (both 767 by 1024 in the
+ * golden run, the uploaded 1024px long edge), so cover and center place the two
+ * identically inside the square hero and no offset is needed.
  *
  * The face is never covered by a spinner and nothing here animates on its own:
  * switching a toggle is a tap, so the mask crossfades over --duration-toggle,
@@ -119,7 +125,9 @@ export function ReportHero({ captureImageUrl, concerns }: ReportHeroProps) {
               maskSize: "cover",
               WebkitMaskPosition: "center",
               maskPosition: "center",
-              maskMode: "luminance",
+              WebkitMaskRepeat: "no-repeat",
+              maskRepeat: "no-repeat",
+              maskMode: "alpha",
               transitionDuration: "var(--duration-toggle)",
               transitionTimingFunction: "var(--ease-in-out)",
             }}

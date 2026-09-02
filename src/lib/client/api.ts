@@ -16,6 +16,7 @@ import { z } from "zod";
 import {
   analysisKindSchema,
   CONSENT_VERSION,
+  httpUrlSchema,
   jobStatusSchema,
   type CaptureCreateRequest,
   type ConsentRequest,
@@ -236,6 +237,13 @@ const analyzeResponseSchema = z.object({ jobs: z.array(clientJobSchema) });
 const jobsResponseSchema = z.object({
   jobs: z.array(clientJobSchema),
   complete: z.boolean().optional(),
+  /**
+   * A signed URL for the mask the reveal blooms, present once the skin analysis
+   * has come back with one. Optional because it is absent from every poll before
+   * that, and because a build that cannot sign it still has a screen to show:
+   * src/components/analyzing/RevealMask.tsx falls back to the oval.
+   */
+  maskUrl: httpUrlSchema.nullable().optional(),
 });
 
 export type JobsResponse = z.infer<typeof jobsResponseSchema>;

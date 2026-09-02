@@ -18,7 +18,12 @@ import {
   updateJob,
 } from "../db";
 import { serviceClient, unwrapNullable } from "../db/service";
-import { BUCKETS, downloadObject, removeObjects } from "../db/storage";
+import {
+  BUCKETS,
+  createSignedRead,
+  downloadObject,
+  removeObjects,
+} from "../db/storage";
 import type {
   Analysis,
   AnalysisKind,
@@ -32,6 +37,7 @@ import { findReservation, refund, reconcile, reserve } from "../credits";
 import { messages } from "../http/messages";
 import { HttpError } from "../http/responses";
 import { maybeBuildProfile } from "../profile";
+import { readProfileFacts } from "../profile/facts";
 import { isProviderError } from "../providers/errors";
 import { PERFECTCORP_TASK_TIMEOUT_MS } from "../providers/perfectcorp";
 import type { AppSession } from "../session";
@@ -105,6 +111,11 @@ export interface CaptureJobsView {
   readonly complete: boolean;
   /** Where the answer came from, so the client can label demo data. */
   readonly source: "live" | "cache" | "demo";
+  /**
+   * A signed URL for the mask the reveal blooms over the selfie, or null while
+   * there is nothing real to draw (docs/01-user-flow.md section E step 2).
+   */
+  readonly maskUrl: string | null;
 }
 
 const TERMINAL: readonly JobStatus[] = ["succeeded", "failed"];
@@ -472,6 +483,52 @@ async function refundFor(session: AppSession, subjectId: string): Promise<void> 
 // Read and poll
 // ---------------------------------------------------------------------------
 
+/**
+ * The one mask the reveal blooms, signed for the length of that screen.
+ *
+ * docs/01-user-flow.md section E step 2 has masks blooming over the face as the
+ * skin analysis returns. This picks the mask of the top ranked concern, which is
+ * the one /report opens on (src/components/report/ReportHero.tsx), so the two
+ * screens show the same finding rather than two different ones. Reading the
+ * facts is how it stays the same choice: the ranking rule lives in one place
+ * (src/lib/shared/concerns.ts) and is not repeated here.
+ *
+ * One mask, not all of them: docs/02-design-system.md gives the reveal one
+ * bloom, and eight translucent layers over a face is not the moment that doc
+ * describes.
+ *
+ * Nothing here can fail the poll. A capture with no succeeded skin analysis, no
+ * stored masks, or a storage call that did not answer returns null, and the
+ * screen falls back to the oval.
+ */
+async function revealMaskUrl(
+  captureId: string,
+  analyses: readonly Analysis[],
+): Promise<string | null> {
+  const facts = readProfileFacts({ captureId, analyses });
+  const top = facts.ranked[0];
+  if (top === undefined) {
+    return null;
+  }
+  const path = facts.maskPathByKey.get(top.key);
+  if (path === undefined) {
+    return null;
+  }
+  try {
+    return await createSignedRead(BUCKETS.masks, path);
+  } catch (thrown) {
+    // The bucket and the reason, never the path (migration 0006).
+    console.warn(
+      JSON.stringify({
+        event: "aurum.reveal_mask_unsigned",
+        captureId,
+        reason: thrown instanceof Error ? thrown.name : "unknown",
+      }),
+    );
+    return null;
+  }
+}
+
 export async function readCaptureJobs(
   ownerId: string,
   captureId: string,
@@ -496,6 +553,7 @@ export async function readCaptureJobs(
     complete:
       views.length > 0 && views.every((view) => isTerminal(view.status)),
     source,
+    maskUrl: await revealMaskUrl(captureId, analyses),
   };
 }
 
