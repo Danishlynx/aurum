@@ -19,7 +19,18 @@ import {
  *
  * Rows with hairlines, not cards (docs/02-design-system.md, anti slop checklist
  * item 4). The label sits in Sand small above the value in Ivory body, 8px
- * apart, which is the label to content rhythm the design system sets.
+ * apart, which is the label to content rhythm the design system sets, and the
+ * rows sit 16 apart, which is the row rhythm it sets. Both numbers are from
+ * "Section rhythm on a screen is 32 between sections, 16 between rows, 8 between
+ * a label and its content".
+ *
+ * The affordance is aligned with the label, not centred in the row. Centred, it
+ * landed in a different place in every row: level with the second line of a two
+ * line value in one, between the label and the value in the next, so six links
+ * down the right hand edge shared no line with anything. Level with the label it
+ * belongs to, "Skin type ... Retake" reads as one line and the reading sits
+ * under it. The negative margin is what lets the link keep the 44px tap target
+ * docs/02 item 11 asks for while its 20px of text sits on the label's line.
  *
  * A row whose reading never came back says so in Sand rather than showing a dash
  * or an empty space, and keeps its affordance, which is the way out of that
@@ -50,7 +61,7 @@ export function SummaryRows({ rows }: SummaryRowsProps) {
         return (
           <li
             key={row.key}
-            className="flex min-h-[44px] items-center justify-between gap-4 border-t border-raised py-4 first:border-t-0 first:pt-0"
+            className="flex min-h-[44px] items-start justify-between gap-4 border-t border-raised py-2 first:border-t-0 first:pt-0"
           >
             <div className="flex flex-col gap-2">
               <span
@@ -72,7 +83,7 @@ export function SummaryRows({ rows }: SummaryRowsProps) {
               <Link
                 href={href}
                 aria-describedby={labelId}
-                className={`${buttonClassName("quiet")} shrink-0`}
+                className={`${buttonClassName("quiet")} -my-3 shrink-0`}
               >
                 {label}
               </Link>

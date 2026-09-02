@@ -53,7 +53,10 @@ import {
 import { DEMO_FIXTURE_REPORT_VIEW } from "@/lib/server/profile/demo-fixture";
 import { saveHairChoice } from "@/lib/server/profile/hair";
 import { buildReportView } from "@/lib/server/profile/report-view";
-import { buildProfileView } from "@/lib/server/profile/view";
+import {
+  buildProfileView,
+  hasAestheticProfile,
+} from "@/lib/server/profile/view";
 import type { JudgeSession } from "@/lib/server/db/types";
 import type { AppSession } from "@/lib/server/session";
 import { copy, formatJudgeBanner } from "@/lib/shared/copy";
@@ -496,6 +499,10 @@ describe("eval:safety, every screen renders for a judge at zero", () => {
     expect(view.rows).toHaveLength(6);
     expect(view.saved.map((item) => item.kind)).toEqual(["look", "look"]);
     expect(readProfile).not.toHaveBeenCalled();
+    // The demo profile is a read profile, so the screen shows the rows alone.
+    // Inviting a judge at zero to take a selfie would point at a camera the
+    // same session refuses with 429.
+    expect(view.hasProfile).toBe(true);
   });
 
   it("reads the seeded demo profile's rows when the seed is there", async () => {
@@ -509,6 +516,70 @@ describe("eval:safety, every screen renders for a judge at zero", () => {
     expect(view).not.toBe(DEMO_FIXTURE_REPORT_VIEW);
     expect(readProfile).toHaveBeenCalledWith(DEMO_OWNER_ID);
     expect(readProfile).not.toHaveBeenCalledWith("judge-session-zero");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* The session that still has an analysis, and no reading yet          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The other end of the same setting, and the state the first run invitation is
+ * written for: a session that may take a photo and has not taken one.
+ *
+ * A judge with analyses left reads their own rows rather than the demo profile
+ * (planDemoRead, "live"), so before their selfie every reading is null. That is
+ * the screen a judge with credits meets first, and docs/01-user-flow.md, "Global
+ * states and rules", says what it owes them: "Empty screens invite action with
+ * one specific verb." /looks and /profile are the two screens that render
+ * something with no profile at all and so never see a null view, which is why
+ * hasAestheticProfile exists for them to ask.
+ *
+ * The database call is the mocked one, so nothing here reaches Supabase.
+ */
+describe("eval:safety, a judge who still has an analysis and no reading", () => {
+  it("reports no profile, against their own owner id and not the demo one", async () => {
+    configureSupabase();
+    readProfile.mockResolvedValue(null);
+    const session = judgeSession({ analyses_allowed: 3, analyses_used: 0 });
+
+    expect(await hasAestheticProfile(session)).toBe(false);
+    expect(readProfile).toHaveBeenCalledWith(session.id);
+    expect(readProfile).not.toHaveBeenCalledWith(DEMO_OWNER_ID);
+  });
+
+  it("reports a profile once one reading has landed", async () => {
+    configureSupabase();
+    readProfile.mockResolvedValue(demoProfileRow());
+
+    expect(
+      await hasAestheticProfile(
+        judgeSession({ analyses_allowed: 3, analyses_used: 1 }),
+      ),
+    ).toBe(true);
+  });
+
+  it("never invites the demo profile to take a selfie", async () => {
+    // A judge at zero reads the saved demo profile, which always has a reading,
+    // so the question is answered without a query at all.
+    expect(await hasAestheticProfile(judgeSession())).toBe(true);
+    expect(readProfile).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A read that failed is not a reading nobody took. Inviting a person to fix
+   * something that is not broken is worse than showing them nothing, and the
+   * screens that need the database say so in their own words when it is down.
+   */
+  it("does not claim an empty profile when the read itself failed", async () => {
+    configureSupabase();
+    readProfile.mockRejectedValue(new Error("read aesthetic profile failed"));
+
+    expect(
+      await hasAestheticProfile(
+        judgeSession({ analyses_allowed: 3, analyses_used: 0 }),
+      ),
+    ).toBe(true);
   });
 });
 

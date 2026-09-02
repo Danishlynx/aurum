@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { CAPTURE_PREVIEW_KEY } from "../src/lib/client/capture-handoff";
 import { copy } from "../src/lib/shared/copy";
 
 /**
@@ -17,6 +18,13 @@ import { copy } from "../src/lib/shared/copy";
  * layer writes for the codes read live on 2026-09-02.
  */
 
+/**
+ * One transparent pixel, which is all a compositing test needs: the geometry is
+ * what is being measured, not the picture. No face is involved.
+ */
+const PIXEL_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
 /** The sentence the server writes for error_face_angle_rightward. */
 const FACE_ANGLE_LINE = copy.capture.facingAway;
 /** The sentence the server writes for error_no_face. */
@@ -33,15 +41,72 @@ async function stubJobs(
   page: Page,
   jobs: readonly StubJob[],
   complete: boolean,
+  maskUrl?: string,
 ): Promise<void> {
   await page.route("**/api/jobs**", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ jobs, complete }),
+      body: JSON.stringify({ jobs, complete, maskUrl }),
     }),
   );
 }
+
+/**
+ * The other half of section E: what happens when the readings do land.
+ *
+ * "5. Transition to /report." The screen leaves on its own, driven by the jobs
+ * coming back rather than by a timer, and it offers nothing to leave with in the
+ * meantime. That absence is deliberate and is written down in
+ * src/lib/shared/navigation.ts: by the time this screen is on, the photo is
+ * uploaded and the analyses are running, so a back control here would offer to
+ * abandon a reading that is already paid for. The way out of a reveal that
+ * stopped is the "Retake photo" control the tests above assert, which appears
+ * only once there is nothing left to wait for.
+ */
+test.describe("the reveal when every reading lands", () => {
+  test("takes the person to their report without being asked", async ({
+    page,
+  }) => {
+    await stubJobs(
+      page,
+      [
+        { id: "job-skin", kind: "skin", status: "succeeded" },
+        { id: "job-tone", kind: "attributes", status: "succeeded" },
+        { id: "job-fitz", kind: "fitzpatrick", status: "succeeded" },
+      ],
+      true,
+    );
+    await page.goto("/analyzing?capture=e2e-complete");
+
+    await page.waitForURL("**/report");
+    await expect(
+      page.getByRole("heading", { name: copy.nav.report, level: 1 }),
+    ).toBeVisible();
+  });
+
+  test("offers no way to abandon the reveal while it is running", async ({
+    page,
+  }) => {
+    await stubJobs(
+      page,
+      [
+        { id: "job-skin", kind: "skin", status: "succeeded" },
+        { id: "job-fitz", kind: "fitzpatrick", status: "running" },
+      ],
+      false,
+    );
+    await page.goto("/analyzing?capture=e2e-no-back");
+
+    await expect(page.getByText(copy.analyzing.readingTone)).toBeVisible();
+    await expect(page.getByRole("link", { name: copy.nav.back })).toHaveCount(0);
+    // And nothing else to leave by either: the retake link belongs to the
+    // stopped state, which this is not.
+    await expect(
+      page.getByRole("link", { name: copy.report.retakePhotoAction }),
+    ).toHaveCount(0);
+  });
+});
 
 test.describe("the reveal when the engine refuses the photo", () => {
   test("says the face was turned away, and offers the camera again", async ({
@@ -119,6 +184,97 @@ test.describe("the reveal when the engine refuses the photo", () => {
     await page.goto("/analyzing?capture=e2e-silent");
 
     await expect(page.getByText(copy.errors.providerTimeout)).toBeVisible();
+  });
+
+  /**
+   * The reveal itself, docs/01-user-flow.md section E step 2: the mask blooms
+   * over the face. What is checked is the compositing, because that is the part
+   * that can be wrong without looking wrong in code.
+   *
+   * The mask the engine returns is a full frame PNG aligned to the picture that
+   * was uploaded, and the still on this screen is that same picture. So the two
+   * layers have to occupy exactly the same box, and the mask has to be read as
+   * alpha, which is the channel the engine draws its marks in (verified against
+   * evals/fixtures/golden/raw/skin).
+   */
+  test("blooms the stored mask over the frame it was measured on", async ({
+    page,
+  }) => {
+    const maskUrl = "https://masks.e2e.invalid/pigmentation.png";
+    await page.route(maskUrl, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "image/png",
+        body: Buffer.from(PIXEL_PNG_BASE64, "base64"),
+      }),
+    );
+    // The still the capture screen hands over, seeded the way it hands it.
+    await page.addInitScript(
+      ([key, value]) => {
+        window.sessionStorage.setItem(key, value);
+      },
+      [
+        CAPTURE_PREVIEW_KEY,
+        JSON.stringify({
+          captureId: "e2e-mask",
+          dataUrl: `data:image/png;base64,${PIXEL_PNG_BASE64}`,
+        }),
+      ] as const,
+    );
+
+    await stubJobs(
+      page,
+      [
+        { id: "job-skin", kind: "skin", status: "succeeded" },
+        { id: "job-fitz", kind: "fitzpatrick", status: "running" },
+      ],
+      false,
+      maskUrl,
+    );
+    await page.goto("/analyzing?capture=e2e-mask");
+    await expect(page.getByText(copy.analyzing.readingTone)).toBeVisible();
+
+    const still = page.locator("main img");
+    await expect(still).toHaveCount(1);
+
+    /*
+     * Measured from the layout boxes rather than from the painted rectangles:
+     * the bloom is a scale animation, so a client rect read mid bloom is 94
+     * percent of the box and says nothing about where the mask sits.
+     */
+    const geometry = await page.evaluate(() => {
+      const layer = Array.from(document.querySelectorAll("main *")).find(
+        (candidate) => getComputedStyle(candidate).animationName !== "none",
+      ) as HTMLElement | undefined;
+      const photo = document.querySelector("main img") as HTMLElement | null;
+      if (layer === undefined || photo === null) {
+        return null;
+      }
+      const boxOf = (element: HTMLElement) => ({
+        left: element.offsetLeft,
+        top: element.offsetTop,
+        width: element.offsetWidth,
+        height: element.offsetHeight,
+      });
+      const style = getComputedStyle(layer);
+      return {
+        image: style.maskImage,
+        mode: style.maskMode,
+        size: style.maskSize,
+        layer: boxOf(layer),
+        photo: boxOf(photo),
+        sameParent: layer.offsetParent === photo.offsetParent,
+      };
+    });
+
+    expect(geometry?.image).toContain("pigmentation.png");
+    expect(geometry?.mode).toBe("alpha");
+    expect(geometry?.size).toBe("cover");
+
+    // The whole of the alignment: one box, in one place, shared with the
+    // picture the mask was measured on.
+    expect(geometry?.sameParent).toBe(true);
+    expect(geometry?.layer).toEqual(geometry?.photo);
   });
 
   test("holds the status line while a core reading can still land", async ({

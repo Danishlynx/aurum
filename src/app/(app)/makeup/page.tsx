@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 
+import { FirstRunInvitation } from "@/components/app-shell/FirstRunInvitation";
 import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { MakeupScreen } from "@/components/makeup/MakeupScreen";
 import { buildMakeupView } from "@/lib/server/profile/makeup";
@@ -48,9 +49,15 @@ export default async function MakeupPage() {
    */
   const view = await buildMakeupView(session, { ground: true });
   if (view === null) {
-    // No profile yet: there are no shades to recommend, so the person goes to
-    // capture rather than to an empty screen.
-    redirect("/capture");
+    // No profile yet: there is no palette, so there are no shades to recommend.
+    // The screen says what it is waiting on instead of redirecting to the camera
+    // without a word. See src/app/(app)/report/page.tsx.
+    return (
+      <div className="flex flex-col gap-8">
+        <ScreenTitle>{copy.nav.makeup}</ScreenTitle>
+        <FirstRunInvitation line={copy.firstRun.makeup} />
+      </div>
+    );
   }
 
   return (

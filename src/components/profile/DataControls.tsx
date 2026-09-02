@@ -32,6 +32,14 @@ import { PROFILE_DOWNLOAD_HREF } from "./profile-client";
  * on this screen is the retention toggle when it is on, and the gold that arms a
  * delete belongs on the confirmation itself, not on the control that asks for
  * it.
+ *
+ * The rows follow the one hairline convention this screen uses: a hairline
+ * between rows and none between a heading and its first row, which is what the
+ * summary and the saved list above already do (first:border-t-0). Before, this
+ * group alone drew a line straight under its heading and gave its two rows 8 and
+ * 16 of clearance, so the same three ingredients were spaced three ways on one
+ * screen. They are 8 either side of every hairline now, which is the 16 between
+ * rows docs/02-design-system.md sets.
  */
 
 type DataControlsProps = {
@@ -62,42 +70,44 @@ export function DataControls({
         {copy.profile.dataHeading}
       </h2>
 
-      <div className="border-t border-raised pt-2">
-        <Toggle
-          id="profile-keep-originals"
-          checked={keepOriginals}
-          onCheckedChange={(next) => {
-            if (saving) {
-              return;
-            }
-            onKeepOriginalsChange(next);
-          }}
-        >
-          {copy.profile.keepOriginalsToggle}
-        </Toggle>
-      </div>
+      <div className="flex flex-col">
+        <div className="border-t border-raised py-2 first:border-t-0 first:pt-0">
+          <Toggle
+            id="profile-keep-originals"
+            checked={keepOriginals}
+            onCheckedChange={(next) => {
+              if (saving) {
+                return;
+              }
+              onKeepOriginalsChange(next);
+            }}
+          >
+            {copy.profile.keepOriginalsToggle}
+          </Toggle>
+        </div>
 
-      <div className="flex flex-col items-start gap-4 border-t border-raised pt-4">
-        <a
-          href={PROFILE_DOWNLOAD_HREF}
-          download
-          className={buttonClassName("quiet")}
-          onClick={(event) => {
-            if (!downloadRefused) {
-              return;
-            }
-            event.preventDefault();
-            onDownloadRefused();
-          }}
-        >
-          {copy.profile.downloadAction}
-        </a>
+        <div className="flex flex-col items-start gap-4 border-t border-raised py-2">
+          <a
+            href={PROFILE_DOWNLOAD_HREF}
+            download
+            className={buttonClassName("quiet")}
+            onClick={(event) => {
+              if (!downloadRefused) {
+                return;
+              }
+              event.preventDefault();
+              onDownloadRefused();
+            }}
+          >
+            {copy.profile.downloadAction}
+          </a>
 
-        {showDelete ? (
-          <Button variant="secondary" onClick={onDeleteRequested}>
-            {copy.profile.deleteAction}
-          </Button>
-        ) : null}
+          {showDelete ? (
+            <Button variant="secondary" onClick={onDeleteRequested}>
+              {copy.profile.deleteAction}
+            </Button>
+          ) : null}
+        </div>
       </div>
     </section>
   );

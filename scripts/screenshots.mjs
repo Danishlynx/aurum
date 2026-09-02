@@ -40,7 +40,19 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const BASE_URL = process.env.AURUM_SHOTS_BASE_URL ?? "http://localhost:3000";
-const OUT_DIR = resolve(process.cwd(), "evals/results/screenshots/final");
+
+/**
+ * Where the frames land. The default is the submission set.
+ *
+ * AURUM_SHOTS_OUT_DIR moves a run somewhere else, which is what a review of a
+ * branch wants: a set taken to check a change is not the set the Devpost page
+ * links, and overwriting the submission frames to look at a margin would lose
+ * the ones taken from the deployment with the founder's own capture behind it.
+ */
+const OUT_DIR = resolve(
+  process.cwd(),
+  process.env.AURUM_SHOTS_OUT_DIR ?? "evals/results/screenshots/final",
+);
 
 /**
  * /analyzing polls for jobs that only exist once a capture has been accepted by

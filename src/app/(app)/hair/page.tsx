@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 
+import { FirstRunInvitation } from "@/components/app-shell/FirstRunInvitation";
 import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { FaceShapeLine } from "@/components/hair/FaceShapeLine";
 import { HairScreen } from "@/components/hair/HairScreen";
@@ -50,9 +51,15 @@ export default async function HairPage() {
 
   const view = await buildHairView(session);
   if (view === null) {
-    // No profile yet: there is no face shape to read from, so the person goes to
-    // capture rather than to an empty screen.
-    redirect("/capture");
+    // No profile yet: there is no face shape and no hair type to choose styles
+    // for. The screen says so and offers the one thing that fixes it, rather
+    // than redirecting to the camera. See src/app/(app)/report/page.tsx.
+    return (
+      <div className="flex flex-col gap-8">
+        <ScreenTitle>{copy.nav.hair}</ScreenTitle>
+        <FirstRunInvitation line={copy.firstRun.hair} />
+      </div>
+    );
   }
 
   return (

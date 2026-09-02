@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 
+import { FirstRunInvitation } from "@/components/app-shell/FirstRunInvitation";
 import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { AvoidList } from "@/components/color/AvoidList";
 import {
@@ -66,9 +67,15 @@ export default async function ColorPage({ searchParams }: ColorPageProps) {
 
   const view = await buildColorView(session);
   if (view === null) {
-    // No profile yet: there is no tone to show, so the person goes to capture
-    // rather than to an empty screen.
-    redirect("/capture");
+    // No profile yet: there is no tone to read a palette from. The screen says
+    // so and offers the one thing that fixes it, rather than redirecting to the
+    // camera without a word. See src/app/(app)/report/page.tsx.
+    return (
+      <div className="flex flex-col gap-8">
+        <ScreenTitle>{copy.nav.color}</ScreenTitle>
+        <FirstRunInvitation line={copy.firstRun.color} />
+      </div>
+    );
   }
 
   const palette = view.palette;

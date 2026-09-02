@@ -9,7 +9,13 @@
  * tab closes, and it is dropped as soon as /analyzing has read it.
  */
 
-const PREVIEW_KEY = "aurum.capture.preview";
+/**
+ * Exported so the reveal's end to end test can seed the still the capture
+ * screen leaves behind, instead of writing this key out a second time.
+ */
+export const CAPTURE_PREVIEW_KEY = "aurum.capture.preview";
+
+const PREVIEW_KEY = CAPTURE_PREVIEW_KEY;
 
 type StoredPreview = {
   readonly captureId: string;

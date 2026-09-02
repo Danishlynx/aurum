@@ -17,6 +17,12 @@ import { categoryLabel, shadeProductType } from "./makeup-content";
  * Item 3 puts the product card for the selected shade under the row. It is the
  * same card the report uses, with the same rule: a listing appears only when a
  * real one came back.
+ *
+ * The section title sits 16 above its swatches, which is the gap every other
+ * section title in the app keeps: the routine groups on /report, "Colors to
+ * wear" and "What this decides" on /color. It was 12 here and on /hair, so the
+ * two try on screens ran a tighter rhythm than the two reading screens for a
+ * reason neither doc gives.
  */
 
 type ShadeRowProps = {
@@ -41,7 +47,7 @@ export function ShadeRow({
   const cardId = `makeup-${category.category}`;
 
   return (
-    <section className="flex flex-col gap-3">
+    <section className="flex flex-col gap-4">
       <h2 className="font-display text-title text-text">{label}</h2>
 
       <div

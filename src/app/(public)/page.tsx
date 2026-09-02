@@ -61,7 +61,14 @@ export default function LandingPage() {
           )}
         </div>
 
-        <div className="border-t border-raised pt-6">
+        {/*
+          The footer hairline sits with the same 32 either side of it that
+          separates every other block on this screen (the gap-8 above it). At 24
+          below, the line sat closer to the judge link than to the demo link
+          above it and read as belonging to the footer rather than dividing the
+          two.
+        */}
+        <div className="border-t border-raised pt-8">
           <Link
             href="/judge"
             className="inline-flex min-h-[44px] items-center font-body text-small text-text-muted underline-offset-4 hover:underline focus-visible:underline"

@@ -37,9 +37,11 @@
     "**/*.mts",
     "**/*.ts",
     "**/*.tsx",
+    ".next/e2e-fixture/types/**/*.ts",
+    ".next/e2e-judge/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next/e2e-judge/types/**/*.ts"
+    ".next/polish-consolidate/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",

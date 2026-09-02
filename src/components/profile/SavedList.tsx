@@ -11,6 +11,10 @@ import type { SavedItemRow } from "@/lib/shared/profile-view";
  * a saved look is its occasion. A row with no detail simply has none, and no
  * filler is written in its place.
  *
+ * The row rhythm is the summary's, 8 above and below the hairline, so the three
+ * lists on this screen read as one inventory rather than three settings groups
+ * (docs/02-design-system.md: "16 between rows").
+ *
  * Empty is one quiet line, with the verb the person needs (docs/01-user-flow.md
  * "Global states and rules": empty screens invite action with one specific
  * verb). There is nothing to link to here that the bottom navigation does not
@@ -42,7 +46,7 @@ export function SavedList({ saved }: SavedListProps) {
           {saved.map((row, index) => (
             <li
               key={rowKey(row, index)}
-              className="flex min-h-[44px] flex-col justify-center gap-2 border-t border-raised py-4 first:border-t-0 first:pt-0"
+              className="flex min-h-[44px] flex-col justify-center gap-2 border-t border-raised py-2 first:border-t-0 first:pt-0"
             >
               <span className="max-w-[70ch] font-body text-body text-text">
                 {row.label}

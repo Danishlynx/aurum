@@ -22,8 +22,8 @@ import { getConsent } from "@/lib/server/session";
  * the jobs runner, so a faster client cannot multiply provider calls.
  *
  * The response is a superset of the shared API contract: every job carries id,
- * kind, status, and error, plus the attempt count and the capture level
- * `complete` flag the reveal screen uses.
+ * kind, status, and error, plus the attempt count, the capture level `complete`
+ * flag the reveal screen uses, and the signed mask that screen blooms.
  */
 
 export const runtime = "nodejs";
@@ -69,6 +69,13 @@ export async function GET(request: NextRequest): Promise<Response> {
       jobs: view.jobs,
       complete: view.complete,
       source: view.source,
+      /*
+       * The mask the reveal blooms, docs/01-user-flow.md section E step 2: a
+       * signed URL for one object this person owns, valid for the read window in
+       * src/lib/server/db/storage.ts, and null until the skin analysis has
+       * produced one.
+       */
+      maskUrl: view.maskUrl,
     });
   });
 }

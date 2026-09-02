@@ -1,5 +1,7 @@
 "use client";
 
+import { cssImageUrl } from "@/components/ui/remote-image";
+
 /**
  * The bloom, docs/01-user-flow.md section E step 2 and docs/02-design-system.md
  * "Motion": masks bloom over 600ms with an ease out curve, then settle over
@@ -11,14 +13,29 @@
  * src/styles/tokens.css, so the settled state is painted on the first frame and
  * the status lines carry the sequence on their own.
  *
- * What is drawn: Leaf, the one translucent gold in the system, over the oval the
- * capture screen asked the person to fill. It is a mask layer with no mask data
- * in it. GET /api/jobs returns job status only, so the per concern mask images
- * that Perfect Corp produces (stored in analyses.mask_paths) are not on this
- * screen yet, and drawing invented concern shapes on someone's face would be
- * inventing a result. The real masks are on /report, where the profile layer
- * hands the screen a signed URL per concern. When the polling response carries
- * mask URLs, this layer takes one and the geometry stops being an oval.
+ * What is drawn: Leaf, the one translucent gold in the system, in the shape the
+ * skin analysis actually found. GET /api/jobs signs the mask stored for the top
+ * ranked concern once that analysis has succeeded, which is the mask /report
+ * opens on as well, so the reveal and the report show one result.
+ *
+ * Alignment. A mask is a full frame PNG the size of the picture that was
+ * uploaded (the golden run masks are 767 by 1024, the capture at a 1024px long
+ * edge), and the still on this screen is that same frame at a 720px long edge.
+ * Same aspect ratio, so cover and center place the two identically inside one
+ * box, and this layer only has to be that box: an absolute layer over the
+ * still, no second crop, no offset.
+ *
+ * How a mask is read: the engine returns its marks in the alpha channel of a
+ * transparent PNG (verified against evals/fixtures/golden/raw/skin, which is 32
+ * bit ARGB, transparent everywhere the concern is not, with the strength of the
+ * mark in alpha). So mask-mode is alpha. Reading them as luminance would fade a
+ * mark by its own color and drop a dark one altogether.
+ *
+ * With no mask stored (a capture whose masks failed to persist, the demo
+ * profile, a poll before the skin analysis is back) the layer falls back to the
+ * oval the capture screen asked the person to fill. That is the shape of the
+ * frame, not a claim about a face: nothing here draws a concern the analysis
+ * did not find.
  */
 
 /**
@@ -49,7 +66,29 @@ const ANIMATION = [
  */
 const FACE_OVAL = "ellipse(33% 20% at 50% 42%)";
 
-export function RevealMask() {
+type RevealMaskProps = {
+  /** A signed URL for the stored mask, or null for the oval. */
+  readonly maskUrl?: string | null;
+};
+
+export function RevealMask({ maskUrl = null }: RevealMaskProps) {
+  const maskValue = maskUrl === null ? null : cssImageUrl(maskUrl);
+
+  const shape =
+    maskValue === null
+      ? { clipPath: FACE_OVAL }
+      : {
+          WebkitMaskImage: maskValue,
+          maskImage: maskValue,
+          WebkitMaskSize: "cover",
+          maskSize: "cover",
+          WebkitMaskPosition: "center",
+          maskPosition: "center",
+          WebkitMaskRepeat: "no-repeat",
+          maskRepeat: "no-repeat",
+          maskMode: "alpha",
+        };
+
   return (
     <>
       {/*
@@ -68,7 +107,7 @@ export function RevealMask() {
         style={{
           animation: ANIMATION,
           backgroundColor: "var(--mask)",
-          clipPath: FACE_OVAL,
+          ...shape,
         }}
       />
     </>

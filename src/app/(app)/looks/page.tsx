@@ -4,6 +4,7 @@ import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { LooksScreen } from "@/components/looks/LooksScreen";
 import { demoProfileIsReadOnly } from "@/lib/server/judge/demo";
 import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
+import { hasAestheticProfile } from "@/lib/server/profile/view";
 import { accessoryTryOnOptions } from "@/lib/server/renders";
 import { getSession } from "@/lib/server/session";
 import { copy } from "@/lib/shared/copy";
@@ -58,6 +59,17 @@ export default async function LooksPage() {
   const accessoryOptions =
     session === null ? [] : await accessoryTryOnOptions(session);
 
+  /*
+   * Whether a photo has ever been read for this session. Unlike /report and
+   * /hair this screen has no null view to learn it from: it composes on
+   * formality alone with no palette, which is why there is no redirect above. So
+   * it asks directly, and the screen puts the first run invitation over the
+   * chips when the answer is no. Fixture mode is the saved demo profile, which
+   * always has a reading.
+   */
+  const hasProfile =
+    fixture || (session !== null && (await hasAestheticProfile(session)));
+
   return (
     <div className="flex flex-col gap-8">
       <ScreenTitle>{copy.nav.looks}</ScreenTitle>
@@ -67,6 +79,7 @@ export default async function LooksPage() {
       <LooksScreen
         readOnly={demoProfileIsReadOnly(session)}
         accessoryOptions={accessoryOptions}
+        hasProfile={hasProfile}
       />
     </div>
   );

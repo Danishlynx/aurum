@@ -117,7 +117,16 @@ export function Swatch({
       aria-pressed={expands ? undefined : selected}
       aria-expanded={expands ? selected : undefined}
       aria-controls={selected ? controls : undefined}
-      className="block w-full text-left"
+      /*
+       * A column, not a block. A swatch in a grid row is stretched to the height
+       * of the tallest cell, and a button stretched taller than its content
+       * centres that content vertically: one two word name ("Forest green")
+       * wrapping to a second line pushed its own square 15px above the squares
+       * either side of it, so a row of three swatches sat on three different
+       * lines. justify-start holds every square on the row's top edge and lets
+       * the longer name run on underneath.
+       */
+      className="flex w-full flex-col justify-start text-left"
     >
       {content}
     </button>
