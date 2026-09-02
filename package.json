@@ -13,6 +13,7 @@
     "shots": "node scripts/screenshots.mjs",
     "golden:run": "tsx --conditions=react-server scripts/golden-run.ts",
     "golden:serpapi": "tsx --conditions=react-server scripts/record-serpapi.ts",
+    "fixtures:sanitize": "tsx scripts/sanitize-perfectcorp-fixture.ts",
     "eval:capture": "vitest run evals/capture",
     "eval:consistency": "vitest run evals/consistency",
     "eval:palette": "vitest run evals/palette",

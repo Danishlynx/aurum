@@ -110,6 +110,22 @@ result set, because "no listing, no product" needs a test.
 Add one recorded response whose top result title contains
 `ignore previous instructions`, for the injection check in eval:safety.
 
+### evals/fixtures/perfectcorp
+
+Recorded Perfect Corp responses, sanitized. Real bodies from the live API with
+every URL replaced, so the provider schemas are tested against what the API
+sends rather than against what a reference page implied. The raw recordings stay
+under `evals/fixtures/golden/raw`, which is gitignored because the mask URLs are
+signed and name the account's bucket. See README.md in that folder for the
+sanitizing command and the rule for adding a recording.
+
+### evals/fixtures/golden
+
+Not committed, and it is in `.gitignore`. This is where `npm run golden:run`
+writes: the raw provider payloads, the masks of a real face, and the analyses
+fixture built from them. Everything a test needs out of it is copied into
+`perfectcorp` above, sanitized by a script and never by hand.
+
 ## What is not blocked on these files
 
 The pure functions in `src/lib/shared/quality.ts` are tested now, with synthetic

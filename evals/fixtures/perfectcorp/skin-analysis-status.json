@@ -1,0 +1,190 @@
+{
+  "status": 200,
+  "data": {
+    "error": null,
+    "results": {
+      "output": [
+        {
+          "ui_score": 80,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 78.38950157165527,
+          "type": "eye_bag",
+          "url": null
+        },
+        {
+          "ui_score": 80,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 78.73285859823227,
+          "type": "tear_trough",
+          "url": null
+        },
+        {
+          "ui_score": 99,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 100,
+          "type": "redness",
+          "url": null
+        },
+        {
+          "ui_score": 99,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 100,
+          "type": "oiliness",
+          "url": null
+        },
+        {
+          "ui_score": 94,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 96.31306433677672,
+          "type": "pore",
+          "url": null
+        },
+        {
+          "ui_score": 75,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 67.75720119476318,
+          "type": "droopy_lower_eyelid",
+          "url": null
+        },
+        {
+          "ui_score": 79,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 75.86102485656738,
+          "type": "droopy_upper_eyelid",
+          "url": null
+        },
+        {
+          "ui_score": 70,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 63.97870481014252,
+          "type": "dark_circle_v2",
+          "url": null
+        },
+        {
+          "ui_score": 96,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 97.68949747085573,
+          "type": "texture",
+          "url": null
+        },
+        {
+          "ui_score": 75,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 68.10075044631958,
+          "type": "firmness",
+          "url": null
+        },
+        {
+          "ui_score": 82,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 83.3111584186554,
+          "type": "radiance",
+          "url": null
+        },
+        {
+          "ui_score": 82,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 91.16998291015624,
+          "type": "age_spot",
+          "url": null
+        },
+        {
+          "ui_score": 94,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 97.16909527778624,
+          "type": "wrinkle",
+          "url": null
+        },
+        {
+          "ui_score": 99,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 100,
+          "type": "acne",
+          "url": null
+        },
+        {
+          "ui_score": 77,
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "raw_score": 68.03492903709412,
+          "type": "moisture",
+          "url": null
+        },
+        {
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "type": "skin_type",
+          "region": "whole",
+          "skin_type": "Normal",
+          "url": null
+        },
+        {
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "type": "skin_type",
+          "region": "t_zone",
+          "skin_type": "Normal",
+          "url": null
+        },
+        {
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "type": "skin_type",
+          "region": "u_zone",
+          "skin_type": "Normal",
+          "url": null
+        },
+        {
+          "score": 85.4,
+          "type": "all",
+          "url": null
+        },
+        {
+          "score": 28,
+          "type": "skin_age",
+          "url": null
+        },
+        {
+          "mask_urls": [
+            "https://example.invalid/mask.png"
+          ],
+          "type": "resize_image",
+          "url": null
+        }
+      ]
+    },
+    "task_status": "success"
+  }
+}
