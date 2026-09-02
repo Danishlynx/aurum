@@ -59,3 +59,9 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Real photos of the founder, never committed (docs/08)
+photo_asset/
+evals/fixtures/faces/*
+!evals/fixtures/faces/.gitkeep
+evals/fixtures/golden/
