@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /** See the note in synthesis.test.ts: this replaces the server-only marker. */
 vi.mock("server-only", () => ({}));
@@ -374,6 +378,103 @@ describe("eval:synthesis, the demo fixture", () => {
   });
 });
 
+/**
+ * The kill switch, and the one documented way past it.
+ *
+ * docs/03-architecture.md, "Credits and caps": PROVIDER_CALLS_ENABLED=false
+ * stops provider calls. It is false in this build, so nothing a visitor does can
+ * spend a Perfect Corp unit or a SerpApi search. The demo seed is not a visitor:
+ * it is a script the human runs by hand for one Claude call, and it says so at
+ * the only place that lets it through
+ * (allowWhenProviderCallsDisabled in src/lib/server/profile/synthesis.ts).
+ *
+ * These three tests are the fence around that option: it works, it changes
+ * nothing for anyone who does not ask for it, and nothing that serves a request
+ * asks for it.
+ */
+describe("eval:synthesis, the kill switch", () => {
+  const KILL_SWITCH = "PROVIDER_CALLS_ENABLED";
+  const OPTION = "allowWhenProviderCallsDisabled";
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[KILL_SWITCH];
+    process.env[KILL_SWITCH] = "false";
+  });
+
+  afterEach(() => {
+    if (saved === undefined) {
+      delete process.env[KILL_SWITCH];
+    } else {
+      process.env[KILL_SWITCH] = saved;
+    }
+  });
+
+  it("refuses every ordinary caller, without calling anything", async () => {
+    const call = vi.fn(async () => modelResult(CLEAN_OUTPUT));
+
+    const result = await runProfileSynthesis(FACTS, { call });
+
+    expect(result.outcome).toBe("fallback_kill_switch");
+    expect(call).not.toHaveBeenCalled();
+    expect(result.narrative?.source).toBe("fallback");
+    expect(result.narrative?.readingModel).toBe(FALLBACK_READING_MODEL);
+  });
+
+  it("lets the caller that asks for it past, and only that one call", async () => {
+    const call = vi.fn(async () => modelResult(CLEAN_OUTPUT));
+
+    const result = await runProfileSynthesis(FACTS, {
+      call,
+      allowWhenProviderCallsDisabled: true,
+    });
+
+    expect(result.outcome).toBe("model");
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("is asked for by the seed script and by nothing that serves a request", () => {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+    const declaredIn = resolve(
+      root,
+      "src",
+      "lib",
+      "server",
+      "profile",
+      "synthesis.ts",
+    );
+
+    const offenders: string[] = [];
+    const stack = [resolve(root, "src")];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (current === undefined) {
+        break;
+      }
+      for (const entry of readdirSync(current)) {
+        const full = resolve(current, entry);
+        if (statSync(full).isDirectory()) {
+          stack.push(full);
+          continue;
+        }
+        if (full === declaredIn || !/\.tsx?$/u.test(full)) {
+          continue;
+        }
+        if (readFileSync(full, "utf8").includes(OPTION)) {
+          offenders.push(relative(root, full).replace(/\\/gu, "/"));
+        }
+      }
+    }
+
+    // Nothing under src asks for it: no route, no job, no screen.
+    expect(offenders).toEqual([]);
+    // And the one caller that does still does, so this check is doing work.
+    expect(
+      readFileSync(resolve(root, "scripts", "seed-demo.ts"), "utf8"),
+    ).toContain(OPTION);
+  });
+});
+
 describe("eval:synthesis, fixture mode", () => {
   it("answers from the fixture without a database and logs that it did", async () => {
     const { buildReportView, isDemoFixtureMode } = await import(
@@ -422,3 +523,4 @@ describe("eval:synthesis, fixture mode", () => {
     }
   });
 });
+

@@ -38,6 +38,9 @@ import type { RoutineStepPlan } from "./routine";
  * and says so in the log line and in readingSource. It never invents a reading
  * and never pretends a model wrote one (docs/03-architecture.md, "Credits and
  * caps", the global kill switch).
+ *
+ * The one documented exception to the kill switch half of that gate is
+ * allowWhenProviderCallsDisabled below, which only the demo seed script sets.
  */
 
 export type SynthesisOutcome =
@@ -206,6 +209,29 @@ export interface SynthesisRunOptions {
    * Defaults to the real one.
    */
   readonly call?: typeof runSynthesis;
+  /**
+   * Runs this one Anthropic call even with PROVIDER_CALLS_ENABLED=false.
+   *
+   * WHO SETS IT: scripts/seed-demo.ts, and nothing else. No route, no job, and
+   * no screen may set it, and evals/synthesis/profile.test.ts fails if one
+   * does.
+   *
+   * WHY IT EXISTS: the kill switch is a spend control over the two metered
+   * providers a request can reach on its own (docs/03-architecture.md, "Credits
+   * and caps"). It is deliberately false in this build so no Perfect Corp unit
+   * and no SerpApi search can be spent by a visitor. The demo seed is not a
+   * visitor: it is a script the human runs by hand, for one Claude call, whose
+   * cost is tokens rather than units, and whose result is written once into the
+   * profile every judge reads. Flipping the switch to seed would open every
+   * other provider path for as long as it stayed flipped, which is the larger
+   * risk of the two.
+   *
+   * WHAT IT DOES NOT DO: it does not reach Perfect Corp or SerpApi, it does not
+   * change what any route does, and it does not survive the process that sets
+   * it. Every other caller keeps the old behaviour exactly: with the switch off
+   * they get the deterministic reading and "fallback_kill_switch".
+   */
+  readonly allowWhenProviderCallsDisabled?: boolean;
 }
 
 /**
@@ -222,7 +248,10 @@ export async function runProfileSynthesis(
   if (facts.ranked.length === 0) {
     return fallbackResult(facts, "fallback_no_concerns");
   }
-  if (!providerCallsEnabled()) {
+  if (
+    !providerCallsEnabled() &&
+    options.allowWhenProviderCallsDisabled !== true
+  ) {
     return fallbackResult(facts, "fallback_kill_switch");
   }
 

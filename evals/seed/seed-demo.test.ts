@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+﻿import { describe, expect, it, vi } from "vitest";
 
 /*
  * scripts/seed-demo.ts imports modules under src/lib/server, every one of which
@@ -18,7 +18,10 @@ import {
   SHOPPING_ENGINE,
 } from "@/lib/server/products";
 import { cachedListingsSchema } from "@/lib/server/products/schemas";
+import { DEMO_FIXTURE_READING } from "@/lib/server/profile/demo-fixture";
 import { DEMO_FIXTURE_WARDROBE } from "@/lib/server/profile/demo-fixture-wardrobe";
+import type { SynthesisCallResult } from "@/lib/server/providers/anthropic";
+import type { SynthesisOutput } from "@/lib/prompts/synthesis";
 import { detectUndertone } from "@/lib/server/profile/undertone";
 import {
   RECORDED_LISTING_RESPONSES,
@@ -56,6 +59,7 @@ import {
   type FileSource,
   type GoldenInput,
   type GoldenManifest,
+  type RunSeedOptions,
   type SeedObject,
   type SeedReport,
   type SeedTableName,
@@ -151,12 +155,18 @@ class RecordingWriter implements SeedWriter {
 function seed(args: {
   readonly writer: SeedWriter;
   readonly golden?: GoldenInput | null;
+  readonly withSynthesis?: boolean;
+  /** Always injected when synthesis is on: no test ever reaches Anthropic. */
+  readonly synthesisCall?: RunSeedOptions["synthesisCall"];
+  readonly dryRun?: boolean;
 }): Promise<SeedReport> {
   return runSeed({
     writer: args.writer,
     mode: args.golden === undefined || args.golden === null ? "fixtures" : "golden",
     golden: args.golden ?? null,
-    dryRun: false,
+    dryRun: args.dryRun ?? false,
+    withSynthesis: args.withSynthesis,
+    synthesisCall: args.synthesisCall,
     log: () => {
       // The tests assert on the report, not on the transcript.
     },
@@ -496,6 +506,7 @@ describe("parseArgs", () => {
       goldenDir: null,
       imagePath: null,
       dryRun: false,
+      withSynthesis: false,
     });
     expect(
       parseArgs([
@@ -510,7 +521,20 @@ describe("parseArgs", () => {
       goldenDir: "evals/fixtures/golden",
       imagePath: "selfie.jpg",
       dryRun: true,
+      withSynthesis: false,
     });
+  });
+
+  it("reads the synthesis flag, and only for a golden run", () => {
+    expect(
+      parseArgs(["--from-golden", "evals/fixtures/golden", "--with-synthesis"])
+        .withSynthesis,
+    ).toBe(true);
+    // A reading is written about the analyses of a real run, and fixtures mode
+    // has none.
+    expect(() =>
+      parseArgs(["--from-fixtures", "--with-synthesis"]),
+    ).toThrow(/needs --from-golden/u);
   });
 
   it("refuses no mode, an unknown flag, and a flag with no value", () => {
@@ -1230,6 +1254,232 @@ describe("runSeed, --from-golden, a summary the fixture lost", () => {
     expect(report.assumptions.join(" ")).not.toContain(
       "carries no attributes summary",
     );
+  });
+});
+
+/**
+ * --with-synthesis, docs/09-build-order-and-demo.md: the demo profile is the one
+ * every judge reads, and its reading was the deterministic fallback, which is a
+ * list of findings rather than the paragraph the product promises. The flag asks
+ * the model for it through the same pipeline a live capture uses.
+ *
+ * Every test here injects the model call, so no test reaches Anthropic, spends a
+ * token, or needs a key. What is asserted is the wiring: which path produced the
+ * reading, what the model was asked about, and what the row carries when the
+ * answer is refused.
+ */
+describe("runSeed, --from-golden --with-synthesis", () => {
+  /** The injected model call, typed from the option the script exposes. */
+  type SynthesisCall = NonNullable<RunSeedOptions["synthesisCall"]>;
+
+  /** The reading a passing answer carries, distinct from the fallback text. */
+  const MODEL_OUTPUT: SynthesisOutput = {
+    reading: DEMO_FIXTURE_READING,
+    top_concern_key: "pigmentation",
+    top_concern_location: "cheekbones",
+    going_well: "Your texture and pores are in good shape.",
+    routine: [
+      {
+        period: "morning",
+        step_name: "gel cleanser",
+        concern_key: "oiliness",
+        why: "A gel cleanser lifts oil without stripping the surface.",
+        product_query: "gel cleanser for oiliness combination",
+      },
+      {
+        period: "morning",
+        step_name: "niacinamide serum",
+        concern_key: "pigmentation",
+        why: "Niacinamide is used for the look of gathered color.",
+        product_query: "niacinamide serum for pigmentation combination",
+      },
+      {
+        period: "morning",
+        step_name: "broad spectrum sunscreen",
+        concern_key: "pigmentation",
+        why: "Sunscreen is used every morning, and it matters most for tone.",
+        product_query: "broad spectrum sunscreen for pigmentation combination",
+      },
+      {
+        period: "night",
+        step_name: "pore serum",
+        concern_key: "pores",
+        why: "A gentle serum is used for the look of open pores.",
+        product_query: "niacinamide serum for pores combination",
+      },
+    ],
+  };
+
+  /** The same answer with a banned word and an exclamation mark in it. */
+  const DIRTY_OUTPUT: SynthesisOutput = {
+    ...MODEL_OUTPUT,
+    reading:
+      "Your skin is combination: oilier through the T zone, drier on the cheeks. " +
+      "Pigmentation on the cheekbones is the main thing to work on, and this routine will cure it. " +
+      "Your texture is flawless.",
+  };
+
+  function modelResult(output: SynthesisOutput): SynthesisCallResult {
+    return {
+      value: output,
+      model: "claude-sonnet-5",
+      usage: { inputTokens: 900, outputTokens: 300 },
+      attempts: 1,
+      promptVersion: "synthesis-v2",
+      readingModel: "claude-sonnet-5/synthesis-v2",
+    };
+  }
+
+  it("writes the model reading and says where it came from", async () => {
+    const writer = new RecordingWriter();
+    const call = vi.fn<SynthesisCall>().mockResolvedValue(modelResult(MODEL_OUTPUT));
+
+    const report = await seed({
+      writer,
+      golden: goldenInput(),
+      withSynthesis: true,
+      synthesisCall: call,
+    });
+
+    expect(report.ok).toBe(true);
+    expect(call).toHaveBeenCalledTimes(1);
+
+    const row = writer.rowsOf("aesthetic_profiles")[0];
+    expect(row?.reading).toBe(DEMO_FIXTURE_READING);
+    expect(row?.reading_model).toBe("claude-sonnet-5/synthesis-v2");
+    expect(report.assumptions.join(" ")).toContain("written by the model");
+    // The step note names the model on the row, so a summary read on its own
+    // says which of the two readings landed.
+    const step = report.steps.find((entry) => entry.id === "aesthetic-profile");
+    expect(step?.note).toContain("claude-sonnet-5/synthesis-v2");
+  });
+
+  it("asks the model about the profile it is seeding, not a hand written one", async () => {
+    const writer = new RecordingWriter();
+    const call = vi.fn<SynthesisCall>().mockResolvedValue(modelResult(MODEL_OUTPUT));
+
+    await seed({
+      writer,
+      golden: goldenInput(),
+      withSynthesis: true,
+      synthesisCall: call,
+    });
+
+    const input = call.mock.calls[0]?.[0];
+    const row = writer.rowsOf("aesthetic_profiles")[0];
+    const concerns = row?.concerns as { key: string; rank: number }[];
+
+    // The same ranking, tone, and age the row carries, because both are read
+    // from the analyses this run inserted (goldenProfileFacts).
+    expect(input?.concerns[0]?.key).toBe(concerns[0]?.key);
+    expect(input?.concerns[0]?.rank).toBe(1);
+    expect(input?.concerns.map((entry) => entry.key)).toEqual(
+      concerns.map((entry) => entry.key),
+    );
+    expect(input?.skinToneHex).toBe(row?.skin_tone_hex);
+    expect(input?.skinAge).toBe(row?.skin_age);
+    expect(input?.undertone).toBe(row?.undertone);
+    // A judge session and the demo profile have no name to greet.
+    expect(input?.firstName).toBeNull();
+  });
+
+  it("keeps the deterministic reading when both answers fail the checks", async () => {
+    const writer = new RecordingWriter();
+    const call = vi.fn<SynthesisCall>().mockResolvedValue(modelResult(DIRTY_OUTPUT));
+
+    const report = await seed({
+      writer,
+      golden: goldenInput(),
+      withSynthesis: true,
+      synthesisCall: call,
+    });
+
+    // Generate, refuse, regenerate once with the violations listed, refuse
+    // again, fall back: docs/06-safety-privacy.md, "Regeneration and fallback".
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(call.mock.calls[1]?.[1]?.lexiconViolations?.join(" ")).toContain(
+      "flawless",
+    );
+
+    const row = writer.rowsOf("aesthetic_profiles")[0];
+    expect(row?.reading).not.toBe(DEMO_FIXTURE_READING);
+    expect(String(row?.reading_model).startsWith("fallback/")).toBe(true);
+
+    const notes = report.assumptions.join(" ");
+    expect(notes).toContain("refused by the safety and shape checks");
+    // The violations are printed, so a run that fell back says what it failed.
+    expect(notes).toContain("flawless");
+  });
+
+  it("still writes a profile when the model call itself fails", async () => {
+    const writer = new RecordingWriter();
+    const call = vi.fn<SynthesisCall>().mockRejectedValue(new Error("no answer"));
+
+    const report = await seed({
+      writer,
+      golden: goldenInput(),
+      withSynthesis: true,
+      synthesisCall: call,
+    });
+
+    expect(report.ok).toBe(true);
+    const row = writer.rowsOf("aesthetic_profiles")[0];
+    expect(String(row?.reading).length).toBeGreaterThan(0);
+    expect(String(row?.reading_model).startsWith("fallback/")).toBe(true);
+    expect(report.assumptions.join(" ")).toContain("did not come back");
+  });
+
+  it("asks for nothing without the flag", async () => {
+    const writer = new RecordingWriter();
+    const call = vi.fn<SynthesisCall>().mockResolvedValue(modelResult(MODEL_OUTPUT));
+
+    await seed({ writer, golden: goldenInput(), synthesisCall: call });
+
+    expect(call).not.toHaveBeenCalled();
+    expect(
+      String(writer.rowsOf("aesthetic_profiles")[0]?.reading_model).startsWith(
+        "fallback/",
+      ),
+    ).toBe(true);
+  });
+
+  it("asks for nothing in a dry run, and says a real run would", async () => {
+    const writer = new RecordingWriter();
+    const call = vi.fn<SynthesisCall>().mockResolvedValue(modelResult(MODEL_OUTPUT));
+
+    const report = await seed({
+      writer,
+      golden: goldenInput(),
+      withSynthesis: true,
+      synthesisCall: call,
+      dryRun: true,
+    });
+
+    expect(call).not.toHaveBeenCalled();
+    expect(report.assumptions.join(" ")).toContain("Dry run");
+  });
+
+  it("spends nothing when a recorded reading is already beside the run", async () => {
+    const writer = new RecordingWriter();
+    const call = vi.fn<SynthesisCall>().mockResolvedValue(modelResult(MODEL_OUTPUT));
+
+    const report = await seed({
+      writer,
+      golden: goldenInput({
+        [RECORDED_READING_FILE]: {
+          reading: "A recorded reading.",
+          readingModel: "test-model/v1",
+        },
+      }),
+      withSynthesis: true,
+      synthesisCall: call,
+    });
+
+    expect(call).not.toHaveBeenCalled();
+    expect(writer.rowsOf("aesthetic_profiles")[0]?.reading).toBe(
+      "A recorded reading.",
+    );
+    expect(report.assumptions.join(" ")).toContain("no model call was made");
   });
 });
 

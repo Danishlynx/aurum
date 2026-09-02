@@ -155,6 +155,11 @@ It prints the five most present concerns before it exits. On the recorded face t
 
 After it, `npm run seed:demo -- --from-golden evals/fixtures/golden --image evals/fixtures/golden/input-01.jpg` has a real skin analysis to seed. It still has no tone and no attributes, so the palette half of the demo profile needs A13 to run `tone` and `attr`.
 
+Two things about that seed command, both from later fixes:
+
+1. Run `npm run db:migrate` first. The seed writes `aesthetic_profiles.saved_makeup`, which migration 0013 adds, and an insert against a database without it fails the whole run.
+2. Add `--with-synthesis` to have the reading written by Claude through the same pipeline a live capture uses, instead of the deterministic fallback. It is one call, billed in tokens rather than in provider units, and it needs `ANTHROPIC_API_KEY` set. It passes `PROVIDER_CALLS_ENABLED=false` for that one call and nothing else, which `evals/synthesis/profile.test.ts` fences. Without the flag the row carries the fallback reading, exactly as it did before. Either way the run summary says which of the two landed, and lists what the model failed when it was refused. `--dry-run` never calls anything.
+
 **A14. Record the SerpApi responses.**
 
     npm run golden:serpapi -- --max 12

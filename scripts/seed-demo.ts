@@ -112,8 +112,14 @@ import {
   DEMO_FIXTURE_GARMENT_IMAGES,
   DEMO_FIXTURE_WARDROBE,
 } from "@/lib/server/profile/demo-fixture-wardrobe";
-import { readProfileFacts } from "@/lib/server/profile/facts";
+import { readProfileFacts, type ProfileFacts } from "@/lib/server/profile/facts";
 import { buildFallbackNarrative } from "@/lib/server/profile/fallback";
+import type { runSynthesis } from "@/lib/server/providers/anthropic";
+import { isAnthropicConfigured } from "@/lib/server/providers/anthropic";
+import {
+  runProfileSynthesis,
+  type SynthesisOutcome,
+} from "@/lib/server/profile/synthesis";
 import {
   RECORDED_LISTING_RESPONSES,
   RECORDED_LISTINGS_GL,
@@ -1261,29 +1267,17 @@ function recomputedMakeupParams(input: GoldenInput): unknown {
 }
 
 /**
- * The aesthetic profile rebuilt from the real analyses.
+ * The facts the profile row is built from, read out of the analyses rows this
+ * run is about to insert.
  *
- * This is the whole point of the golden run: the row a judge reads is built by
- * readProfileFacts, derivePalette, and buildFallbackNarrative, which are the
- * same three the live app builds a profile with
- * (src/lib/server/profile/build.ts). Nothing here restates a number that those
- * functions can derive, so the seeded profile and a live profile cannot drift.
- *
- * The one thing the live path does that this cannot is call Claude for the
- * reading. If a reading.json sits beside the run, it is used and its model id is
- * stored; otherwise the deterministic fallback writes it, and reading_model says
- * "fallback/..." so the report screen reports it as the fallback, truthfully.
+ * One function, used by the row builder and by the synthesis runner below, so
+ * the reading a model writes is written about exactly the profile that is
+ * stored beside it: the same ranking, the same zones, the same tone. A second
+ * way of assembling them would be a way for the two to disagree.
  */
-export function buildGoldenProfileRow(
-  input: GoldenInput,
+export function goldenProfileFacts(
   analyses: readonly Insert<"analyses">[],
-  /**
-   * The shades the seeded makeup render was made with, from buildRendersSeed.
-   * They are stored as the saved look so /makeup opens on the try on this run
-   * paid for rather than on shades nothing has been rendered for.
-   */
-  savedMakeup: MakeupRenderParams | null = null,
-): Insert<"aesthetic_profiles"> {
+): ProfileFacts {
   const rows: Analysis[] = analyses.map((row) => ({
     // readProfileFacts never reads the analysis id, so an insert row that has
     // not been given one yet still reads correctly here.
@@ -1302,7 +1296,169 @@ export function buildGoldenProfileRow(
     updated_at: "",
   }));
 
-  const facts = readProfileFacts({ captureId: DEMO_CAPTURE_ID, analyses: rows });
+  return readProfileFacts({ captureId: DEMO_CAPTURE_ID, analyses: rows });
+}
+
+/** The reading a row is written with, and where it came from. */
+export interface SeedReading {
+  readonly reading: string;
+  readonly readingModel: string;
+}
+
+export interface SeedSynthesisResult {
+  /** Null unless the model wrote a reading that passed every check. */
+  readonly reading: SeedReading | null;
+  readonly outcome: SynthesisOutcome;
+  /** What the model answer failed, when it failed. Never a person's data. */
+  readonly problems: readonly string[];
+}
+
+/**
+ * The reading, asked of the model, exactly as a live capture asks for it.
+ *
+ * docs/09-build-order-and-demo.md wants the demo profile to be the real thing,
+ * and the reading is the one field on it that a deterministic rule cannot write
+ * well: the fallback is a list of findings ("Main concern: dark circles ...")
+ * and the product is a consultant's paragraph. Everything about this call is the
+ * live path: the same runProfileSynthesis, so the same prompt, the same
+ * temperature, the same one retry with the violations listed, and the same
+ * lexicon gate. Only two things are the script's own: the facts come from the
+ * rows this run is inserting rather than from a query, and the kill switch is
+ * bypassed for this one call (see allowWhenProviderCallsDisabled in
+ * src/lib/server/profile/synthesis.ts).
+ *
+ * A failure of any kind is not a failure of the seed. The narrative falls back
+ * to the deterministic reading, exactly as it does in the app, and the run
+ * summary says which of the two the row carries.
+ *
+ * firstName is null: the demo profile belongs to no auth user and has no name,
+ * which is what readFirstName answers for a judge session too.
+ */
+export async function runSeedSynthesis(args: {
+  readonly analyses: readonly Insert<"analyses">[];
+  /** Injected by the unit tests. Undefined uses the real Anthropic call. */
+  readonly call?: typeof runSynthesis;
+}): Promise<SeedSynthesisResult> {
+  const result = await runProfileSynthesis(goldenProfileFacts(args.analyses), {
+    firstName: null,
+    call: args.call,
+    allowWhenProviderCallsDisabled: true,
+  });
+
+  const narrative = result.narrative;
+  const reading =
+    narrative !== null && narrative.source === "model"
+      ? { reading: narrative.reading, readingModel: narrative.readingModel }
+      : null;
+
+  return { reading, outcome: result.outcome, problems: result.problems };
+}
+
+/**
+ * What the run says about where the reading came from.
+ *
+ * Every branch says which of the two readings the row carries and why, because
+ * a demo profile that quietly carries the fallback while the operator believes
+ * a model wrote it is the failure this whole flag exists to make visible.
+ */
+function readingLinesFor(result: SeedSynthesisResult): string[] {
+  const problems =
+    result.problems.length === 0 ? "" : ` What it failed: ${result.problems.join("; ")}.`;
+
+  switch (result.outcome) {
+    case "model":
+      return [
+        `The reading was written by the model and passed every check on the first answer (${String(result.reading?.readingModel)}).`,
+      ];
+    case "model_after_retry":
+      return [
+        `The reading was written by the model on the second answer (${String(result.reading?.readingModel)}). The first was sent back with its violations listed, which is the documented regeneration in docs/06-safety-privacy.md.${problems}`,
+      ];
+    case "fallback_checks_failed":
+      return [
+        `The model answered twice and both were refused by the safety and shape checks, so the row carries the deterministic reading.${problems}`,
+      ];
+    case "fallback_provider_error":
+      return [
+        "The model call did not come back, so the row carries the deterministic reading. Nothing was written from a half answer.",
+      ];
+    case "fallback_not_configured":
+      return [
+        "ANTHROPIC_API_KEY is not set, so no call was made and the row carries the deterministic reading.",
+      ];
+    case "fallback_kill_switch":
+      return [
+        "The synthesis was refused by the kill switch, which this script is meant to be allowed past. Nothing was called and the row carries the deterministic reading.",
+      ];
+    case "fallback_no_concerns":
+      return [
+        "There are no ranked concerns to write a reading about, so none was asked for.",
+      ];
+  }
+}
+
+/**
+ * The reading for this run, asked of the model when --with-synthesis is set.
+ *
+ * A reading.json beside the run is answered first and costs nothing: it is a
+ * reading somebody already has, buildGoldenProfileRow already prefers it, and
+ * paying for one to throw it away would be waste.
+ */
+async function synthesizeReading(args: {
+  readonly golden: GoldenInput;
+  readonly analyses: readonly Insert<"analyses">[];
+  readonly call?: typeof runSynthesis;
+}): Promise<{
+  readonly reading: SeedReading | null;
+  readonly lines: readonly string[];
+}> {
+  if (args.golden.source.exists(RECORDED_READING_FILE)) {
+    return {
+      reading: null,
+      lines: [
+        `A recorded reading sits beside the run in ${RECORDED_READING_FILE}, so no model call was made and that reading is the one written.`,
+      ],
+    };
+  }
+
+  const result = await runSeedSynthesis({
+    analyses: args.analyses,
+    call: args.call,
+  });
+  return { reading: result.reading, lines: readingLinesFor(result) };
+}
+
+/**
+ * The aesthetic profile rebuilt from the real analyses.
+ *
+ * This is the whole point of the golden run: the row a judge reads is built by
+ * readProfileFacts, derivePalette, and buildFallbackNarrative, which are the
+ * same three the live app builds a profile with
+ * (src/lib/server/profile/build.ts). Nothing here restates a number that those
+ * functions can derive, so the seeded profile and a live profile cannot drift.
+ *
+ * The reading is the one field with three possible sources, in this order:
+ * a model reading from --with-synthesis when one passed every check, a
+ * reading.json sitting beside the run, and otherwise the deterministic
+ * fallback, whose reading_model says "fallback/..." so the report reports it as
+ * the fallback, truthfully.
+ */
+export function buildGoldenProfileRow(
+  input: GoldenInput,
+  analyses: readonly Insert<"analyses">[],
+  extras: {
+    /**
+     * The shades the seeded makeup render was made with, from buildRendersSeed.
+     * They are stored as the saved look so /makeup opens on the try on this run
+     * paid for rather than on shades nothing has been rendered for.
+     */
+    readonly savedMakeup?: MakeupRenderParams | null;
+    /** A model reading from --with-synthesis, when one was produced. */
+    readonly reading?: SeedReading | null;
+  } = {},
+): Insert<"aesthetic_profiles"> {
+  const savedMakeup = extras.savedMakeup ?? null;
+  const facts = goldenProfileFacts(analyses);
 
   const palette =
     facts.skinToneHex === null || facts.undertone === null
@@ -1318,6 +1474,12 @@ export function buildGoldenProfileRow(
   const narrative = buildFallbackNarrative(facts);
   let reading = narrative?.reading ?? null;
   let readingModel = narrative?.readingModel ?? null;
+
+  const generated = extras.reading ?? null;
+  if (generated !== null) {
+    reading = generated.reading;
+    readingModel = generated.readingModel;
+  }
 
   if (input.source.exists(RECORDED_READING_FILE)) {
     const parsed = recordedReadingSchema.safeParse(
@@ -1602,6 +1764,18 @@ export interface RunSeedOptions {
   readonly golden: GoldenInput | null;
   readonly dryRun: boolean;
   readonly log: (line: string) => void;
+  /**
+   * --with-synthesis: ask the model for the reading before the profile row is
+   * written. One Anthropic call, in golden mode only, and only when a key is
+   * configured. Without it the row carries the deterministic reading, which is
+   * what every run before this flag existed wrote.
+   */
+  readonly withSynthesis?: boolean;
+  /**
+   * The model call, injected by the unit tests so no test ever reaches the
+   * provider. Undefined uses the real one.
+   */
+  readonly synthesisCall?: typeof runSynthesis;
 }
 
 /**
@@ -1799,10 +1973,41 @@ export async function runSeed(options: RunSeedOptions): Promise<SeedReport> {
     {
       const current = step("aesthetic-profile");
       log("[8/9] Aesthetic profile");
+
+      /*
+       * The reading, before the row is built. A model reading is asked for only
+       * with --with-synthesis, in golden mode, and only when nothing better is
+       * already recorded beside the run: a reading.json is a reading somebody
+       * already has, and paying for a second one to discard it would be waste.
+       */
+      let generated: SeedReading | null = null;
+      if (golden !== null && options.withSynthesis === true && options.dryRun) {
+        // A dry run reads no environment and touches nothing, and a model call
+        // is both. Saying what would be asked for is the honest substitute.
+        const line =
+          "Dry run: --with-synthesis was given, so a real run would make one Anthropic call here for the reading. Nothing was called.";
+        log(`      ${line}`);
+        golden.notes.push(line);
+      } else if (golden !== null && options.withSynthesis === true) {
+        const attempt = await synthesizeReading({
+          golden,
+          analyses: analysisRows,
+          call: options.synthesisCall,
+        });
+        generated = attempt.reading;
+        for (const line of attempt.lines) {
+          log(`      ${line}`);
+          golden.notes.push(line);
+        }
+      }
+
       const row =
         golden === null
           ? buildFixtureProfileRow()
-          : buildGoldenProfileRow(golden, analysisRows, savedMakeup);
+          : buildGoldenProfileRow(golden, analysisRows, {
+              savedMakeup,
+              reading: generated,
+            });
       await insert("aesthetic_profiles", [row]);
       current.status = "written";
       current.rows = 1;
@@ -1810,10 +2015,14 @@ export async function runSeed(options: RunSeedOptions): Promise<SeedReport> {
         savedMakeup === null
           ? ""
           : ` The makeup look the run rendered (${savedMakeup.categories.map((entry) => `${entry.category} ${entry.shadeHex}`).join(", ")}) is saved on the row, so /makeup opens on it and finds that render instead of asking for one.`;
+      const readingNote =
+        golden === null
+          ? ""
+          : ` The reading is ${String(row.reading_model ?? "not written")}.`;
       current.note =
         golden === null
           ? "Built from the checked in fixture. capture_id is null because no photo exists."
-          : `Rebuilt from the real analyses through readProfileFacts, derivePalette, and the fallback narrative. capture_id ${captureWritten ? "points at the golden capture" : "is null"}.${savedLookNote}`;
+          : `Rebuilt from the real analyses through readProfileFacts, derivePalette, and the fallback narrative. capture_id ${captureWritten ? "points at the golden capture" : "is null"}.${readingNote}${savedLookNote}`;
       log(`      ${current.note}`);
     }
 
@@ -2056,16 +2265,20 @@ export interface SeedArgs {
   /** The same selfie the golden run was given, since the run never copies it. */
   readonly imagePath: string | null;
   readonly dryRun: boolean;
+  /** --with-synthesis: one Anthropic call for the reading. Golden mode only. */
+  readonly withSynthesis: boolean;
 }
 
 export const USAGE = [
   "Usage:",
   "  npm run seed:demo -- --from-fixtures [--dry-run]",
-  "  npm run seed:demo -- --from-golden <dir> [--image <path>] [--dry-run]",
+  "  npm run seed:demo -- --from-golden <dir> [--image <path>] [--with-synthesis] [--dry-run]",
   "",
   "  --from-fixtures   Seed the checked in demo fixture. No capture, no analyses, no renders.",
   "  --from-golden     Seed everything, reading the golden run output in <dir>.",
   "  --image           The selfie the golden run was given. Only needed when <dir> holds no capture.<ext>.",
+  "  --with-synthesis  Ask Claude for the reading, through the same pipeline the app uses. One call,",
+  "                    billed in tokens. Without it the row carries the deterministic reading.",
   "  --dry-run         Print every row and object that would be written. Touches nothing, needs no keys.",
 ].join("\n");
 
@@ -2081,6 +2294,7 @@ export function parseArgs(argv: readonly string[]): SeedArgs {
   let goldenDir: string | null = null;
   let imagePath: string | null = null;
   let dryRun = false;
+  let withSynthesis = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -2102,6 +2316,10 @@ export function parseArgs(argv: readonly string[]): SeedArgs {
       index += 1;
       continue;
     }
+    if (arg === "--with-synthesis") {
+      withSynthesis = true;
+      continue;
+    }
     if (arg === "--dry-run") {
       dryRun = true;
       continue;
@@ -2115,7 +2333,16 @@ export function parseArgs(argv: readonly string[]): SeedArgs {
       "Pick a mode: --from-fixtures or --from-golden <dir>.",
     );
   }
-  return { mode, goldenDir, imagePath, dryRun };
+  if (withSynthesis && mode !== "golden") {
+    // There is nothing to write a reading about in fixtures mode: the fixture
+    // reading is quoted from docs/01-user-flow.md and the row carries no
+    // analyses to synthesize from.
+    throw new SeedError(
+      "read arguments",
+      "--with-synthesis needs --from-golden: a reading is written about the analyses of a real run.",
+    );
+  }
+  return { mode, goldenDir, imagePath, dryRun, withSynthesis };
 }
 
 /**
@@ -2201,6 +2428,18 @@ async function main(argv: readonly string[]): Promise<number> {
       );
       const env = readSeedEnv();
       console.log(`Project: ${originOf(env.NEXT_PUBLIC_SUPABASE_URL)}`);
+      /*
+       * Said here rather than beside the mode, because the key is only known
+       * once .env.local has been read, and a dry run never reads it. The step
+       * itself says what it did either way.
+       */
+      if (args.withSynthesis) {
+        console.log(
+          isAnthropicConfigured()
+            ? "Synthesis: one Anthropic call for the reading, through the same pipeline a live capture uses. Billed in tokens, not in provider units, and the kill switch is passed for this one call only."
+            : "Synthesis: asked for, but ANTHROPIC_API_KEY is not set, so nothing will be called and the deterministic reading is what lands.",
+        );
+      }
       writer = supabaseWriter(
         createClient<Database, "public">(
           env.NEXT_PUBLIC_SUPABASE_URL,
@@ -2227,6 +2466,7 @@ async function main(argv: readonly string[]): Promise<number> {
     mode: args.mode,
     golden,
     dryRun: args.dryRun,
+    withSynthesis: args.withSynthesis,
     log: (line) => {
       console.log(line);
     },
