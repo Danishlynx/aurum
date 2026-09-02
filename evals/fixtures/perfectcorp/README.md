@@ -38,8 +38,18 @@ all sharing only `type`:
 | `all` and `skin_age` | `score`, no mask | 85.4 overall, 28 years |
 | `resize_image` | `mask_urls` only | the frame the engine worked from |
 
-`ui_score` is a condition score on the provider's scale: higher is better. The
-99 on redness in this file means clear skin, not severe redness.
+`ui_score` is a condition score on the provider's scale: higher is healthier.
+The 99 on redness in this file means clear skin, not severe redness, and the 70
+on `dark_circle_v2` is the lowest score on this face and therefore its most
+present concern.
+
+Our scale runs the other way, so `presenceScoreFor` in
+`src/lib/shared/concerns.ts` inverts every concern once, at the normalization
+boundary: `presence = 100 - ui_score`, rounded, clamped 1 to 100. moisture and
+radiance are not inverted, because they are read as levels rather than as
+problems and `skin-type.ts` reads moisture as hydration. The numbers in this
+file are the provider's, untouched: the inversion is tested against them in
+`evals/golden/perfectcorp-envelope.test.ts`.
 
 ## Sanitizing, and the rule behind it
 

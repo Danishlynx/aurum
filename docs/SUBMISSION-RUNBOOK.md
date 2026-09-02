@@ -139,7 +139,7 @@ Three things to know before running it:
 
 At the priced table one default pass is `skinAnalysis` (16) plus `facialColorTones` (20) plus `faceAttributes` at one attribute (10), so 46 units. The account held 40 and 16 of them are already spent, so a full default pass no longer fits: `skin` is done (see A13a) and what is left to buy is `tone` and `attr` at 30 units against a balance of 24. Top the account up, or run `--steps attr` alone, before deciding.
 
-Afterwards: read `manifest.json` for what each call actually cost and put those numbers in the credit table, confirm the `expected` block in `live-01.json` by eye (it is derived from the recording itself, which is why the file flags it), and use the recorded set for A8.
+Afterwards: read `manifest.json` for what each call actually cost and put those numbers in the credit table, read the `expected` block in `live-01.json` against the face in the photo, and use the recorded set for A8. The block is derived through the same functions the app runs (`presenceScoreFor`, `topConcernKeyOf`, `skinTypeFromZones`, `detectUndertone`), so it is an assertion rather than a description of a run, and a value that looks wrong means the derivation is wrong.
 
 **A13a. Ingest a response that was already paid for.** Spends nothing.
 
@@ -150,6 +150,8 @@ A task that succeeds on the provider's side is charged whether or not we can rea
 bash: `npm run golden:run -- --ingest-skin evals/fixtures/golden/raw/skin/result.json --image evals/fixtures/golden/input-01.jpg`
 
 It makes no HTTP request of any kind, so it needs no key and does not read `PROVIDER_CALLS_ENABLED`. It parses the saved body with the same schema the poll uses, normalizes it with the same `normalize()` the jobs layer calls, copies the mask PNGs saved beside the response (the result URLs have expired and a download would be a request), writes `live-01.json`, `raw/skin.json`, and `masks/`, and rewrites `manifest.json` so the skin step reads `succeeded` at its 16 measured units. The image has to be the one the task ran on: the manifest records its SHA 256 and the ingest refuses a different file rather than attaching a reading to the wrong face.
+
+It prints the five most present concerns before it exits. On the recorded face those are dark circles 30, eyelid droop 25, firmness 25, eye bags 20, and tear trough 20, on our scale where a higher number means more present. The provider's own figures for the same five are 70, 75, 75, 80, and 80, on its scale where a higher number means healthier. Masks are stored for those concerns in that order.
 
 After it, `npm run seed:demo -- --from-golden evals/fixtures/golden --image evals/fixtures/golden/input-01.jpg` has a real skin analysis to seed. It still has no tone and no attributes, so the palette half of the demo profile needs A13 to run `tone` and `attr`.
 

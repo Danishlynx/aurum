@@ -104,6 +104,7 @@ import {
   runGoldenRun,
   runSkinIngest,
   topConcernKeyOf,
+  topPresenceLines,
   type GoldenOptions,
   type GoldenRunIo,
 } from "../../scripts/golden-run";
@@ -795,14 +796,27 @@ describe("golden-run fixture", () => {
     );
   });
 
-  it("says it is not synthetic and flags the expectations for review", async () => {
+  it("says it is not synthetic, and no longer asks for the expectations to be reviewed", async () => {
     const recorder = await runFullPass();
     const golden = fixtureFrom(recorder) as {
       readonly synthetic: boolean;
-      readonly _golden: { readonly expectedNeedsHumanReview: boolean };
+      readonly _golden: Record<string, unknown>;
     };
     expect(golden.synthetic).toBe(false);
-    expect(golden._golden.expectedNeedsHumanReview).toBe(true);
+    /*
+     * The flag existed because the expected block was derived through a
+     * normalizer that read the provider's scale backwards, so the top concern
+     * was whatever the face was doing best. With the inversion in place the
+     * derivation is the same one the app runs, so the block is an assertion
+     * rather than a description of a run.
+     */
+    expect(golden._golden.expectedNeedsHumanReview).toBeUndefined();
+    expect(Object.keys(golden._golden).sort()).toEqual([
+      "captureId",
+      "imageSha256",
+      "recordedOn",
+      "stepsRun",
+    ]);
   });
 
   it("leaves fitzpatrick and hair type null, because neither was run", async () => {
@@ -845,6 +859,32 @@ describe("golden-run fixture", () => {
         ],
       }),
     ).toBe("pigmentation");
+  });
+
+  it("never leads on a quality concern, however high its level", () => {
+    /*
+     * moisture and radiance carry a level, not a problem. A radiant, well
+     * hydrated face would otherwise be told that radiance is the thing to work
+     * on, which is what the recorded face produced before this rule existed.
+     */
+    expect(
+      topConcernKeyOf({
+        concerns: [
+          { providerType: "radiance", key: "radiance", uiScore: 82, rawScore: 83 },
+          { providerType: "moisture", key: "moisture", uiScore: 77, rawScore: 68 },
+          { providerType: "dark_circle_v2", key: "dark_circles", uiScore: 30, rawScore: 64 },
+        ],
+      }),
+    ).toBe("dark_circles");
+  });
+
+  it("breaks a tie on the key, so the same response always names the same concern", () => {
+    const concerns = [
+      { providerType: "firmness", key: "firmness", uiScore: 25, rawScore: 68 },
+      { providerType: "droopy_lower_eyelid", key: "eyelid_droop", uiScore: 25, rawScore: 67 },
+    ];
+    expect(topConcernKeyOf({ concerns })).toBe("eyelid_droop");
+    expect(topConcernKeyOf({ concerns: [...concerns].reverse() })).toBe("eyelid_droop");
   });
 
   it("refuses to build a fixture with no skin analysis behind it", () => {
@@ -1127,6 +1167,42 @@ describe("golden-run ingest", () => {
     const recorder = makeRecorder();
     const io = makeIo({ recorder, image: IMAGE, files: ingestFiles() });
     expect(readPreviousManifest(io, "out")).toBeNull();
+  });
+
+  it("prints the top concerns the way the report will order them", () => {
+    const recorder = makeRecorder();
+    runSkinIngest(
+      ingestOptions(),
+      makeIo({ recorder, image: IMAGE, files: ingestFiles() }),
+    );
+    const printed = recorder.out.join("\n");
+    /*
+     * Deduped, so the two eyelid rows appear once, and with no quality concern
+     * in sight even though radiance is the highest number in the summary.
+     */
+    expect(printed).toMatch(/dark_circles 30 \(provider dark_circle_v2 ui 70\)/u);
+    expect(printed).toMatch(/eyelid_droop 25 \(provider droopy_lower_eyelid ui 75\)/u);
+    expect(printed).not.toMatch(/droopy_upper_eyelid/u);
+    expect(printed).not.toMatch(/radiance/u);
+  });
+
+  it("keeps one line per concern and skips the qualities", () => {
+    expect(
+      topPresenceLines(
+        {
+          concerns: [
+            { providerType: "radiance", key: "radiance", uiScore: 82, rawScore: 83 },
+            { providerType: "droopy_upper_eyelid", key: "eyelid_droop", uiScore: 21, rawScore: 75 },
+            { providerType: "droopy_lower_eyelid", key: "eyelid_droop", uiScore: 25, rawScore: 67 },
+            { providerType: "dark_circle_v2", key: "dark_circles", uiScore: 30, rawScore: 64 },
+          ],
+        },
+        5,
+      ),
+    ).toEqual([
+      "dark_circles 30 (provider dark_circle_v2 ui unknown)",
+      "eyelid_droop 25 (provider droopy_lower_eyelid ui unknown)",
+    ]);
   });
 
   it("finds a saved mask by provider type and extension", () => {

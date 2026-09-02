@@ -82,7 +82,8 @@ import {
   type PerfectCorpEndpointKey,
   type TaskSnapshot,
 } from "@/lib/server/providers/perfectcorp";
-import { mapProviderConcern } from "@/lib/shared/concerns";
+import { isConcernKey, isQualityConcern } from "@/lib/shared/concerns";
+import { skinTypeFromZones } from "@/lib/server/profile/skin-type";
 import { buildMakeupCategoryViews } from "@/lib/server/profile/shades";
 import { detectUndertone } from "@/lib/server/profile/undertone";
 import { hairstyleTemplateFor } from "@/lib/server/renders/hair";
@@ -785,7 +786,10 @@ export function assertNoSecret(text: string, env: EnvValues = process.env): void
 const concernSchema = z.object({
   providerType: z.string(),
   key: z.string().nullable(),
+  /** Presence, 1 to 100. Not the provider's number: see presenceScoreFor. */
   uiScore: z.number(),
+  /** The provider's ui_score as it arrived. Only the golden fixture has it. */
+  providerUiScore: z.number().nullable().optional(),
   rawScore: z.number(),
 });
 
@@ -850,28 +854,44 @@ export const goldenFixtureSchema = z.object({
     captureId: z.string(),
     imageSha256: z.string(),
     stepsRun: z.array(z.string()),
-    /**
-     * True while nobody has checked the expected block by hand. It is filled
-     * from the recording itself, which makes it a description of the run rather
-     * than a label to test the run against.
-     */
-    expectedNeedsHumanReview: z.literal(true),
   }),
 });
 
 export type GoldenFixture = z.infer<typeof goldenFixtureSchema>;
 
-/** The concern with the highest score, which is what the report leads on. */
+/**
+ * The concern the report leads on: the most present one.
+ *
+ * Two rules, both of which cost a wrong answer to learn:
+ *
+ * 1. Scores are read as presence. They are inverted off the provider's scale in
+ *    src/lib/server/jobs/analysis.ts before they ever reach a summary, so the
+ *    highest score here really is the biggest problem.
+ * 2. Quality concerns are skipped. moisture and radiance carry a level rather
+ *    than a problem, and the report never leads on either, so a radiant face
+ *    must not come back with "radiance" as the thing to work on.
+ */
 export function topConcernKeyOf(summary: unknown): string | null {
   const parsed = z
     .object({ concerns: z.array(concernSchema) })
     .safeParse(summary);
-  if (!parsed.success || parsed.data.concerns.length === 0) {
+  if (!parsed.success) {
     return null;
   }
-  const best = [...parsed.data.concerns].sort(
-    (left, right) => right.uiScore - left.uiScore,
-  )[0];
+  const rankable = parsed.data.concerns.filter(
+    (concern) =>
+      concern.key === null ||
+      !isConcernKey(concern.key) ||
+      !isQualityConcern(concern.key),
+  );
+  const best = [...rankable].sort((left, right) => {
+    if (left.uiScore !== right.uiScore) {
+      return right.uiScore - left.uiScore;
+    }
+    const leftKey = left.key ?? left.providerType;
+    const rightKey = right.key ?? right.providerType;
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  })[0];
   if (best === undefined) {
     return null;
   }
@@ -887,11 +907,41 @@ export interface BuildFixtureInput {
 }
 
 /**
+ * The skin type the recording itself reports, from the provider's own zones.
+ *
+ * Only the provider's answer is used. The derived reading in
+ * src/lib/server/profile/skin-type.ts is a fallback for faces where the
+ * provider said nothing, and putting a derived value into a file named
+ * "expected" would be asserting our own guess back at ourselves.
+ */
+function expectedSkinTypeFrom(skin: unknown): string | null {
+  const parsed = z
+    .object({
+      skinTypeZones: z
+        .object({
+          tZone: z.string().nullable(),
+          cheeks: z.string().nullable(),
+        })
+        .nullable()
+        .optional(),
+    })
+    .safeParse(skin);
+  const zones = parsed.success ? (parsed.data.skinTypeZones ?? null) : null;
+  if (zones === null) {
+    return null;
+  }
+  return skinTypeFromZones(zones.tZone, zones.cheeks)?.label ?? null;
+}
+
+/**
  * Turns what came back into the fixture the eval loaders read.
  *
- * Every expectation is derived from the recording, which is circular by nature,
- * so the file says so in _golden.expectedNeedsHumanReview and the runbook step
- * asks a person to confirm the values before anything is asserted against them.
+ * Every expectation is derived from the recording rather than typed in, which
+ * is only honest as long as the derivation is the same one the app runs. It is:
+ * the scores come through presenceScoreFor, the top concern through
+ * topConcernKeyOf, the skin type from the provider's own zones, and the
+ * undertone through detectUndertone. Anything the recording does not answer
+ * stays null rather than being filled in.
  */
 export function buildGoldenFixture(input: BuildFixtureInput): GoldenFixture {
   const skin = input.summaries.skin ?? null;
@@ -909,6 +959,7 @@ export function buildGoldenFixture(input: BuildFixtureInput): GoldenFixture {
   const skinToneHex = z
     .object({ skinColor: z.string() })
     .safeParse(attributes);
+  const skinType = expectedSkinTypeFrom(skin);
 
   const fixture = {
     id: input.options.fixtureId,
@@ -916,16 +967,19 @@ export function buildGoldenFixture(input: BuildFixtureInput): GoldenFixture {
     label: "Golden run, the founder's own capture",
     note:
       "Recorded once from a real Perfect Corp response against a consented selfie. " +
-      "Every value here came off the wire; nothing is hand written. The Fitzpatrick and " +
-      "hair type summaries are null because those two analyses were not run, which is a " +
-      "budget decision recorded in docs/SUBMISSION-RUNBOOK.md, not a failure.",
+      "Every value here came off the wire; nothing is hand written. Concern scores are " +
+      "presence, 1 to 100, inverted from the provider's condition scale by presenceScoreFor " +
+      "in src/lib/shared/concerns.ts, with the provider's own figure kept beside each one as " +
+      "providerUiScore. The Fitzpatrick and hair type summaries are null because those two " +
+      "analyses were not run, which is a budget decision recorded in " +
+      "docs/SUBMISSION-RUNBOOK.md, not a failure.",
     expected: {
       fitzpatrick: null,
       undertone: skinToneHex.success
         ? detectUndertone(skinToneHex.data.skinColor)
         : null,
       topConcernKey,
-      skinType: null,
+      skinType: skinType as GoldenFixture["expected"]["skinType"],
     },
     summaries: {
       skin: skin as GoldenFixture["summaries"]["skin"],
@@ -939,7 +993,6 @@ export function buildGoldenFixture(input: BuildFixtureInput): GoldenFixture {
       captureId: input.options.captureId,
       imageSha256: input.imageSha256,
       stepsRun: [...input.stepsRun],
-      expectedNeedsHumanReview: true as const,
     },
   };
 
@@ -1777,24 +1830,17 @@ export function runSkinIngest(options: GoldenOptions, io: GoldenRunIo): number {
   outputs.push(rawName);
 
   /*
-   * The first provider type that claimed each concern key, in the order
-   * normalize walked them, so the mask files here are the ones normalize chose.
+   * normalize() chose the eight masks and named the provider type each came
+   * back under, so the files are found from its answer rather than by working
+   * the selection rule out a second time here and hoping the two agree.
    */
-  const typeForKey = new Map<string, string>();
-  for (const concern of reading.concerns) {
-    const key = mapProviderConcern(concern.type);
-    if (key !== null && !typeForKey.has(key)) {
-      typeForKey.set(key, concern.type);
-    }
-  }
-
   const maskDirectory = dirname(sourcePath);
   const missingMasks: string[] = [];
   if (normalized.maskUrls.length > 0) {
     io.ensureDir(resolve(options.outDir, "masks"));
   }
   for (const mask of normalized.maskUrls) {
-    const providerType = typeForKey.get(mask.key);
+    const providerType = mask.providerType;
     const found =
       providerType === undefined
         ? null
@@ -1869,10 +1915,13 @@ export function runSkinIngest(options: GoldenOptions, io: GoldenRunIo): number {
     `Recorded as ${String(units)} units, which the original task already spent. This ingest spent nothing.`,
   );
   io.log("");
+  io.log("The five most present concerns, on our scale where higher means more present:");
+  for (const line of topPresenceLines(normalized.summary, 5)) {
+    io.log(`  ${line}`);
+  }
   io.log(
-    "Read the fixture before seeding from it. ui_score is a condition score on the provider's " +
-      "scale, where higher is better, and our ranking treats a higher score as more present. " +
-      "expected.topConcernKey in the fixture is therefore not yet a claim about this face.",
+    "These are inverted from the provider's condition scale, where higher means healthier. " +
+      "Masks are stored for the most present concerns, in that order.",
   );
   return 0;
 }
@@ -1880,6 +1929,56 @@ export function runSkinIngest(options: GoldenOptions, io: GoldenRunIo): number {
 function previousTaskId(previous: PreviousManifest | null): string | null {
   const call = previous?.calls?.find((entry) => entry.step === INGEST_STEP);
   return call?.taskId ?? null;
+}
+
+/**
+ * The most present concerns, for the operator to read before seeding.
+ *
+ * Deduped by concern key, keeping the more present of two rows, because the
+ * summary carries one row per provider entry and the report does not: the
+ * provider scores both eyelids and the report shows one eyelid droop. Without
+ * the dedupe this list says eyelid_droop twice and pushes a real concern off
+ * the bottom, which is not what the person will be shown.
+ *
+ * Quality concerns are left out for the same reason topConcernKeyOf leaves them
+ * out: their number is a level, not a problem.
+ */
+export function topPresenceLines(summary: unknown, count: number): string[] {
+  const parsed = z
+    .object({ concerns: z.array(concernSchema) })
+    .safeParse(summary);
+  if (!parsed.success) {
+    return ["The summary carried no concerns."];
+  }
+
+  const best = new Map<string, z.infer<typeof concernSchema>>();
+  for (const concern of parsed.data.concerns) {
+    if (
+      concern.key !== null &&
+      isConcernKey(concern.key) &&
+      isQualityConcern(concern.key)
+    ) {
+      continue;
+    }
+    const name = concern.key ?? concern.providerType;
+    const existing = best.get(name);
+    if (existing === undefined || concern.uiScore > existing.uiScore) {
+      best.set(name, concern);
+    }
+  }
+
+  return [...best.entries()]
+    .sort((left, right) => {
+      if (left[1].uiScore !== right[1].uiScore) {
+        return right[1].uiScore - left[1].uiScore;
+      }
+      return left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0;
+    })
+    .slice(0, count)
+    .map(
+      ([name, concern]) =>
+        `${name} ${String(concern.uiScore)} (provider ${concern.providerType} ui ${String(concern.providerUiScore ?? "unknown")})`,
+    );
 }
 
 /* ------------------------------------------------------------------ */

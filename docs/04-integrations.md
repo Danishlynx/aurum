@@ -95,7 +95,17 @@ The task status envelope, confirmed live on 2026-09-02 against skin analysis and
 
 data.error is present and null on success, not absent. The first version of the status schema declared it as an optional string, which rejects null, so the first real task was charged 16 units and recorded as failed. A recorded copy of that body, with every signed URL replaced, is committed at evals/fixtures/perfectcorp/skin-analysis-status.json and is what the schema is tested against. The same envelope is assumed for the other task APIs until one of them is run.
 
-The skin analysis result, also confirmed live: data.results.output is a mixed list. A scored concern carries ui_score, raw_score, and mask_urls. skin_type appears once per zone (whole, t_zone, u_zone) with region and skin_type and no score. "all" and "skin_age" carry their number under score and have no mask. "resize_image" carries the frame the engine worked from. ui_score is a condition score: higher is better.
+The skin analysis result, also confirmed live: data.results.output is a mixed list. A scored concern carries ui_score, raw_score, and mask_urls. skin_type appears once per zone (whole, t_zone, u_zone) with region and skin_type and no score. "all" and "skin_age" carry their number under score and have no mask. "resize_image" carries the frame the engine worked from.
+
+The scale runs the opposite way to ours, and this is the most consequential thing on this page. ui_score is a condition score: higher is healthier. On the measured face redness and acne both came back at 99, meaning almost none of either, and dark_circle_v2 came back at 70, the lowest score on the face and therefore its most present concern. Everything downstream reads a score as presence: docs/01 section F draws the bars as concern intensity and the tone first ranking picks the biggest problem. So the inversion happens once, at the boundary, in presenceScoreFor in src/lib/shared/concerns.ts:
+
+    presence = 100 - ui_score, rounded, clamped 1 to 100
+
+ui_score is the base rather than raw_score because it is the provider's own calibrated display figure; raw_score is stored beside it for provenance and nothing ranks on it. The provider's original number is kept on every concern as providerUiScore, so a stored summary can always be traced back to the response.
+
+The two quality concerns are the exception and are not inverted. moisture and radiance are read as levels rather than as problems, and src/lib/server/profile/skin-type.ts reads moisture as hydration ("below 45 means dry cheeks"), so inverting it would call a well hydrated face dry. On the measured face moisture stays 77 and means well hydrated, while oiliness becomes 1 and means an oil free T zone, which is what makes the derived skin type agree with the provider's own zones for the first time.
+
+Masks are stored for the most present concerns rather than for the first ones the provider happened to list, up to the eight the storage budget allows, because the report's mask toggles sit on the concern rows.
 
 What is actually on the account: 40 units, read from GET /s2s/v1.0/client/credit on 2026-09-02 (one grant, type ApiPaygToken, expiry 2027-09-02). That is the hard ceiling, and it is smaller than one capture set of the known rows alone (10 plus 20 plus 10 to 30, before skin analysis). It is also exactly DAILY_CAP_PERFECTCORP_UNITS, so the daily cap is not a cap at all today, and JUDGE_CREDITS_CAP=120 is three times the units that exist. Two consequences, both open: the account needs topping up before any judge session can run for real, and until it is, every screenshot and eval has to come from a fixture. Check the live number with GET /api/health rather than guessing.
 

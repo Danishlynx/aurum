@@ -29,10 +29,12 @@ import {
 } from "@/lib/server/providers/perfectcorp";
 import { PERFECTCORP_ENDPOINTS } from "@/lib/server/providers/perfectcorp/endpoints";
 import { readSkinSummary } from "@/lib/server/profile/summaries";
+import { deriveSkinType, skinTypeFromZones } from "@/lib/server/profile/skin-type";
 import {
   VERIFIED_SD_SKIN_CONCERN_TYPES,
   isNonConcernOutputType,
   mapProviderConcern,
+  rankConcernsToneFirst,
 } from "@/lib/shared/concerns";
 
 import {
@@ -248,6 +250,7 @@ describe("normalize over the real body", () => {
       readonly providerType: string;
       readonly key: string | null;
       readonly uiScore: number;
+      readonly providerUiScore: number;
       readonly rawScore: number;
     }>;
     readonly skinAge: number | null;
@@ -260,6 +263,83 @@ describe("normalize over the real body", () => {
     expect(summary.concerns.every((entry) => entry.key !== null)).toBe(true);
   });
 
+  it("inverts the provider's condition score into a presence score", () => {
+    const byKey = new Map(summary.concerns.map((entry) => [entry.key, entry]));
+
+    /*
+     * The provider says redness 99, meaning almost none of it. Read as presence
+     * that has to become almost nothing, or the report leads on the clearest
+     * skin on the face and tells the person to treat it.
+     */
+    expect(byKey.get("redness")?.providerUiScore).toBe(99);
+    expect(byKey.get("redness")?.uiScore).toBe(1);
+    expect(byKey.get("acne")?.uiScore).toBe(1);
+    expect(byKey.get("oiliness")?.uiScore).toBe(1);
+
+    // The lowest condition score on this face is its most present concern.
+    expect(byKey.get("dark_circles")?.providerUiScore).toBe(70);
+    expect(byKey.get("dark_circles")?.uiScore).toBe(30);
+
+    // The provider's own figure is kept beside ours, never overwritten.
+    for (const entry of summary.concerns) {
+      expect(typeof entry.providerUiScore).toBe("number");
+    }
+  });
+
+  it("leaves the two quality concerns on the provider's scale", () => {
+    const byKey = new Map(summary.concerns.map((entry) => [entry.key, entry]));
+    /*
+     * moisture is read as hydration by src/lib/server/profile/skin-type.ts
+     * ("below 45 means dry cheeks"), so inverting it would call this well
+     * hydrated face dry. radiance reads the same way.
+     */
+    expect(byKey.get("moisture")?.uiScore).toBe(77);
+    expect(byKey.get("moisture")?.providerUiScore).toBe(77);
+    expect(byKey.get("radiance")?.uiScore).toBe(82);
+  });
+
+  it("ranks the face the way the report will show it", () => {
+    /*
+     * Through the real path, not a sort written for the test: readSkinSummary
+     * drops the qualities and rankConcernsToneFirst dedupes the two eyelid rows
+     * to the more present one, exactly as the report does.
+     */
+    const read = readSkinSummary(normalized.summary);
+    const ranked = rankConcernsToneFirst(
+      (read?.concerns ?? []).map((concern) => ({
+        key: concern.key,
+        score: concern.score,
+      })),
+      null,
+    );
+    expect(ranked.slice(0, 5).map((entry) => [entry.key, entry.score])).toEqual([
+      ["dark_circles", 30],
+      ["eyelid_droop", 25],
+      ["firmness", 25],
+      ["eye_bags", 20],
+      ["tear_trough", 20],
+    ]);
+    // The clearest skin on the face ends up last, which is the whole point.
+    expect(ranked.slice(-3).map((entry) => entry.key).sort()).toEqual([
+      "acne",
+      "oiliness",
+      "redness",
+    ]);
+  });
+
+  it("stores a mask for every one of the top ranked concerns it can", () => {
+    const read = readSkinSummary(normalized.summary);
+    const ranked = rankConcernsToneFirst(
+      (read?.concerns ?? []).map((concern) => ({
+        key: concern.key,
+        score: concern.score,
+      })),
+      null,
+    );
+    const stored = normalized.maskUrls.map((mask) => mask.key);
+    expect(stored).toEqual(ranked.slice(0, stored.length).map((entry) => entry.key));
+  });
+
   it("fills skin age and the overall score, which used to come back null", () => {
     expect(summary.skinAge).toBe(28);
     expect(summary.overallScore).toBe(85.4);
@@ -269,12 +349,43 @@ describe("normalize over the real body", () => {
     expect(summary.skinTypeZones).toEqual({ tZone: "balanced", cheeks: "balanced" });
   });
 
-  it("stores one mask per concern key, never two for the same key", () => {
+  it("stores the masks of the most present concerns, in that order", () => {
+    /*
+     * Provider order used to decide this, which spent the first five slots on
+     * eye bags, tear trough, redness, oiliness and pores, two of them at a
+     * presence of 1, and left the most present concern on the face without a
+     * mask at all. The report's toggles sit on the concern rows, so the masks
+     * follow the same order the rows do.
+     */
+    expect(normalized.maskUrls.map((mask) => mask.key)).toEqual([
+      "dark_circles",
+      "eyelid_droop",
+      "firmness",
+      "eye_bags",
+      "tear_trough",
+      "dark_spots",
+      "pores",
+      "wrinkles",
+    ]);
+  });
+
+  it("stores one mask per concern key, and keeps the more present eyelid", () => {
     const keys = normalized.maskUrls.map((mask) => mask.key);
     expect(new Set(keys).size).toBe(keys.length);
-    expect(keys).toContain("eyelid_droop");
-    expect(keys).toContain("dark_circles");
     expect(keys.length).toBeLessThanOrEqual(8);
+    /*
+     * Both eyelids map to eyelid_droop. The lower lid is at a presence of 25
+     * against the upper lid's 21, so the lower one takes the single slot.
+     */
+    const eyelid = normalized.maskUrls.find((mask) => mask.key === "eyelid_droop");
+    expect(eyelid?.providerType).toBe("droopy_lower_eyelid");
+  });
+
+  it("drops the clearest concerns rather than the worst ones", () => {
+    const keys = normalized.maskUrls.map((mask) => mask.key);
+    for (const clear of ["redness", "oiliness", "acne", "texture"]) {
+      expect(keys).not.toContain(clear);
+    }
   });
 
   it("hands the profile layer a summary it can read back", () => {
@@ -289,6 +400,30 @@ describe("normalize over the real body", () => {
       "moisture",
       "radiance",
     ]);
+  });
+
+  it("gives the profile layer a skin type that matches what the provider said", () => {
+    const read = readSkinSummary(normalized.summary);
+    expect(read).not.toBeNull();
+    /*
+     * The provider called all three zones Normal. The derived fallback now
+     * agrees with it, which it did not before: oiliness came through at 99 and
+     * the rule read that as an oily T zone, when 99 on the provider's scale
+     * means no oiliness at all. Inverted it is 1, and moisture is untouched at
+     * 77, so the face reads balanced either way.
+     */
+    expect(
+      deriveSkinType({
+        concerns: read?.concerns ?? [],
+        qualities: read?.qualities ?? [],
+      })?.label,
+    ).toBe("balanced");
+    expect(
+      skinTypeFromZones(
+        read?.zonesFromProvider?.tZone ?? null,
+        read?.zonesFromProvider?.cheeks ?? null,
+      )?.label,
+    ).toBe("balanced");
   });
 });
 
