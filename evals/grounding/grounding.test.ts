@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+
+import { liveEvalsOptedIn, realFetch } from "../../vitest.setup";
 
 /**
  * The grounding layer is server code, so every module in it starts with
@@ -870,13 +872,27 @@ describe("eval:grounding, the recorded responses the demo serves", () => {
 
 /**
  * The live check from docs/05-evals.md: "HEAD requests to the top 20 listing
- * URLs return 2xx or 3xx." It runs only when SERPAPI_API_KEY is set, and it
- * spends exactly one search. Everything above runs without a key.
+ * URLs return 2xx or 3xx." It spends exactly one SerpApi search. Everything
+ * above runs without a key and without the network.
+ *
+ * Two things have to be true before it runs, and holding a key is only one of
+ * them. AURUM_LIVE_EVALS=true is the other, because eval:grounding is part of
+ * eval:smoke, which gates every pull request: a key left in a shell must never
+ * make that gate spend a search, and it must never make it fail either. The
+ * runner also takes fetch away from every suite (vitest.setup.ts), so opting in
+ * puts the real one back here and nowhere else.
  */
 const LIVE_KEY = process.env.SERPAPI_API_KEY;
-const RUN_LIVE = typeof LIVE_KEY === "string" && LIVE_KEY.length > 0;
+const RUN_LIVE =
+  liveEvalsOptedIn() && typeof LIVE_KEY === "string" && LIVE_KEY.length > 0;
 
 describe("eval:grounding, live listing check (on demand)", () => {
+  beforeAll(() => {
+    if (RUN_LIVE) {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it.skipIf(!RUN_LIVE)(
     "answers a HEAD request on every top listing URL with 2xx or 3xx",
     async () => {

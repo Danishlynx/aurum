@@ -16,7 +16,27 @@
  * A suite that genuinely wants to watch a request can still assign its own
  * vi.fn() to globalThis.fetch: this file runs before the suite, so the suite's
  * assignment wins for the file it is in.
+ *
+ * The two suites that are meant to spend money on purpose (the live listing
+ * check in eval:grounding and the model judged rubric in eval:synthesis) import
+ * realFetch below and put it back for themselves, and only when their opt in
+ * variable is set. Holding a key is never enough: a key sitting in a shell must
+ * never turn a gate red or spend anything.
  */
+
+/** The runtime's own fetch, captured before it is taken away. */
+export const realFetch: typeof fetch = globalThis.fetch;
+
+/**
+ * Whether a suite is allowed to put realFetch back and spend real money.
+ * Set AURUM_LIVE_EVALS=true to opt in, one command at a time.
+ */
+export const LIVE_EVALS_ENV = "AURUM_LIVE_EVALS";
+
+export function liveEvalsOptedIn(): boolean {
+  return process.env[LIVE_EVALS_ENV] === "true";
+}
+
 const refuseNetwork = (input: unknown): never => {
   const target =
     typeof input === "string"

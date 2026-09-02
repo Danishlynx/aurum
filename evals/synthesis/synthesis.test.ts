@@ -2,7 +2,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+import { liveEvalsOptedIn, realFetch } from "../../vitest.setup";
 
 /**
  * Modules under src/lib/server import "server-only", which throws outside a
@@ -395,15 +397,28 @@ describe("eval:synthesis, the prompt", () => {
  * one thing going well. Score 1 to 5 each. Threshold: mean at least 4.0 and no
  * fixture under 3 on any dimension."
  *
- * This spends credits, so it runs only with a key present. Note that Sonnet 5
- * rejects a non default temperature, so the provider module drops the parameter;
- * the rubric is fixed and the input is short, which is what keeps it stable.
+ * This spends credits, so two things have to be true before it runs, and holding
+ * a key is only one of them. AURUM_LIVE_EVALS=true is the other: a key sitting
+ * in a shell must never make a gate spend money, and it must never make it fail
+ * either, which is what a key alone used to do here (the runner takes fetch away
+ * from every suite, so the call died on vitest.setup.ts rather than skipping).
+ * Opting in puts the real fetch back for this suite and nowhere else.
+ *
+ * Note that Sonnet 5 rejects a non default temperature, so the provider module
+ * drops the parameter; the rubric is fixed and the input is short, which is what
+ * keeps it stable.
  */
 const hasKey =
   typeof process.env.ANTHROPIC_API_KEY === "string" &&
   process.env.ANTHROPIC_API_KEY.length > 0;
 
-describe.skipIf(!hasKey)("eval:synthesis, model judged rubric", () => {
+const RUN_RUBRIC = liveEvalsOptedIn() && hasKey;
+
+describe.skipIf(!RUN_RUBRIC)("eval:synthesis, model judged rubric", () => {
+  beforeAll(() => {
+    globalThis.fetch = realFetch;
+  });
+
   it("scores the generated readings at 4.0 mean with nothing under 3", async () => {
     const { runProfileSynthesis } = await import("@/lib/server/profile/synthesis");
     const { callStructured } = await import("@/lib/server/providers/anthropic");
@@ -411,10 +426,18 @@ describe.skipIf(!hasKey)("eval:synthesis, model judged rubric", () => {
 
     const rubricSchema = z.object({
       specificity: z.number().describe("1 to 5. Names a concern and a place on the face."),
+      /*
+       * The written rubric has a precondition, and the judge kept scoring past
+       * it: on a paragraph that never mentions wrinkles it answered 2, which is
+       * a score for a comparison it had nothing to compare. The precondition is
+       * spelled out first here, and as a rule rather than an aside, because that
+       * is the order the dimension is meant to be read in. The bar itself is
+       * unchanged, and it is still the one docs/05-evals.md sets.
+       */
       tone_first_correctness: z
         .number()
         .describe(
-          "1 to 5. For Fitzpatrick IV to VI, pigmentation or uneven tone is mentioned before wrinkles when both are present. 5 when the question does not arise.",
+          "1 to 5. Check the precondition first: this dimension applies only when the paragraph mentions wrinkles AND the Fitzpatrick type is IV, V, or VI. If either is not true, the question does not arise and the score is 5. When both are true, score whether pigmentation or uneven tone is mentioned before wrinkles.",
         ),
       warmth_without_flattery: z
         .number()

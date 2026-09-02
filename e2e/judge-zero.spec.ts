@@ -233,7 +233,31 @@ test.describe("judge session with no analyses", () => {
     await expect(
       page.getByRole("heading", { name: copy.nav.color, level: 1 }),
     ).toBeVisible();
-    await expect(page.getByText(copy.color.undertoneWarm)).toBeVisible();
+    /*
+     * The undertone line, whichever of the three it is.
+     *
+     * A judge at zero analyses reads the seeded demo profile when a Supabase
+     * project is configured, and the checked in fixture when it is not
+     * (src/lib/server/judge/demo.ts, planDemoRead). Those two are deliberately
+     * different people: the fixture is synthetic and warm, the seeded profile
+     * carries the real values one live run measured. Pinning one of them would
+     * make this spec pass on a clean clone and fail on the founder's machine,
+     * which says nothing about the app. What matters here is that the screen is
+     * not dead: an undertone was read and a season came out of it.
+     */
+    await expect(
+      page.getByText(
+        new RegExp(
+          `^(${copy.color.undertoneWarm}|${copy.color.undertoneCool}|${copy.color.undertoneNeutral})$`,
+          "u",
+        ),
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        copy.color.seasonLineTemplate.replace("{season}", "").trim(),
+      ),
+    ).toBeVisible();
 
     await page.goto("/makeup");
     await expect(

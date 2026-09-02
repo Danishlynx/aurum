@@ -640,14 +640,21 @@ test.describe("looks", () => {
   });
 
   /**
-   * Item 3, and the honest absence under it. The demo wardrobe's only shoes are
+   * Item 3, and the grounding rule under it. The demo wardrobe's only shoes are
    * casual loafers, which a wedding guest look cannot use, so every look for
-   * that occasion reports a shoes gap. Nothing was fetched from SerpApi, so the
-   * card under the line names the piece and says "No listing found near you
-   * yet" rather than showing a product nobody found
-   * (docs/06-safety-privacy.md, "Grounding and honesty").
+   * that occasion reports a shoes gap.
+   *
+   * What the card under that line is allowed to show is fixed by
+   * docs/06-safety-privacy.md, "Grounding and honesty": a product only ever
+   * appears with a real listing that came back with a source URL, and a gap with
+   * nothing behind it says "No listing found near you yet" instead. The demo
+   * profile carries a recorded Google Shopping response for this query
+   * (src/lib/server/profile/recorded-listings), so the grounded branch is the
+   * one that renders here. This asserts the rule rather than one of its two
+   * outcomes: every listing carries a link out and the not sponsored line, and
+   * nothing is shown that has neither a link nor the absence line.
    */
-  test("shows the shoes gap without inventing a listing for it", async ({
+  test("shows the shoes gap grounded in a real listing, or not at all", async ({
     page,
   }) => {
     await page.goto("/looks?occasion=wedding_guest");
@@ -664,14 +671,31 @@ test.describe("looks", () => {
       top.getByRole("heading", { name: copy.looks.shopTheGapHeading }),
     ).toBeVisible();
 
-    // The gap line names the piece. With no listing carrying a distance, it is
-    // the variant that drops the "near you" claim.
+    // The gap line names the piece.
     await expect(top.getByText(/You do not own shoes yet\./u)).toBeVisible();
 
-    await expect(top.getByText(copy.productCard.noListing).first()).toBeVisible();
-    await expect(
-      top.getByRole("link", { name: copy.productCard.viewListing }),
-    ).toHaveCount(0);
+    const listings = top.getByRole("link", {
+      name: copy.productCard.viewListing,
+    });
+    const listingCount = await listings.count();
+
+    if (listingCount === 0) {
+      await expect(
+        top.getByText(copy.productCard.noListing).first(),
+      ).toBeVisible();
+      return;
+    }
+
+    // Every listing shown points at a real source and says where it came from.
+    for (let index = 0; index < listingCount; index += 1) {
+      await expect(listings.nth(index)).toHaveAttribute(
+        "href",
+        /^https:\/\//u,
+      );
+    }
+    await expect(top.getByText(copy.productCard.notSponsored)).toHaveCount(
+      listingCount,
+    );
   });
 
   /**
