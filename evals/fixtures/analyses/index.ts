@@ -59,6 +59,19 @@ const fixtureSchema = z.object({
         concerns: z.array(concernSchema),
         skinAge: z.number().nullable(),
         overallScore: z.number().nullable(),
+        /**
+         * The provider's own skin type by zone. None of the twelve synthetic
+         * files carry it, which is why it is optional: it arrived with the
+         * first real response, on 2026-09-02, and the golden fixture written
+         * from that response does carry it.
+         */
+        skinTypeZones: z
+          .object({
+            tZone: z.string().nullable(),
+            cheeks: z.string().nullable(),
+          })
+          .nullable()
+          .optional(),
       })
       .nullable(),
     fitzpatrick: z.object({ fitzpatrick: z.number().nullable() }).nullable(),

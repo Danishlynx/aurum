@@ -7,10 +7,12 @@ import {
   TONE_FIRST_COMPARABLE_BAND,
   TONE_FIRST_CONCERNS,
   TONE_FIRST_DEPRIORITIZED,
+  VERIFIED_SD_SKIN_CONCERN_TYPES,
   concernDescription,
   concernDisplayName,
   isConcernKey,
   isFitzpatrickType,
+  isNonConcernOutputType,
   mapProviderConcern,
   normalizeProviderConcernName,
   parseProviderConcernName,
@@ -139,6 +141,31 @@ describe("parseProviderConcernName", () => {
     expect(mapProviderConcern("acne")).toBe("acne");
     expect(mapProviderConcern("radiance")).toBe("radiance");
     expect(mapProviderConcern("tear_trough")).toBe("tear_trough");
+  });
+
+  it("maps every scored name the live API returned on 2026-09-02", () => {
+    /*
+     * The list is the provider's own, recorded in
+     * evals/fixtures/perfectcorp/skin-analysis-status.json. Two of these used to
+     * fall through and their readings were dropped from the report:
+     * dark_circle_v2 (the v2 is a model version, not a different concern) and
+     * droopy_lower_eyelid (only the upper lid had a row).
+     */
+    const unmapped = VERIFIED_SD_SKIN_CONCERN_TYPES.filter(
+      (type) => mapProviderConcern(type) === null,
+    );
+    expect(unmapped).toEqual([]);
+    expect(mapProviderConcern("dark_circle_v2")).toBe("dark_circles");
+    expect(mapProviderConcern("droopy_lower_eyelid")).toBe("eyelid_droop");
+  });
+
+  it("keeps the non concern outputs out of the concern list", () => {
+    for (const type of ["all", "skin_age", "skin_type", "resize_image"]) {
+      expect(mapProviderConcern(type)).toBeNull();
+      expect(isNonConcernOutputType(type)).toBe(true);
+    }
+    // An unknown concern name is a warning, not a known non concern.
+    expect(isNonConcernOutputType("hydration_index_v2")).toBe(false);
   });
 
   it("returns null for a name it does not know, rather than guessing", () => {

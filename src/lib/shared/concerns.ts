@@ -97,25 +97,73 @@ export const CONCERNS_REQUIRING_ESCALATION_LINE: readonly ConcernKey[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * UNVERIFIED. The exact concern names Perfect Corp returns have not been
- * confirmed against the live docs or the MCP tool list yet, so every key below
- * is a guess derived from the prose in docs/04-integrations.md ("redness,
- * oiliness, age spots, radiance, moisture, dark circles, eye bags, eyelid
- * droop, firmness, texture, acne, pores by region, wrinkles by region, tear
- * trough").
+ * PARTLY VERIFIED. One live skin analysis task on 2026-09-02 returned the 15
+ * scored concern names in VERIFIED_SD_SKIN_CONCERN_TYPES below, and every one
+ * of them now has a row in the table. The rest of the table is still the guess
+ * it always was, derived from the prose in docs/04-integrations.md, and the
+ * names it guesses at ("pigmentation", "spots", "hydration", "uneven_tone")
+ * have never appeared in a response.
  *
- * The "verify first" task in docs/04-integrations.md replaces this table with
- * the real names and flips PERFECT_CORP_CONCERN_MAP_STATUS to "verified". Until
- * then the provider module must treat an unmapped name as a warning it logs,
- * not as a silent drop.
+ * So the status stays UNVERIFIED: it describes the table, and most of the table
+ * is unconfirmed. It flips only when a run has confirmed every row it needs, or
+ * when the unconfirmed rows are deleted. Until then the provider module must
+ * treat an unmapped name as a warning it logs, not as a silent drop.
  */
 export const PERFECT_CORP_CONCERN_MAP_STATUS: "UNVERIFIED" | "verified" =
   "UNVERIFIED";
 
 /**
- * UNVERIFIED provider name to internal key. Keys are already normalized by
+ * The scored concern types one live SD skin analysis returned, in the order the
+ * provider sent them. Confirmed on 2026-09-02 against the recorded response in
+ * evals/fixtures/perfectcorp/skin-analysis-status.json. Every one of these must
+ * map to a concern key, which is asserted in src/lib/shared/concerns.test.ts.
+ *
+ * Not in this list, because they are not concerns: "all" (one overall score),
+ * "skin_age", "skin_type" (repeated per zone), and "resize_image".
+ */
+export const VERIFIED_SD_SKIN_CONCERN_TYPES: readonly string[] = [
+  "eye_bag",
+  "tear_trough",
+  "redness",
+  "oiliness",
+  "pore",
+  "droopy_lower_eyelid",
+  "droopy_upper_eyelid",
+  "dark_circle_v2",
+  "texture",
+  "firmness",
+  "radiance",
+  "age_spot",
+  "wrinkle",
+  "acne",
+  "moisture",
+];
+
+/**
+ * Skin analysis output types that carry something other than a concern score.
+ * They are not unmapped names, and a caller that logs unmapped names must not
+ * report them: the reading for each one has its own home on the profile.
+ */
+export const PROVIDER_NON_CONCERN_OUTPUT_TYPES: ReadonlySet<string> = new Set([
+  "all",
+  "skin_age",
+  "skin_type",
+  "resize_image",
+]);
+
+/** True when a provider output type is deliberately not a concern. */
+export function isNonConcernOutputType(raw: string): boolean {
+  return PROVIDER_NON_CONCERN_OUTPUT_TYPES.has(normalizeProviderConcernName(raw));
+}
+
+/**
+ * Provider name to internal key. Keys are already normalized by
  * normalizeProviderConcernName, so both "Dark Circles" and "dark_circle" reach
  * the same entry.
+ *
+ * Rows marked LIVE were returned by the live API on 2026-09-02. The rest are
+ * still guesses and are kept because they cost nothing and because an
+ * unrecognised name is dropped from the report, which is worse than a spare row.
  */
 export const UNVERIFIED_PERFECT_CORP_CONCERN_MAP: Readonly<
   Record<string, ConcernKey>
@@ -126,33 +174,47 @@ export const UNVERIFIED_PERFECT_CORP_CONCERN_MAP: Readonly<
   uneven_tone: "uneven_tone",
   skin_tone: "uneven_tone",
   tone_evenness: "uneven_tone",
+  /* LIVE. The provider says age_spot; the report calls it dark spots. */
   age_spot: "dark_spots",
   age_spots: "dark_spots",
   dark_spot: "dark_spots",
   dark_spots: "dark_spots",
-  texture: "texture",
-  pore: "pores",
+  texture: "texture" /* LIVE */,
+  pore: "pores" /* LIVE */,
   pores: "pores",
-  oiliness: "oiliness",
+  oiliness: "oiliness" /* LIVE */,
   oily: "oiliness",
-  moisture: "moisture",
+  moisture: "moisture" /* LIVE */,
   hydration: "moisture",
-  acne: "acne",
+  acne: "acne" /* LIVE */,
   blemish: "acne",
   blemishes: "acne",
-  redness: "redness",
-  radiance: "radiance",
-  firmness: "firmness",
-  wrinkle: "wrinkles",
+  redness: "redness" /* LIVE */,
+  radiance: "radiance" /* LIVE */,
+  firmness: "firmness" /* LIVE */,
+  wrinkle: "wrinkles" /* LIVE */,
   wrinkles: "wrinkles",
   dark_circle: "dark_circles",
   dark_circles: "dark_circles",
-  eye_bag: "eye_bags",
+  /*
+   * LIVE. The v2 suffix is the provider's model version, not a different
+   * concern, and it survives normalizeProviderConcernName as "dark_circle_v2",
+   * so it needs its own row: without one the whole dark circles reading was
+   * dropped from the report and its mask never stored.
+   */
+  dark_circle_v2: "dark_circles",
+  eye_bag: "eye_bags" /* LIVE */,
   eye_bags: "eye_bags",
-  tear_trough: "tear_trough",
+  tear_trough: "tear_trough" /* LIVE */,
   eyelid_droop: "eyelid_droop",
   droopy_eyelid: "eyelid_droop",
+  /*
+   * LIVE, both of them. The provider scores the upper and the lower lid
+   * separately; the report has one eyelid droop concern, so they share a key
+   * and the higher score wins in dedupeByKey below.
+   */
   droopy_upper_eyelid: "eyelid_droop",
+  droopy_lower_eyelid: "eyelid_droop",
 };
 
 /**

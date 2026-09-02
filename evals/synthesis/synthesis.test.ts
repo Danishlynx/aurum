@@ -169,10 +169,19 @@ describe("eval:synthesis, the fixtures themselves", () => {
     const run = RUNS.find((entry) => entry.fixture.id === "a12");
     expect(run).toBeDefined();
     const keys = run?.facts.ranked.map((concern) => concern.key) ?? [];
-    // skin_type is the provider's skin type output. The UNVERIFIED map sends it
-    // to uneven_tone, so without the guard it would show up here.
+    /*
+     * skin_type is the provider's skin type classification, not a concern. The
+     * fixture stores it with key uneven_tone on purpose, which is what an older
+     * reading of the map produced, so the guard in summaries.ts is what keeps it
+     * off the report.
+     */
     expect(keys).not.toContain("uneven_tone");
-    expect(run?.facts.unmappedNames).toContain("droopy_lower_eyelid");
+    /*
+     * The unmappable name used to be droopy_lower_eyelid. The live API returned
+     * that name on 2026-09-02 and it now maps to eyelid_droop, so the fixture
+     * carries a name that is still genuinely unknown instead.
+     */
+    expect(run?.facts.unmappedNames).toContain("hydration_index_v2");
   });
 });
 

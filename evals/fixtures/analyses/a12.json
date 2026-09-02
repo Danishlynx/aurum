@@ -2,7 +2,7 @@
   "id": "a12",
   "synthetic": true,
   "label": "Fitzpatrick VI, neutral undertone, dark spots led, with an unmappable provider name and the skin type output",
-  "note": "SYNTHETIC. Not a person, and not a recorded provider response. Hand written to the shape src/lib/server/jobs/analysis.ts stores on analyses.summary. Two entries here are deliberately awkward: droopy_lower_eyelid is a name the UNVERIFIED map in src/lib/shared/concerns.ts does not carry, and skin_type is the provider's skin type output, which that same map currently sends to uneven_tone. The profile layer has to drop both rather than show them as concerns.",
+  "note": "SYNTHETIC. Not a person, and not a recorded provider response. Hand written to the shape src/lib/server/jobs/analysis.ts stores on analyses.summary. Two entries here are deliberately awkward: hydration_index_v2 is a name the map in src/lib/shared/concerns.ts does not carry, and skin_type is the provider's skin type output, which is a classification and not a concern. The profile layer has to drop both rather than show them as concerns. The unmappable row used to be droopy_lower_eyelid, which the live API returned on 2026-09-02 and which now maps to eyelid_droop, so a name that is genuinely still unknown took its place.",
   "expected": {
     "fitzpatrick": 6,
     "undertone": "neutral",
@@ -23,7 +23,7 @@
         { "providerType": "acne", "key": "acne", "uiScore": 26, "rawScore": 0.26 },
         { "providerType": "eye_bag", "key": "eye_bags", "uiScore": 24, "rawScore": 0.24 },
         { "providerType": "firmness", "key": "firmness", "uiScore": 22, "rawScore": 0.22 },
-        { "providerType": "droopy_lower_eyelid", "key": null, "uiScore": 33, "rawScore": 0.33 },
+        { "providerType": "hydration_index_v2", "key": null, "uiScore": 33, "rawScore": 0.33 },
         { "providerType": "skin_type", "key": "uneven_tone", "uiScore": 64, "rawScore": 0.64 },
         { "providerType": "moisture", "key": "moisture", "uiScore": 44, "rawScore": 0.44 },
         { "providerType": "radiance", "key": "radiance", "uiScore": 46, "rawScore": 0.46 }

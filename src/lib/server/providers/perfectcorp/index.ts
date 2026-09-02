@@ -51,8 +51,27 @@ export type {
   PerfectCorpEndpoint,
   PerfectCorpEndpointKey,
 } from "./endpoints";
-export { SD_SKIN_CONCERN_KEYS, normalizeTaskState } from "./schemas";
-export type { NormalizedTaskState } from "./schemas";
+export {
+  PROVIDER_SKIN_TYPE_ZONE_LABELS,
+  SD_SKIN_CONCERN_KEYS,
+  SKIN_OUTPUT_NON_CONCERN_TYPES,
+  SKIN_TYPE_ZONE_T,
+  SKIN_TYPE_ZONE_U,
+  SKIN_TYPE_ZONE_WHOLE,
+  normalizeTaskState,
+  readSkinAnalysis,
+  skinAnalysisResultSchema,
+  skinTypeZoneFor,
+  skinTypeZoneLabel,
+  taskStatusResponseSchema,
+} from "./schemas";
+export type {
+  NormalizedTaskState,
+  SkinAnalysisReading,
+  SkinAnalysisResult,
+  SkinConcernReading,
+  SkinTypeZoneReading,
+} from "./schemas";
 export { isPerfectCorpConfigured } from "./client";
 
 const PROVIDER = "perfectcorp" as const;
@@ -276,16 +295,20 @@ export async function getTaskSnapshot(args: {
   });
 
   const state = normalizeTaskState(response.data.task_status);
-  const rawCode = response.data.error_code;
+  /**
+   * Both of these arrive as null on a successful task rather than as absent,
+   * so both nullish checks are load bearing: `?? null` on a null error_code
+   * would otherwise turn into the string "null" on the snapshot.
+   */
+  const rawCode = response.data.error_code ?? null;
+  const rawError = response.data.error ?? null;
   return {
     endpointKey: args.endpointKey,
     taskId: args.taskId,
     state,
-    results: state === "succeeded" ? response.data.results : undefined,
+    results: state === "succeeded" ? (response.data.results ?? undefined) : undefined,
     errorCode:
-      state === "failed"
-        ? (rawCode === undefined ? (response.data.error ?? null) : String(rawCode))
-        : null,
+      state === "failed" ? (rawCode === null ? rawError : String(rawCode)) : null,
     pollingIntervalSeconds: response.data.polling_interval ?? null,
   };
 }

@@ -13,10 +13,15 @@ import {
   parseFaceAttributesResult,
   parseHairTypeResult,
   parseSkinAnalysisResult,
+  readSkinAnalysis,
   SD_SKIN_CONCERN_KEYS,
+  SKIN_TYPE_ZONE_T,
+  SKIN_TYPE_ZONE_U,
+  skinTypeZoneFor,
   uploadImage,
   type CreatedTask,
   type PerfectCorpEndpointKey,
+  type SkinAnalysisReading,
   type TaskSnapshot,
 } from "../providers/perfectcorp";
 import { ENDPOINT_FOR_ANALYSIS, perfectCorpUnits } from "../credits/costs";
@@ -210,6 +215,30 @@ function readFitzpatrick(results: unknown): number | null {
   return null;
 }
 
+/**
+ * The two zones the report shows, taken from the provider's own skin type
+ * output rather than derived from oiliness and moisture.
+ *
+ * The provider reports three regions: whole, t_zone, and u_zone. The report
+ * speaks of a T zone and cheeks, and the U zone is the cheeks and jaw, so that
+ * is the pairing. "whole" is not shown on its own: it is the same reading at a
+ * coarser grain and it stays in `raw`.
+ *
+ * Returns null when neither zone carries a word we have a label for, which
+ * sends src/lib/server/profile/skin-type.ts back to its derived reading instead
+ * of showing a provider word the report cannot say.
+ */
+function skinTypeZonesFor(
+  reading: SkinAnalysisReading,
+): { readonly tZone: string | null; readonly cheeks: string | null } | null {
+  const tZone = skinTypeZoneFor(reading, SKIN_TYPE_ZONE_T)?.label ?? null;
+  const cheeks = skinTypeZoneFor(reading, SKIN_TYPE_ZONE_U)?.label ?? null;
+  if (tZone === null && cheeks === null) {
+    return null;
+  }
+  return { tZone, cheeks };
+}
+
 export function normalize(
   kind: AnalysisKind,
   snapshot: TaskSnapshot,
@@ -217,26 +246,43 @@ export function normalize(
   switch (kind) {
     case "skin": {
       const result = parseSkinAnalysisResult(snapshot);
-      const concerns = result.output.map((entry) => ({
+      const reading = readSkinAnalysis(result);
+      const concerns = reading.concerns.map((entry) => ({
         providerType: entry.type,
         key: mapProviderConcern(entry.type),
-        uiScore: entry.ui_score,
-        rawScore: entry.raw_score,
+        uiScore: entry.uiScore,
+        rawScore: entry.rawScore,
       }));
+
+      /*
+       * One mask per concern key, in provider order, up to the storage budget.
+       * The dedupe matters: the provider scores the upper and the lower eyelid
+       * separately and both map to eyelid_droop, so without it two entries
+       * would race for masks/eyelid_droop.png and the second would overwrite
+       * the first while using up one of the eight slots.
+       */
       const maskUrls: Array<{ key: string; url: string }> = [];
-      for (const entry of result.output) {
-        const url = entry.mask_urls?.[0];
-        const key = mapProviderConcern(entry.type);
-        if (url !== undefined && key !== null && maskUrls.length < MAX_MASKS_PER_CAPTURE) {
-          maskUrls.push({ key, url });
+      const takenKeys = new Set<string>();
+      for (const entry of reading.concerns) {
+        if (maskUrls.length >= MAX_MASKS_PER_CAPTURE) {
+          break;
         }
+        const url = entry.maskUrls[0];
+        const key = mapProviderConcern(entry.type);
+        if (url === undefined || key === null || takenKeys.has(key)) {
+          continue;
+        }
+        takenKeys.add(key);
+        maskUrls.push({ key, url });
       }
+
       return {
         raw: toJson(result),
         summary: toJson({
           concerns,
-          skinAge: result.skin_age ?? null,
-          overallScore: result.all?.score ?? null,
+          skinAge: reading.skinAge,
+          overallScore: reading.overallScore,
+          skinTypeZones: skinTypeZonesFor(reading),
         }) ?? {},
         maskUrls,
       };

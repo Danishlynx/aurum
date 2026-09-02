@@ -211,6 +211,39 @@ export const PERFECTCORP_FILE_ENDPOINT = {
   },
 } as const satisfies { createPath: string; verification: Verification };
 
+/**
+ * The shape every task status GET answers with.
+ *
+ * Read live from the skin analysis task on 2026-09-02, which is the only task
+ * API that has ever run against this account. Recorded here once, rather than
+ * on every endpoint, because it is the envelope and not the payload: the
+ * payload under data.results differs per API and is recorded per endpoint.
+ *
+ *     { status, data: { error: string|null, task_status: string, results?: ... } }
+ *
+ * error is present and null on success, which is the detail that cost us a
+ * paid task the first time (see taskStatusResponseSchema in schemas.ts).
+ * polling_interval and error_code have not been seen on the wire at all.
+ *
+ * UNVERIFIED for skin-tone-analysis, face-attr-analysis, makeup-vto,
+ * hair-transfer and the rest: they are assumed to share this envelope because
+ * they share the /s2s task pattern, and the schema is permissive enough that
+ * the assumption costs nothing if one of them omits a field. Any endpoint that
+ * turns out to differ gets its own note on its own row.
+ */
+export const PERFECTCORP_TASK_STATUS_ENVELOPE = {
+  verification: {
+    state: "confirmed",
+    source: LIVE_API,
+    checkedOn: AUTH_CHECKED_ON,
+    note:
+      "GET <statusPathPrefix>/<taskId> answers 200 with { status, data: { error, results, " +
+      "task_status } }. error is null on success, not absent. task_status is \"success\" on the " +
+      "one completed task we have read. Confirmed for skin-analysis only; assumed for the other " +
+      "task APIs until one of them is run.",
+  },
+} as const satisfies { verification: Verification };
+
 export const PERFECTCORP_ENDPOINTS: Readonly<
   Record<PerfectCorpEndpointKey, PerfectCorpEndpoint>
 > = {
@@ -219,10 +252,14 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
     createPath: "/s2s/v2.0/task/skin-analysis",
     statusPathPrefix: "/s2s/v2.0/task/skin-analysis",
     sourceFileFields: ["src_file_id"],
-    unitCost: {
-      kind: "unknown",
-      note: "Not published on the public unit consumption page. Read it from the API console.",
-    },
+    /**
+     * Measured, not published. One task with all 16 SD concern keys took the
+     * balance from 40 to 24 on 2026-09-02. The public unit consumption page
+     * still does not carry a figure for this API, so this row is a measurement
+     * of one call and not a price list: a call asking for fewer concerns may
+     * well cost less, which nobody has tested and nobody should assume.
+     */
+    unitCost: { kind: "fixed", units: 16 },
     imageConstraints: {
       minShortSidePx: 480,
       maxLongSidePx: 2560,
@@ -233,12 +270,18 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
     },
     verification: {
       state: "confirmed",
-      source: `${MAKEUPAR}/reference/ai_skin_analysis`,
-      checkedOn: CHECKED_ON,
+      source: LIVE_API,
+      checkedOn: AUTH_CHECKED_ON,
       note:
-        "Request body { src_file_id, dst_actions, miniserver_args, format }. Result is " +
-        "data.results.output[] with type, ui_score, raw_score, mask_urls. SD and HD concern " +
-        "keys cannot be mixed in one call.",
+        "Request body { src_file_id, dst_actions, format }. Confirmed live on 2026-09-02, one " +
+        "task, all 16 SD keys: GET /s2s/v2.0/task/skin-analysis/<id> answers 200 with " +
+        "{ status, data: { error: null, results: { output: [...] }, task_status: \"success\" } }. " +
+        "Note error is present and null on success. Each output entry carries type, and then " +
+        "either (ui_score, raw_score, mask_urls) for a concern, or (region, skin_type, mask_urls) " +
+        "for skin_type which repeats per zone (whole, t_zone, u_zone), or score for \"all\" and " +
+        "\"skin_age\", or mask_urls alone for \"resize_image\". ui_score is a condition score: " +
+        "higher is better. Cost measured at 16 units, balance 40 to 24. SD and HD concern keys " +
+        "cannot be mixed in one call.",
     },
     analysisKind: "skin",
   },

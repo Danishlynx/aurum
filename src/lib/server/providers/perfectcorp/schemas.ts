@@ -79,16 +79,37 @@ export const taskCreateResponseSchema = envelope(
 );
 
 /**
- * The docs list running, success, and error. The string stays open so an
- * unrecorded intermediate state keeps the job polling instead of failing it.
+ * The task status body, confirmed against the live API on 2026-09-02.
+ *
+ * The real envelope, from a successful skin analysis poll:
+ *
+ *     { "status": 200,
+ *       "data": { "error": null, "results": { ... }, "task_status": "success" } }
+ *
+ * Two facts that cost us a task and its units the first time round:
+ *
+ * 1. data.error is present and null on a successful task. It is not absent.
+ *    z.string().optional() accepts undefined and rejects null, so the first
+ *    real response failed to parse at data.error, the poll threw
+ *    invalid_response, and a task that had succeeded (and been charged) was
+ *    recorded as failed. Every field the provider may send as null is nullish
+ *    here for exactly that reason.
+ * 2. The string stays open so an unrecorded intermediate state keeps the job
+ *    polling instead of failing it.
+ *
+ * UNVERIFIED: only the skin analysis task has been read live. The same envelope
+ * is assumed for skin-tone-analysis, face-attr-analysis, makeup-vto and
+ * hair-transfer, which is recorded per endpoint in endpoints.ts. It is a safe
+ * assumption to make permissive: nothing here requires a field the other task
+ * APIs might not send.
  */
 export const taskStatusResponseSchema = envelope(
   z.object({
     task_status: z.string(),
-    error: z.string().optional(),
-    error_code: z.union([z.string(), z.number()]).optional(),
-    results: z.unknown().optional(),
-    polling_interval: z.number().optional(),
+    error: z.string().nullish(),
+    error_code: z.union([z.string(), z.number()]).nullish(),
+    results: z.unknown().nullish(),
+    polling_interval: z.number().nullish(),
   }),
 );
 
@@ -130,24 +151,218 @@ export type RenderResult = z.infer<typeof renderResultSchema>;
 /* Skin analysis                                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * One entry of data.results.output, confirmed against the live API on
+ * 2026-09-02. The array is not homogeneous: it mixes four kinds of entry, all
+ * of them carrying only "type" in common.
+ *
+ * 1. A scored concern: ui_score, raw_score, mask_urls, url null.
+ *    Seen for eye_bag, tear_trough, redness, oiliness, pore,
+ *    droopy_lower_eyelid, droopy_upper_eyelid, dark_circle_v2, texture,
+ *    firmness, radiance, age_spot, wrinkle, acne, moisture.
+ * 2. skin_type, once per zone. No score at all: it carries region ("whole",
+ *    "t_zone", "u_zone") and skin_type (for example "Normal"), plus a mask.
+ * 3. "all" and "skin_age". Neither has a mask and neither uses ui_score: both
+ *    carry their number under "score" (85.4 overall, 28 years).
+ * 4. "resize_image": the frame the provider worked from, mask_urls only. Not a
+ *    reading, and never shown as one.
+ *
+ * Every field except type is therefore optional and nullable. Nothing is
+ * dropped for being unexpected: readSkinAnalysis below sorts the entries out.
+ */
 export const skinConcernOutputSchema = z.object({
   type: z.string(),
-  ui_score: z.number(),
-  raw_score: z.number(),
-  mask_urls: z.array(z.string()).optional(),
+  /**
+   * The provider's 1 to 100 condition score. Absent on the entries that carry
+   * no score, and the empty string when the engine could not produce one.
+   */
+  ui_score: z.union([z.number(), z.literal("")]).nullish(),
+  raw_score: z.number().nullish(),
+  /** How "all" and "skin_age" carry their value. */
+  score: z.number().nullish(),
+  /** skin_type only: "whole", "t_zone", or "u_zone". */
+  region: z.string().nullish(),
+  /** skin_type only: the classification, for example "Normal". */
+  skin_type: z.string().nullish(),
+  mask_urls: z.array(z.string()).nullish(),
+  url: z.string().nullish(),
 });
 
+export type SkinConcernOutput = z.infer<typeof skinConcernOutputSchema>;
+
+/**
+ * data.results for a skin analysis task.
+ *
+ * skin_age and all are read from the output entries above. They are also
+ * accepted here as siblings of output, which is where an earlier reading of the
+ * reference page put them. That shape has never been seen on the wire, so it is
+ * a fallback and not a claim: UNVERIFIED, and readSkinAnalysis prefers the
+ * entries.
+ */
 export const skinAnalysisResultSchema = z.object({
   output: z.array(skinConcernOutputSchema).min(1),
-  skin_age: z.number().optional(),
-  all: z.object({ score: z.number() }).optional(),
+  skin_age: z.number().nullish(),
+  all: z.object({ score: z.number() }).nullish(),
 });
 
 export type SkinAnalysisResult = z.infer<typeof skinAnalysisResultSchema>;
 
+/* ------------------------------------------------------------------ */
+/* Reading the skin analysis output                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Output types that are not concerns and must never be ranked as one. Kept as a
+ * set so an entry the mapping does not know can still be told apart from a
+ * concern name we failed to map, which is a warning worth logging.
+ */
+export const SKIN_OUTPUT_NON_CONCERN_TYPES: ReadonlySet<string> = new Set([
+  "all",
+  "skin_age",
+  "skin_type",
+  "resize_image",
+]);
+
+/** The provider's zone names, from the live response. */
+export const SKIN_TYPE_ZONE_WHOLE = "whole";
+export const SKIN_TYPE_ZONE_T = "t_zone";
+export const SKIN_TYPE_ZONE_U = "u_zone";
+
+/**
+ * The provider's skin type words, mapped into the three zone labels the report
+ * speaks (src/lib/server/profile/skin-type.ts, ZONE_LABELS).
+ *
+ * PARTLY VERIFIED: "Normal" is the only value seen on the wire so far, on all
+ * three zones of one face. The other two rows are the obvious readings of the
+ * remaining words and are marked here rather than assumed elsewhere. A word
+ * that is not in this table maps to null, which sends the report back to the
+ * zones it derives from oiliness and moisture instead of inventing a label.
+ */
+export const PROVIDER_SKIN_TYPE_ZONE_LABELS: Readonly<Record<string, string>> = {
+  normal: "balanced",
+  oily: "oily",
+  dry: "dry",
+};
+
+export function skinTypeZoneLabel(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  return PROVIDER_SKIN_TYPE_ZONE_LABELS[value.trim().toLowerCase()] ?? null;
+}
+
+export interface SkinConcernReading {
+  readonly type: string;
+  readonly uiScore: number;
+  readonly rawScore: number;
+  readonly maskUrls: readonly string[];
+}
+
+export interface SkinTypeZoneReading {
+  /** The provider's own region name. */
+  readonly region: string;
+  /** The provider's own word, for example "Normal". */
+  readonly value: string;
+  /** That word in our vocabulary, or null when we do not have one for it. */
+  readonly label: string | null;
+}
+
+export interface SkinAnalysisReading {
+  /** Only the entries that carry a real score. Provider order is kept. */
+  readonly concerns: readonly SkinConcernReading[];
+  /** From the "skin_age" entry. */
+  readonly skinAge: number | null;
+  /** From the "all" entry: one number for the whole face. */
+  readonly overallScore: number | null;
+  readonly skinTypeZones: readonly SkinTypeZoneReading[];
+  /** The provider's own resized frame, when it sent one. */
+  readonly resizedImageUrl: string | null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Sorts one skin analysis result into the four kinds of entry it mixes.
+ *
+ * Pure, so the whole shape can be tested against the recorded response with no
+ * network and no key. It never throws: an entry it cannot read is left out of
+ * every list rather than failing a reading that is otherwise complete.
+ *
+ * A note on direction, because it decides what the report says. ui_score is a
+ * condition score: higher is better, so the 99 on redness here means clear
+ * skin, not severe redness. The ranking in src/lib/shared/concerns.ts reads a
+ * higher score as "more present", which is the opposite. Reconciling the two is
+ * a change to what every report says and is deliberately not made here. It is
+ * recorded as an open item on this branch and belongs with eval:consistency.
+ */
+export function readSkinAnalysis(result: SkinAnalysisResult): SkinAnalysisReading {
+  const concerns: SkinConcernReading[] = [];
+  const skinTypeZones: SkinTypeZoneReading[] = [];
+  let skinAge: number | null = numberOrNull(result.skin_age);
+  let overallScore: number | null = numberOrNull(result.all?.score);
+  let resizedImageUrl: string | null = null;
+
+  for (const entry of result.output) {
+    const masks = entry.mask_urls ?? [];
+
+    if (entry.type === "skin_age") {
+      skinAge = numberOrNull(entry.score) ?? skinAge;
+      continue;
+    }
+    if (entry.type === "all") {
+      overallScore = numberOrNull(entry.score) ?? overallScore;
+      continue;
+    }
+    if (entry.type === "resize_image") {
+      resizedImageUrl = masks[0] ?? entry.url ?? null;
+      continue;
+    }
+    if (entry.type === "skin_type") {
+      if (typeof entry.region === "string" && typeof entry.skin_type === "string") {
+        skinTypeZones.push({
+          region: entry.region,
+          value: entry.skin_type,
+          label: skinTypeZoneLabel(entry.skin_type),
+        });
+      }
+      continue;
+    }
+
+    const uiScore = numberOrNull(entry.ui_score);
+    const rawScore = numberOrNull(entry.raw_score);
+    if (uiScore === null || rawScore === null) {
+      // A concern the engine returned without a score. It is not a reading, so
+      // it is not carried as one.
+      continue;
+    }
+    concerns.push({
+      type: entry.type,
+      uiScore,
+      rawScore,
+      maskUrls: [...masks],
+    });
+  }
+
+  return { concerns, skinAge, overallScore, skinTypeZones, resizedImageUrl };
+}
+
+/** The zone reading for one provider region name, or null when it is absent. */
+export function skinTypeZoneFor(
+  reading: SkinAnalysisReading,
+  region: string,
+): SkinTypeZoneReading | null {
+  return reading.skinTypeZones.find((zone) => zone.region === region) ?? null;
+}
+
 /**
  * The SD concern keys. SD and HD keys cannot be mixed in one call, so the
- * capture flow sends SD only. Confirmed on the skin analysis reference.
+ * capture flow sends SD only. Confirmed on the skin analysis reference, and
+ * then confirmed live on 2026-09-02: all 16 were accepted in one dst_actions
+ * list and every one came back in data.results.output under exactly this
+ * spelling. The response also carried three entries nobody asked for ("all",
+ * "skin_age", "resize_image") and reported skin_type once per zone.
  */
 export const SD_SKIN_CONCERN_KEYS = [
   "wrinkle",
