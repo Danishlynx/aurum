@@ -65,3 +65,5 @@ photo_asset/
 evals/fixtures/faces/*
 !evals/fixtures/faces/.gitkeep
 evals/fixtures/golden/
+.vercel
+.env*
