@@ -27,6 +27,12 @@ export default defineConfig({
       "evals/**/*.{test,spec}.{ts,tsx}",
     ],
     exclude: ["node_modules/**", ".next/**", "e2e/**", "evals/results/**"],
+    /*
+     * Takes fetch away from every suite, so a forgotten provider mock fails the
+     * test instead of spending a Perfect Corp unit or a SerpApi search. The file
+     * explains itself.
+     */
+    setupFiles: ["./vitest.setup.ts"],
     reporters: ["default"],
   },
 });
