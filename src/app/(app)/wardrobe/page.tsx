@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 
 import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { WardrobeScreen } from "@/components/wardrobe/WardrobeScreen";
+import { demoProfileIsReadOnly } from "@/lib/server/judge/demo";
 import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
 import { getSession, type AppSession } from "@/lib/server/session";
 import { buildWardrobeView } from "@/lib/server/wardrobe";
@@ -52,7 +53,9 @@ export default async function WardrobePage() {
     <div className="flex flex-col gap-8">
       <ScreenTitle>{copy.nav.wardrobe}</ScreenTitle>
 
-      <WardrobeScreen view={view} readOnly={fixture} />
+      {/* Read only covers the development switch and a judge session with no
+          analyses left alike (src/lib/server/judge/demo.ts). */}
+      <WardrobeScreen view={view} readOnly={demoProfileIsReadOnly(session)} />
     </div>
   );
 }

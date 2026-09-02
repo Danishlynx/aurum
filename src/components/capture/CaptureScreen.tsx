@@ -51,6 +51,14 @@ import type { CaptureAssessment, CaptureRejectionReason } from "@/lib/shared/qua
  * anything is sent. docs/04-integrations.md: never send a photo that failed the
  * gate. "Use it anyway" exists for borderline frames only, and never for a frame
  * with no face.
+ *
+ * analysesExhausted is the server's answer to "may this session take a photo at
+ * all" (src/app/(onboarding)/capture/page.tsx). With it true the screen opens in
+ * the capped state: no camera is requested, no permission prompt appears, and
+ * the line docs/01-user-flow.md writes for zero remaining analyses is on screen
+ * with the way into the saved demo profile under it. The same state is reached
+ * from a 429 mid session, which is the judge who spends their last analysis
+ * while this screen is open.
  */
 
 /** How often the preview is measured for the live guidance line. */
@@ -70,7 +78,12 @@ type Phase =
   | { readonly name: "failed"; readonly message: string }
   | { readonly name: "capped" };
 
-export function CaptureScreen() {
+export interface CaptureScreenProps {
+  /** Judge sessions only: true when the session has no analyses left. */
+  readonly analysesExhausted?: boolean;
+}
+
+export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const previousSampleRef = useRef<ArrayLike<number> | null>(null);
@@ -79,7 +92,9 @@ export function CaptureScreen() {
     assessment: CaptureAssessment;
   } | null>(null);
 
-  const [phase, setPhase] = useState<Phase>({ name: "starting" });
+  const [phase, setPhase] = useState<Phase>(
+    analysesExhausted ? { name: "capped" } : { name: "starting" },
+  );
   const [guidance, setGuidance] = useState<GuidanceKey>("light");
   const [still, setStill] = useState<string | null>(null);
 
@@ -88,6 +103,13 @@ export function CaptureScreen() {
   // -------------------------------------------------------------------------
 
   useEffect(() => {
+    if (analysesExhausted) {
+      // No camera is asked for on a session that cannot have a photo read. A
+      // permission prompt here would be asking for something we would refuse to
+      // use.
+      return;
+    }
+
     let stream: MediaStream | null = null;
     let cancelled = false;
 
@@ -137,7 +159,7 @@ export function CaptureScreen() {
         track.stop();
       });
     };
-  }, []);
+  }, [analysesExhausted]);
 
   // -------------------------------------------------------------------------
   // The live guidance line
@@ -375,7 +397,7 @@ export function CaptureScreen() {
   return (
     <main className="flex min-h-[100svh] flex-col">
       <div className="relative min-h-[420px] flex-1 overflow-hidden bg-surface">
-        {phase.name === "camera_unavailable" ? null : (
+        {phase.name === "camera_unavailable" || analysesExhausted ? null : (
           <video
             ref={videoRef}
             muted

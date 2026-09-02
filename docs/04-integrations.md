@@ -178,3 +178,8 @@ See .env.example at the repo root. Never commit .env. Vercel holds production va
     PROVIDER_CALLS_ENABLED
     DAILY_CAP_PERFECTCORP_UNITS
     DAILY_CAP_SERPAPI_SEARCHES
+
+Two more exist for the judge path, both optional and both explained in .env.example.
+
+- JUDGE_ACCESS_CODE_HASH_B64 carries the same bcrypt hash, base64 encoded, and is read in preference to the plain variable. A bcrypt hash starts "$2b$10$", and dotenv expansion eats dollar segments out of a value it finds in a .env file, so a hash pasted into .env.local can reach the server with holes in it and read as a code that never matches. The encoded form has no dollar in it. Vercel sets real environment variables and needs neither the encoding nor this variable.
+- JUDGE_FIXTURE_SESSION=true lets POST /api/judge/session mint a session in the server's memory instead of a judge_sessions row, so the judge flow can be walked and tested with no Supabase project. The access code is still checked first. It is refused outright when NODE_ENV is production, and playwright.config.ts is the only thing that sets it.

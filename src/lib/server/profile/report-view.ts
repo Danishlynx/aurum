@@ -19,6 +19,7 @@ import type {
 
 import { getCapture, getProfile } from "../db";
 import { BUCKETS, createSignedRead } from "../db/storage";
+import { demoFixtureNote, planDemoRead } from "../judge/demo";
 import { groundRoutineSteps } from "../products";
 import type { AppSession } from "../session";
 import { getAestheticProfile, readStoredConcerns, type AestheticProfile } from "./db";
@@ -45,12 +46,19 @@ import type { Undertone } from "./undertone";
  * lets the product cache do its job (docs/03-architecture.md, "Caching").
  */
 
-/** The environment variable that turns on fixture mode. */
-export const DEMO_FIXTURE_ENV = "AURUM_DEMO_FIXTURE";
-
-export function isDemoFixtureMode(): boolean {
-  return process.env[DEMO_FIXTURE_ENV] === "true";
-}
+/**
+ * The development fixture switch, re exported from the module that owns it.
+ *
+ * It moved to src/lib/server/judge/demo.ts when the judge session at zero
+ * analyses started reusing the same fixture builders without it: the switch and
+ * that decision are one question ("where does this screen read from"), and they
+ * are answered in one place. Every existing import of these two names keeps
+ * working.
+ */
+export {
+  DEMO_FIXTURE_ENV,
+  isDemoFixtureMode,
+} from "../judge/demo";
 
 const zonesSchema = z.object({
   t_zone: z.string().nullable().optional(),
@@ -210,18 +218,20 @@ function toStepView(
 export async function buildReportView(
   session: AppSession,
 ): Promise<ReportView | null> {
-  if (isDemoFixtureMode()) {
+  const plan = await planDemoRead(session);
+  if (plan.source === "fixture") {
     console.log(
       JSON.stringify({
         event: "aurum.report_view",
         source: "fixture",
-        note: `${DEMO_FIXTURE_ENV} is true: the report is served from the checked in fixture and no database or provider is touched.`,
+        reason: plan.reason,
+        note: demoFixtureNote(plan.reason, "the report is served"),
       }),
     );
     return DEMO_FIXTURE_REPORT_VIEW;
   }
 
-  const profile = await getAestheticProfile(session.id);
+  const profile = await getAestheticProfile(plan.ownerId);
   if (profile === null) {
     return null;
   }
@@ -285,7 +295,8 @@ export async function buildReportView(
       ? null
       : await signOrNull(
           BUCKETS.captures,
-          (await getCapture(session.id, profile.capture_id))?.storage_path ?? null,
+          (await getCapture(plan.ownerId, profile.capture_id))?.storage_path ??
+            null,
         );
 
   return {

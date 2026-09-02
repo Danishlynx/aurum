@@ -1,6 +1,6 @@
 import "server-only";
 
-import { isDemoFixtureMode } from "../profile/report-view";
+import { demoProfileIsReadOnly } from "../judge/demo";
 import type { AppSession } from "../session";
 import { getLook, updateLook } from "./db";
 
@@ -28,9 +28,11 @@ export async function saveLook(args: {
   readonly session: AppSession;
   readonly lookId: string;
 }): Promise<SaveLookOutcome> {
-  if (isDemoFixtureMode()) {
-    // The fixture is checked in and there is no database behind it. Saying so is
-    // the honest answer; writing to nothing and reporting success is not.
+  if (demoProfileIsReadOnly(args.session)) {
+    // The fixture is checked in and there is no database behind it, and a judge
+    // session at zero analyses is reading the saved demo profile, which is read
+    // only. Saying so is the honest answer; writing to nothing, or to a row no
+    // screen will read back, and reporting success is not.
     return { ok: false, reason: "fixture_read_only" };
   }
 

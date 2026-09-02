@@ -22,6 +22,11 @@ import type {
 import { getCapture } from "../db";
 import { BUCKETS, createSignedRead } from "../db/storage";
 import type { Insert, JobStatus, Render } from "../db/types";
+import {
+  demoFixtureNote,
+  demoProfileIsReadOnly,
+  planDemoRead,
+} from "../judge/demo";
 import { findRendersByHashes } from "../renders/db";
 import {
   canonicalHairColorParams,
@@ -36,7 +41,6 @@ import {
   type AestheticProfile,
 } from "./db";
 import { DEMO_FIXTURE_HAIR_VIEW } from "./demo-fixture";
-import { isDemoFixtureMode, DEMO_FIXTURE_ENV } from "./report-view";
 
 /**
  * Everything /hair needs, in one object, and the save behind "Save this".
@@ -217,18 +221,20 @@ async function rendersByHash(args: {
 export async function buildHairView(
   session: AppSession,
 ): Promise<HairView | null> {
-  if (isDemoFixtureMode()) {
+  const plan = await planDemoRead(session);
+  if (plan.source === "fixture") {
     console.log(
       JSON.stringify({
         event: "aurum.hair_view",
         source: "fixture",
-        note: `${DEMO_FIXTURE_ENV} is true: the styles and colors are served from the checked in fixture and no database or provider is touched.`,
+        reason: plan.reason,
+        note: demoFixtureNote(plan.reason, "the styles and colors are served"),
       }),
     );
     return DEMO_FIXTURE_HAIR_VIEW;
   }
 
-  const profile = await getAestheticProfile(session.id);
+  const profile = await getAestheticProfile(plan.ownerId);
   if (profile === null) {
     return null;
   }
@@ -287,9 +293,17 @@ export async function buildHairView(
         );
 
   const [styleRenders, colorRenders, captureImageUrl] = await Promise.all([
-    rendersByHash({ ownerId: session.id, kind: "hairstyle", hashes: styleHashes }),
-    rendersByHash({ ownerId: session.id, kind: "hair_color", hashes: colorHashes }),
-    signCapture(session.id, captureId),
+    rendersByHash({
+      ownerId: plan.ownerId,
+      kind: "hairstyle",
+      hashes: styleHashes,
+    }),
+    rendersByHash({
+      ownerId: plan.ownerId,
+      kind: "hair_color",
+      hashes: colorHashes,
+    }),
+    signCapture(plan.ownerId, captureId),
   ]);
 
   const styleOptions: HairStyleOption[] = [];
@@ -358,9 +372,11 @@ export async function saveHairChoice(args: {
   readonly styleId: string;
   readonly colorName: string | null;
 }): Promise<SaveHairChoiceOutcome> {
-  if (isDemoFixtureMode()) {
-    // The fixture is checked in and there is no database behind it. Saying so is
-    // the honest answer; writing to nothing and reporting success is not.
+  if (demoProfileIsReadOnly(args.session)) {
+    // The fixture is checked in and there is no database behind it, and a judge
+    // session at zero analyses is reading the saved demo profile, which is read
+    // only. Saying so is the honest answer; writing to nothing, or to a row no
+    // screen will read back, and reporting success is not.
     return { ok: false, reason: "fixture_read_only" };
   }
 

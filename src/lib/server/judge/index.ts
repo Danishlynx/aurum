@@ -9,6 +9,13 @@ import {
 } from "../env";
 import { serviceClient, unwrap, unwrapNullable } from "../db/service";
 import type { Insert, JudgeSession } from "../db/types";
+import {
+  createFixtureJudgeSession,
+  isJudgeFixtureSessionMode,
+  listFixtureJudgeSessions,
+  readFixtureJudgeSession,
+  updateFixtureJudgeSession,
+} from "./fixture-store";
 
 export {
   JUDGE_SESSION_COOKIE,
@@ -16,6 +23,10 @@ export {
   judgeCookieClearOptions,
   judgeCookieOptions,
 } from "./cookie";
+export {
+  isJudgeFixtureSessionMode,
+  JUDGE_FIXTURE_ENV,
+} from "./fixture-store";
 
 /**
  * Judge sessions: gated live access with hard caps.
@@ -51,6 +62,15 @@ export async function createJudgeSession(): Promise<JudgeSession> {
     Date.now() + JUDGE_SESSION_LIFETIME_HOURS * 60 * 60 * 1000,
   ).toISOString();
 
+  if (isJudgeFixtureSessionMode()) {
+    return createFixtureJudgeSession({
+      codeHash: config.codeHash,
+      expiresAt,
+      analysesAllowed: config.analysesAllowed,
+      creditsCap: config.creditsCap,
+    });
+  }
+
   const row: Insert<"judge_sessions"> = {
     code_hash: config.codeHash,
     expires_at: expiresAt,
@@ -71,6 +91,10 @@ export async function createJudgeSession(): Promise<JudgeSession> {
 export async function loadJudgeSession(
   sessionId: string,
 ): Promise<JudgeSession | null> {
+  if (isJudgeFixtureSessionMode()) {
+    return readFixtureJudgeSession(sessionId);
+  }
+
   const result = await serviceClient()
     .from("judge_sessions")
     .select("*")
@@ -87,6 +111,13 @@ export async function loadJudgeSession(
 }
 
 export async function touchJudgeSession(sessionId: string): Promise<void> {
+  if (isJudgeFixtureSessionMode()) {
+    updateFixtureJudgeSession(sessionId, {
+      last_seen_at: new Date().toISOString(),
+    });
+    return;
+  }
+
   const result = await serviceClient()
     .from("judge_sessions")
     .update({ last_seen_at: new Date().toISOString() })
@@ -138,6 +169,17 @@ export async function consumeJudgeAnalysis(
       return { ok: false, reason: "exhausted" };
     }
 
+    if (isJudgeFixtureSessionMode()) {
+      // One process, one writer: the compare and set below has nothing to race
+      // against here, so the counter simply moves.
+      const updated = updateFixtureJudgeSession(sessionId, {
+        analyses_used: session.analyses_used + 1,
+      });
+      return updated === null
+        ? { ok: false, reason: "expired" }
+        : { ok: true, session: updated };
+    }
+
     const result = await serviceClient()
       .from("judge_sessions")
       .update({ analyses_used: session.analyses_used + 1 })
@@ -158,6 +200,12 @@ export async function releaseJudgeAnalysis(sessionId: string): Promise<void> {
   for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
     const session = await loadJudgeSession(sessionId);
     if (session === null || session.analyses_used === 0) {
+      return;
+    }
+    if (isJudgeFixtureSessionMode()) {
+      updateFixtureJudgeSession(sessionId, {
+        analyses_used: session.analyses_used - 1,
+      });
       return;
     }
     const result = await serviceClient()
@@ -199,6 +247,15 @@ export async function adjustJudgeCredits(
       return { ok: false, reason: "exhausted" };
     }
 
+    if (isJudgeFixtureSessionMode()) {
+      const updated = updateFixtureJudgeSession(sessionId, {
+        credits_used: next,
+      });
+      return updated === null
+        ? { ok: false, reason: "expired" }
+        : { ok: true, session: updated };
+    }
+
     const result = await serviceClient()
       .from("judge_sessions")
       .update({ credits_used: next })
@@ -220,6 +277,15 @@ export async function recordJudgeConsent(args: {
   readonly consentVersion: string;
   readonly keepOriginals: boolean;
 }): Promise<JudgeSession | null> {
+  if (isJudgeFixtureSessionMode()) {
+    return updateFixtureJudgeSession(args.sessionId, {
+      consent_at: new Date().toISOString(),
+      consent_version: args.consentVersion,
+      is_adult_confirmed: true,
+      keep_originals: args.keepOriginals,
+    });
+  }
+
   const result = await serviceClient()
     .from("judge_sessions")
     .update({
@@ -251,10 +317,14 @@ export interface JudgeStats {
  * figure matches the cap the sessions are actually checked against.
  */
 export async function judgeStats(): Promise<JudgeStats> {
-  const result = await serviceClient()
-    .from("judge_sessions")
-    .select("analyses_used, credits_used");
-  const rows = unwrap("read judge stats", result);
+  const rows = isJudgeFixtureSessionMode()
+    ? listFixtureJudgeSessions()
+    : unwrap(
+        "read judge stats",
+        await serviceClient()
+          .from("judge_sessions")
+          .select("analyses_used, credits_used"),
+      );
 
   let analysesUsed = 0;
   let creditsUsed = 0;

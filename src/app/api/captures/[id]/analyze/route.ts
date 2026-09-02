@@ -1,8 +1,6 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 
-import { copy } from "@/lib/shared/copy";
-
 import { getCapture } from "@/lib/server/db";
 import { ANALYSIS_KINDS } from "@/lib/server/db/types";
 import { ownerOf, spentToday } from "@/lib/server/credits";
@@ -32,6 +30,7 @@ import {
   judgeAnalysesRemaining,
   releaseJudgeAnalysis,
 } from "@/lib/server/judge";
+import { refuseWhenJudgeAnalysesExhausted } from "@/lib/server/judge/guard";
 /**
  * POST /api/captures/[id]/analyze
  *
@@ -89,6 +88,18 @@ export async function POST(
   return handleRoute(request, "/api/captures/[id]/analyze", async (route) => {
     const session = await requireSession(route);
     await requireConsent(session);
+    /*
+     * A session that starts at zero is refused here, before the capture is even
+     * looked up, so the answer costs nothing and cannot be mistaken for a
+     * reading that is on its way. The cap is checked again below for the session
+     * that spends its last analysis mid visit, where the counter has to move
+     * under a compare and set rather than a read.
+     */
+    refuseWhenJudgeAnalysesExhausted({
+      session,
+      route: "/api/captures/[id]/analyze",
+      requestId: route.requestId,
+    });
     await enforceRateLimit({ context: route, name: "analyze", session });
 
     const params = paramsSchema.safeParse(await context.params);
@@ -129,7 +140,10 @@ export async function POST(
           remaining: 0,
         });
         throw capReached({
-          message: copy.judge.exhausted,
+          // The flow doc's line for a session at zero, not the /judge screen's
+          // "used its 3 analyses" sentence: a session created with
+          // JUDGE_ANALYSES_ALLOWED=0 never had three of them.
+          message: messages.judgeExhausted,
           code: "judge_analyses",
           remaining: 0,
         });

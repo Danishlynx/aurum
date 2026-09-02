@@ -12,6 +12,7 @@ import { userClient } from "../db/user";
 import { listRenders } from "../renders/db";
 import { listGarments } from "../wardrobe/db";
 import { getAestheticProfile, readStoredConcerns, type AestheticProfile } from "./db";
+import { demoProfileIsReadOnly } from "../judge/demo";
 import { isDemoFixtureMode } from "./report-view";
 import type { AppSession } from "../session";
 
@@ -370,9 +371,14 @@ export async function setKeepOriginals(args: {
   readonly session: AppSession;
   readonly keepOriginals: boolean;
 }): Promise<KeepOriginalsOutcome> {
-  if (isDemoFixtureMode()) {
-    // The fixture is checked in and there is no database behind it. Saying so is
-    // the honest answer; writing to nothing and reporting success is not.
+  if (demoProfileIsReadOnly(args.session)) {
+    /*
+     * The fixture is checked in and there is no database behind it, and a judge
+     * session at zero analyses is looking at the saved demo profile's rows
+     * rather than its own. Saying so is the honest answer; moving a toggle whose
+     * value the screen reads from somewhere else is not, and a session that
+     * cannot take a photo has no original to keep either way.
+     */
     return { ok: false, reason: "read_only" };
   }
 

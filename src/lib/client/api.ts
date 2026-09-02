@@ -106,6 +106,13 @@ function postJson<T>(
 
 const judgeSessionResponseSchema = z.object({
   analysesRemaining: z.number().int().min(0),
+  /**
+   * What the session was given, which is not always three. A build that gives
+   * judges the saved demo profile and no live readings sets
+   * JUDGE_ANALYSES_ALLOWED=0 (docs/07-payments-and-judge-mode.md), and a screen
+   * cannot tell that apart from a spent session without this number.
+   */
+  analysesAllowed: z.number().int().min(0),
 });
 
 export type JudgeSessionResponse = z.infer<typeof judgeSessionResponseSchema>;

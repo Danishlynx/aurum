@@ -58,6 +58,24 @@ function integer(name: string, fallback: number): number {
   return parsed.success ? parsed.data : fallback;
 }
 
+/**
+ * Same as integer, but zero is a value rather than a typo.
+ *
+ * A cap of zero is a real setting: JUDGE_ANALYSES_ALLOWED=0 is how this build
+ * gives judges the saved demo profile and spends no Perfect Corp units on them
+ * (docs/07-payments-and-judge-mode.md, "Caps"). Read through integer, that zero
+ * failed the positive check and silently became the default of three, which is
+ * the opposite of what was asked for.
+ */
+function count(name: string, fallback: number): number {
+  const raw = optional(name);
+  if (raw === null) {
+    return fallback;
+  }
+  const parsed = z.coerce.number().int().min(0).safeParse(raw);
+  return parsed.success ? parsed.data : fallback;
+}
+
 // ---------------------------------------------------------------------------
 // Supabase
 // ---------------------------------------------------------------------------
@@ -112,19 +130,51 @@ export interface JudgeConfig {
   readonly creditsCap: number;
 }
 
+/**
+ * The bcrypt hash of the access code, from either of the two variables that can
+ * carry it.
+ *
+ * Why there are two: a bcrypt hash begins "$2b$10$", and dotenv expansion treats
+ * every dollar segment in a .env file as a variable to substitute. A hash pasted
+ * into .env.local can therefore reach the server with those segments eaten,
+ * which reads as a code that does not match and is very hard to see. The base64
+ * form has no dollar in it and cannot be mangled, so it is the safe way to carry
+ * one through an environment file or a test harness. It holds the same hash and
+ * is checked the same way; it is not a second secret and not a weaker one.
+ */
+function judgeCodeHash(): string | null {
+  const encoded = optional("JUDGE_ACCESS_CODE_HASH_B64");
+  if (encoded !== null) {
+    try {
+      const decoded = Buffer.from(encoded, "base64").toString("utf8").trim();
+      if (decoded.length > 0) {
+        return decoded;
+      }
+    } catch {
+      // A value that is not base64 is a configuration mistake, not a code that
+      // matches. Fall through to the plain variable.
+    }
+  }
+  return optional("JUDGE_ACCESS_CODE_HASH");
+}
+
 export function judgeConfig(): JudgeConfig {
-  return {
-    codeHash: required(
+  const codeHash = judgeCodeHash();
+  if (codeHash === null) {
+    throw new ServerConfigError(
       "JUDGE_ACCESS_CODE_HASH",
       'Generate it with: node scripts/hash-code.js "your-code".',
-    ),
-    analysesAllowed: integer("JUDGE_ANALYSES_ALLOWED", 3),
-    creditsCap: integer("JUDGE_CREDITS_CAP", 120),
+    );
+  }
+  return {
+    codeHash,
+    analysesAllowed: count("JUDGE_ANALYSES_ALLOWED", 3),
+    creditsCap: count("JUDGE_CREDITS_CAP", 120),
   };
 }
 
 export function isJudgeCodeConfigured(): boolean {
-  return optional("JUDGE_ACCESS_CODE_HASH") !== null;
+  return judgeCodeHash() !== null;
 }
 
 /** Renders per judge session, docs/07-payments-and-judge-mode.md, "Caps". */
