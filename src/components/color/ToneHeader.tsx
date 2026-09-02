@@ -24,6 +24,12 @@ import { UndertoneAdjuster } from "./UndertoneAdjuster";
  * the query string. Either way it is a sheet the person opened.
  *
  * The "Not quite right?" link is the one gold thing on this screen.
+ *
+ * The undertone label sits 8 under the swatch, which is what every swatch in the
+ * palette grid below does (src/components/ui/Swatch.tsx, mt-2) and what
+ * docs/02-design-system.md means by "8 between a label and its content". It was
+ * 12 here, so the widest swatch on the screen named itself differently from the
+ * twelve under it.
  */
 
 /** The wide tone swatch, taller than a grid square and the full column wide. */
@@ -46,7 +52,7 @@ export function ToneHeader({
   );
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-2">
       <ColorSquare
         hex={skinToneHex ?? ""}
         className={`w-full ${SWATCH_HEIGHT_CLASS}`}

@@ -19,6 +19,10 @@ import type { HairColorOption } from "@/lib/shared/hair-view";
  * Empty state: the colors come from the palette, so a profile with no palette
  * has none to show. The section then carries the quiet line saying so and how to
  * get one, rather than an empty row or an invented color.
+ *
+ * The section title sits 16 above its content, which is the gap every other
+ * section title in the app keeps. src/components/makeup/ShadeRow.tsx carries the
+ * same note.
  */
 
 type ColorRowProps = {
@@ -33,7 +37,7 @@ export function ColorRow({ colors, selectedName, onSelect }: ColorRowProps) {
   const selected = colors.find((color) => color.name === selectedName) ?? null;
 
   return (
-    <section className="flex flex-col gap-3">
+    <section className="flex flex-col gap-4">
       <h2 className="font-display text-title text-text">
         {copy.hair.colorsHeading}
       </h2>
