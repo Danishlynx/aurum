@@ -140,7 +140,11 @@ import { derivePalette } from "@/lib/shared/palette";
  * rather than restated, so the two scripts cannot drift. golden-run.ts runs
  * nothing at import: its entry point is guarded the same way this one is.
  */
-import { GOLDEN_STEPS, makeupParamsFrom } from "./golden-run";
+import {
+  GOLDEN_STEPS,
+  makeupParamsFrom,
+  summaryFromRecordedResult,
+} from "./golden-run";
 
 // ---------------------------------------------------------------------------
 // Identity
@@ -879,6 +883,92 @@ function unitsOf(call: GoldenManifest["calls"][number] | undefined): number {
   return call?.measuredUnits ?? call?.tableUnits ?? 0;
 }
 
+/**
+ * Analysis kind to the golden run step that produces it.
+ *
+ * Read out of GOLDEN_STEPS, which is scripts/golden-run.ts's own table, so the
+ * two scripts cannot disagree about which call produced which analysis.
+ */
+export function goldenStepByAnalysisKind(): Map<AnalysisKind, string> {
+  const found = new Map<AnalysisKind, string>();
+  for (const [step, definition] of Object.entries(GOLDEN_STEPS)) {
+    if (definition.kind === "analysis") {
+      found.set(definition.analysisKind, step);
+    }
+  }
+  return found;
+}
+
+/**
+ * The summaries the analyses fixture does not carry, rebuilt from the responses
+ * the manifest says were recorded.
+ *
+ * WHY THIS IS NEEDED. The analyses fixture (<fixtureId>.json) is written at the
+ * end of a golden run from the summaries that run produced, so it holds the
+ * kinds that ran last and nothing else. A run that buys the tone call on Monday
+ * and re ingests the skin response on Tuesday leaves a fixture whose only
+ * summary is skin, while raw/tone.json still sits in the folder holding the
+ * measured colours. Seeding from that fixture alone wrote one analyses row, the
+ * profile builder was handed no colours, undertone came out null, and /color
+ * opened the "Confirm your undertone" sheet on a demo profile a judge cannot
+ * save to. The measurement was bought and recorded; it simply never reached the
+ * row.
+ *
+ * WHAT IT DOES. For every kind with no summary, it looks up that kind's golden
+ * step, takes the raw/<step>.json the manifest recorded for a succeeded call,
+ * and puts it back through summaryFromRecordedResult, which is the same
+ * normalize() from src/lib/server/jobs/analysis.ts that a live analysis is
+ * stored through. No field is restated here and no value is invented: a
+ * recording that does not parse as that kind's result is left out, exactly as a
+ * provider response that failed its schema would be.
+ */
+export function backfillSummariesFromRecordedRaw(args: {
+  readonly summaries: GoldenSummaries;
+  readonly manifest: GoldenManifest;
+  readonly source: FileSource;
+  /** Lines for the run summary, one per kind that was rebuilt. */
+  readonly notes: string[];
+}): GoldenSummaries {
+  const filled: GoldenSummaries = { ...args.summaries };
+  const calls = callsByStep(args.manifest);
+  const stepForKind = goldenStepByAnalysisKind();
+
+  for (const kind of ANALYSIS_KINDS) {
+    const existing = filled[kind];
+    if (existing !== undefined && existing !== null) {
+      continue;
+    }
+    const step = stepForKind.get(kind);
+    const call = step === undefined ? undefined : calls.get(step);
+    const rawFile = call?.outputs.find((name) => name.startsWith("raw/"));
+    if (rawFile === undefined || !args.source.exists(rawFile)) {
+      continue;
+    }
+
+    let recorded: unknown;
+    try {
+      recorded = args.source.readJson(rawFile);
+    } catch {
+      continue;
+    }
+
+    const summary = summaryFromRecordedResult(kind, recorded);
+    if (summary === null) {
+      args.notes.push(
+        `The analyses fixture carries no ${kind} summary and ${rawFile} does not parse as that endpoint's result, so no ${kind} row is seeded. Nothing was guessed from it.`,
+      );
+      continue;
+    }
+
+    filled[kind] = summary;
+    args.notes.push(
+      `The analyses fixture carries no ${kind} summary, so it was rebuilt from the recorded response ${rawFile} through the same normalize() a live analysis is stored through. Nothing is assumed: these are the values the provider measured, and the call is already recorded as ${String(unitsOf(call))} unit(s) spent.`,
+    );
+  }
+
+  return filled;
+}
+
 export function buildCaptureSeed(input: GoldenInput): {
   readonly row: Insert<"captures">;
   readonly object: SeedObject;
@@ -944,13 +1034,7 @@ export function buildAnalysesSeed(input: GoldenInput): AnalysesSeed {
   const rows: Insert<"analyses">[] = [];
   const objects: SeedObject[] = [];
   const calls = callsByStep(input.manifest);
-
-  const stepForKind = new Map<AnalysisKind, string>();
-  for (const [step, definition] of Object.entries(GOLDEN_STEPS)) {
-    if (definition.kind === "analysis") {
-      stepForKind.set(definition.analysisKind, step);
-    }
-  }
+  const stepForKind = goldenStepByAnalysisKind();
 
   for (const kind of ANALYSIS_KINDS) {
     const summary = input.summaries[kind];
@@ -1785,7 +1869,14 @@ export function summaryLines(report: SeedReport): string[] {
 
   if (report.assumptions.length > 0) {
     lines.push("");
-    lines.push("Assumptions, because the golden run did not record the value");
+    /*
+     * Two kinds of line land here now: a value the run did not record and this
+     * script had to assume, and a value the run did record as a raw response but
+     * left out of its analyses fixture, which is rebuilt rather than assumed.
+     * The heading names both, because calling a rebuilt measurement an
+     * assumption would be the opposite of what it is.
+     */
+    lines.push("How each value the golden run left out of its fixture was resolved");
     for (const assumption of report.assumptions) {
       lines.push(`  ${assumption}`);
     }
@@ -1984,9 +2075,20 @@ export function loadGoldenRun(args: {
   readonly imagePath: string | null;
 }): GoldenInput {
   const manifest = loadGoldenManifest(args.source);
-  const summaries = loadGoldenSummaries(args.source, manifest);
-  const captureImagePath = findCaptureImage(args.source, args.imagePath);
   const notes: string[] = [];
+  /*
+   * The fixture holds the summaries of the run that wrote it, which is not
+   * always every call the folder has recorded. Anything missing is rebuilt from
+   * the recorded response before a single row is built, so the analyses rows,
+   * the makeup shades, and the profile all read the same set.
+   */
+  const summaries = backfillSummariesFromRecordedRaw({
+    summaries: loadGoldenSummaries(args.source, manifest),
+    manifest,
+    source: args.source,
+    notes,
+  });
+  const captureImagePath = findCaptureImage(args.source, args.imagePath);
   if (args.imagePath === null) {
     notes.push(
       `The selfie was found at ${captureImagePath} inside the run folder. The golden run records the hash but never copies the file, so check that this is the same image.`,

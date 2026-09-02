@@ -59,7 +59,10 @@ import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
 
-import { UNKNOWN_COST_FALLBACK_UNITS } from "@/lib/server/credits/costs";
+import {
+  ENDPOINT_FOR_ANALYSIS,
+  UNKNOWN_COST_FALLBACK_UNITS,
+} from "@/lib/server/credits/costs";
 import {
   normalize,
   planFor as analysisPlanFor,
@@ -1308,13 +1311,53 @@ export function hairstyleBodyFor(args: {
 }
 
 /**
- * The tone result a previous run recorded, read back as the summary that run
- * produced.
+ * The task id put on a snapshot rebuilt from a file rather than polled.
  *
- * raw/tone.json is written by normalize() as the parsed provider result, so the
- * way back to a summary is the same normalize() over a snapshot built around it,
- * exactly as ingest mode does for the skin analysis. Deriving the shades a second
- * way here would let this file and the app disagree about the same face.
+ * It is not a task id the provider ever issued, and it says so, because a
+ * snapshot built here is never sent anywhere: it exists only so a recorded
+ * result can go back through the same normalize() a live one goes through.
+ */
+export const RECORDED_SNAPSHOT_TASK_ID = "recorded-response";
+
+/**
+ * A recorded provider result, read back as the summary a run produced from it.
+ *
+ * raw/<step>.json is written by normalize() as the parsed provider result, so
+ * the way back to a summary is the same normalize() over a snapshot built
+ * around it, exactly as ingest mode does for the skin analysis. Deriving a
+ * summary a second way would let a script and the app disagree about the same
+ * face: the shape here is whatever src/lib/server/jobs/analysis.ts writes, and
+ * whatever src/lib/server/profile/summaries.ts reads back.
+ *
+ * The endpoint key comes from the credits layer's own table, so a snapshot
+ * names the endpoint the kind is really asked of.
+ *
+ * Returns null when the recording does not parse as that kind's result, which
+ * every caller turns into a refusal or a skip rather than into a guess.
+ */
+export function summaryFromRecordedResult(
+  kind: AnalysisKind,
+  results: unknown,
+): unknown | null {
+  const snapshot: TaskSnapshot = {
+    endpointKey: ENDPOINT_FOR_ANALYSIS[kind],
+    taskId: RECORDED_SNAPSHOT_TASK_ID,
+    state: "succeeded",
+    results,
+    errorCode: null,
+    pollingIntervalSeconds: null,
+  };
+  try {
+    return normalize(kind, snapshot).summary;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The tone result a previous run recorded, read back as the summary that run
+ * produced. The reading is here; the normalization is the shared function
+ * above, so this path and the seed script cannot drift.
  *
  * Returns null when there is no readable recording, which the caller turns into
  * a refusal rather than a guess.
@@ -1336,19 +1379,7 @@ export function readRecordedAttributes(
   } catch {
     return null;
   }
-  const snapshot: TaskSnapshot = {
-    endpointKey: "facialColorTones",
-    taskId: "recorded-response",
-    state: "succeeded",
-    results: parsed,
-    errorCode: null,
-    pollingIntervalSeconds: null,
-  };
-  try {
-    return normalize("attributes", snapshot).summary;
-  } catch {
-    return null;
-  }
+  return summaryFromRecordedResult("attributes", parsed);
 }
 
 /**

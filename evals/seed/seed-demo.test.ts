@@ -19,6 +19,7 @@ import {
 } from "@/lib/server/products";
 import { cachedListingsSchema } from "@/lib/server/products/schemas";
 import { DEMO_FIXTURE_WARDROBE } from "@/lib/server/profile/demo-fixture-wardrobe";
+import { detectUndertone } from "@/lib/server/profile/undertone";
 import {
   RECORDED_LISTING_RESPONSES,
   RECORDED_LISTINGS_GL,
@@ -284,6 +285,54 @@ const GOLDEN_JSON: Readonly<Record<string, unknown>> = {
   "raw/tone.json": { result: "recorded tone response" },
   "raw/attr.json": { result: "recorded attributes response" },
 };
+
+/**
+ * The facial colour tones result, in the shape raw/tone.json holds it.
+ *
+ * It is the sanitized envelope pattern evals/golden/perfectcorp-envelope.test.ts
+ * uses: the body the endpoint really answers with, carrying no URL, no token,
+ * and no bucket, because this endpoint returns seven colours and nothing else.
+ * The values are the ones the founder's own golden run measured, which is what
+ * makes the expectations below the same numbers a seeded demo profile carries.
+ * The run folder itself is never committed (.gitignore, evals/fixtures/golden).
+ *
+ * Nothing in this file reaches the provider: fetch is taken away by
+ * vitest.setup.ts, and the only thing done with this literal is the same
+ * normalize() a live task result goes through.
+ */
+const RECORDED_TONE_RESULT = {
+  color: {
+    skin_color: "#997357",
+    eye_color: "#0f0b0f",
+    eye_color_name: "Brown",
+    lip_color: "#b57f7f",
+    eyebrow_color: "#3e3834",
+    hair_color: "#FAF0BE",
+    hair_color_name: "Blonde",
+  },
+} as const;
+
+/** That result after normalize(), which is what the analyses row stores. */
+const RECORDED_TONE_SUMMARY = {
+  skinColor: "#997357",
+  eyeColor: "#0f0b0f",
+  eyeColorName: "Brown",
+  lipColor: "#b57f7f",
+  eyebrowColor: "#3e3834",
+  hairColor: "#FAF0BE",
+  hairColorName: "Blonde",
+};
+
+/**
+ * The analyses fixture with one summary missing, which is the state a golden
+ * folder is left in whenever the run that wrote the fixture is not the run that
+ * bought the call.
+ */
+function fixtureWithoutSummary(kind: string): Record<string, unknown> {
+  const fixture = GOLDEN_JSON["live-01.json"] as Record<string, unknown>;
+  const summaries = fixture.summaries as Record<string, unknown>;
+  return { ...fixture, summaries: { ...summaries, [kind]: null } };
+}
 
 const GOLDEN_BYTES: Readonly<Record<string, string>> = {
   "capture.jpg": "not a real jpeg, and no test ever decodes it",
@@ -980,6 +1029,140 @@ describe("runSeed, --from-golden", () => {
 // ---------------------------------------------------------------------------
 // Failure
 // ---------------------------------------------------------------------------
+
+/**
+ * The bug this block exists for.
+ *
+ * The analyses fixture is written at the end of a golden run from the summaries
+ * that run produced. A folder whose tone call was bought on one day and whose
+ * skin response was re ingested on another therefore holds a fixture with only
+ * the skin summary, while raw/tone.json still carries the colours the provider
+ * measured and the manifest still records the 20 units they cost. Seeded from
+ * the fixture alone, the demo profile got one analyses row, no tone, no
+ * undertone and no palette, and /color opened the "Confirm your undertone" sheet
+ * on a profile a judge session is not allowed to save to.
+ *
+ * The recording is put back through the same normalize() a live analysis is
+ * stored through, so nothing here is a second derivation of anything.
+ */
+describe("runSeed, --from-golden, a summary the fixture lost", () => {
+  function goldenWithRecordedTone(): GoldenInput {
+    return goldenInput({
+      "live-01.json": fixtureWithoutSummary("attributes"),
+      "raw/tone.json": RECORDED_TONE_RESULT,
+    });
+  }
+
+  it("rebuilds the attributes summary from the recorded response", () => {
+    const golden = goldenWithRecordedTone();
+
+    expect(golden.summaries.attributes).toEqual(RECORDED_TONE_SUMMARY);
+    expect(golden.notes.join(" ")).toContain("raw/tone.json");
+    expect(golden.notes.join(" ")).toContain("normalize()");
+  });
+
+  it("writes the attributes row, with the units the manifest recorded", async () => {
+    const writer = new RecordingWriter();
+    const report = await seed({ writer, golden: goldenWithRecordedTone() });
+
+    expect(report.ok).toBe(true);
+    const analyses = writer.rowsOf("analyses");
+    expectColumnsAreInsertable("analyses", analyses);
+    expect(analyses.map((row) => row.kind)).toEqual([
+      "skin",
+      "attributes",
+      "face_shape",
+    ]);
+
+    const attributes = analyses.find((row) => row.kind === "attributes");
+    expect(attributes?.summary).toEqual(RECORDED_TONE_SUMMARY);
+    // The raw column holds the response as it was recorded, exactly as the live
+    // path stores the parsed result.
+    expect(attributes?.raw).toEqual(RECORDED_TONE_RESULT);
+    expect(attributes?.provider_task_id).toBe("task-tone");
+    // The tone call's own recorded figure. Nothing is charged again for reading
+    // a file: this run makes no provider call at all.
+    expect(attributes?.credits_used).toBe(3);
+    expect(attributes?.status).toBe("succeeded");
+  });
+
+  it("gives the profile the measured colours, an undertone, and a palette", async () => {
+    const writer = new RecordingWriter();
+    await seed({ writer, golden: goldenWithRecordedTone() });
+
+    const row = writer.rowsOf("aesthetic_profiles")[0];
+    expectColumnsAreInsertable("aesthetic_profiles", [
+      row as Record<string, unknown>,
+    ]);
+
+    expect(row?.skin_tone_hex).toBe("#997357");
+    expect(row?.eye_color_hex).toBe("#0f0b0f");
+    // Stored lowercased, because that is the shape the column's check
+    // constraint takes (toHexColor in src/lib/server/profile/summaries.ts).
+    expect(row?.hair_color_hex).toBe("#faf0be");
+
+    /*
+     * The undertone is the app's own rule over the measured hex, not a value
+     * chosen here: detectUndertone reads hue 25.5 degrees off #997357, which is
+     * just under the 26 degree line it calls warm, so the honest answer is
+     * neutral. Asserting the function beside the literal means this test cannot
+     * drift from the rule, and the literal means a changed rule is noticed.
+     */
+    expect(row?.undertone).toBe(detectUndertone("#997357"));
+    expect(row?.undertone).toBe("neutral");
+    expect(row?.undertone_source).toBe("detected");
+
+    // A tone and an undertone are all derivePalette needs, so the screens that
+    // were empty now have a season and a palette to draw.
+    expect(row?.season).not.toBeNull();
+    expect(row?.palette).not.toBeNull();
+  });
+
+  it("seeds no row at all when the recording is not that endpoint's result", async () => {
+    const writer = new RecordingWriter();
+    // The default in memory folder holds a placeholder under raw/tone.json,
+    // which is not a facial colour tones body. The recorded makeup params stand
+    // in for the shades, the way they do in the real run folder, so what this
+    // asserts is the missing tone and not the render step refusing beside it.
+    const report = await seed({
+      writer,
+      golden: goldenInput({
+        "live-01.json": fixtureWithoutSummary("attributes"),
+        "renders/makeup-params.json": {
+          categories: [
+            { category: "lip", shadeHex: "#9c5a44", shadeName: "Terracotta" },
+          ],
+        },
+      }),
+    });
+
+    expect(report.ok).toBe(true);
+    expect(writer.rowsOf("analyses").map((row) => row.kind)).toEqual([
+      "skin",
+      "face_shape",
+    ]);
+
+    const row = writer.rowsOf("aesthetic_profiles")[0];
+    expect(row?.skin_tone_hex).toBeNull();
+    expect(row?.undertone).toBeNull();
+    expect(row?.undertone_source).toBeNull();
+    expect(row?.season).toBeNull();
+    expect(report.assumptions.join(" ")).toContain("Nothing was guessed");
+  });
+
+  it("leaves a fixture that carries its own summary alone", async () => {
+    const writer = new RecordingWriter();
+    const report = await seed({ writer, golden: goldenInput() });
+
+    const attributes = writer
+      .rowsOf("analyses")
+      .find((row) => row.kind === "attributes");
+    expect(attributes?.summary).toEqual(ATTRIBUTES_SUMMARY);
+    expect(report.assumptions.join(" ")).not.toContain(
+      "carries no attributes summary",
+    );
+  });
+});
 
 describe("runSeed, failure", () => {
   it("stops at the failing step, exits 1, and reports what did and did not land", async () => {
