@@ -427,8 +427,15 @@ describe("golden-run plan arithmetic", () => {
   });
 
   it("names the endpoints that are not confirmed against the live docs", () => {
-    const plan = buildPlan(optionsFor({ steps: ["tone", "makeup"] }));
-    expect(plan.unverifiedSteps).toContain("tone");
+    /*
+     * "attr" is the face attributes path, which nothing has called yet. "tone"
+     * used to be on this list and came off it: the golden run created a task at
+     * /s2s/v2.0/task/skin-tone-analysis, it succeeded and measured 20 units, and
+     * a path a real task ran on is not an inference any more.
+     */
+    const plan = buildPlan(optionsFor({ steps: ["attr", "tone", "makeup"] }));
+    expect(plan.unverifiedSteps).toContain("attr");
+    expect(plan.unverifiedSteps).not.toContain("tone");
     expect(plan.unverifiedSteps).not.toContain("makeup");
   });
 

@@ -361,15 +361,19 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
       imagesPerCall: 1,
     },
     verification: {
-      state: "unverified",
-      source: `${MAKEUPAR}/reference/ai_skin_tone_analysis`,
-      checkedOn: CHECKED_ON,
+      state: "confirmed",
+      source: LIVE_API,
+      checkedOn: AUTH_CHECKED_ON,
       note:
-        "Result fields are confirmed: data.results.color with skin_color, eye_color, " +
-        "eye_color_name, lip_color, eyebrow_color, hair_color, hair_color_name. Cost of 20 units " +
-        "and the face_angle_strictness_level request field are confirmed. The docs render the task " +
-        "name as task/skin-tone-analysis without the /s2s/v2.0 prefix, so the full path is inferred " +
-        "from the other endpoints and is not confirmed.",
+        "Confirmed live on 2026-09-02. The path was the last open question and a real task settled " +
+        "it: POST /s2s/v2.0/task/skin-tone-analysis created a task that ran to success and measured " +
+        "20 units, recorded in the golden run manifest with its task id. Result fields are " +
+        "confirmed: data.results.color with skin_color, eye_color, eye_color_name, lip_color, " +
+        "eyebrow_color, hair_color, hair_color_name. face_angle_strictness_level is confirmed as a " +
+        "request field, and this endpoint enforces it: a head that is not square to the camera comes " +
+        "back failed with error_face_angle_rightward or error_face_not_forward_facing, and an empty " +
+        "frame with error_no_face. A failed task is charged nothing. The skin analyzer accepts " +
+        "frames this one refuses, so a capture can lose its tone reading and keep its skin reading.",
     },
     analysisKind: "attributes",
   },

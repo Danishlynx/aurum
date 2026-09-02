@@ -120,6 +120,37 @@ export type NormalizedTaskState = "running" | "succeeded" | "failed";
 const SUCCESS_STATES: ReadonlySet<string> = new Set(["success", "succeeded", "completed"]);
 const FAILURE_STATES: ReadonlySet<string> = new Set(["error", "failed", "cancelled", "canceled"]);
 
+/**
+ * Which of the two error fields carries the identifier the jobs layer branches
+ * on.
+ *
+ * data.error is preferred. It is where the engine put every refusal read live
+ * on 2026-09-02 (error_face_angle_rightward, error_face_not_forward_facing,
+ * error_no_face), and data.error_code has never been seen carrying anything.
+ * Reading error_code first would turn a refusal we have a retake line for into
+ * a bare number that src/lib/shared/analysis-failure.ts cannot classify, and
+ * the person would be told the generic thing instead of what to fix.
+ *
+ * Pure, so the choice can be tested against both shapes without a network call.
+ */
+export function taskFailureCode(data: {
+  readonly error?: string | null;
+  readonly error_code?: string | number | null;
+}): string | null {
+  const text = data.error;
+  if (typeof text === "string" && text.trim().length > 0) {
+    return text;
+  }
+  const code = data.error_code;
+  if (typeof code === "number") {
+    return String(code);
+  }
+  if (typeof code === "string" && code.trim().length > 0) {
+    return code;
+  }
+  return null;
+}
+
 export function normalizeTaskState(raw: string): NormalizedTaskState {
   const value = raw.trim().toLowerCase();
   if (SUCCESS_STATES.has(value)) {
