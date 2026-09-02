@@ -117,7 +117,10 @@ test.describe("the way back", () => {
     await page.goto("/welcome");
     await page.goto("/capture");
 
-    const back = page.getByRole("button", { name: copy.common.back });
+    // One back control for the whole app: the BackLink of the header row,
+    // pointed by the table in src/lib/shared/navigation.ts. It is a link, not a
+    // button, because its target is a screen and is known before the click.
+    const back = page.getByRole("link", { name: copy.nav.back });
     await expect(back).toBeVisible();
 
     // docs/06-safety-privacy.md: "Tap targets are at least 44px."

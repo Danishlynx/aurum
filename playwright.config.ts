@@ -32,7 +32,27 @@ import { defineConfig, devices } from "@playwright/test";
  *    a test server with no data in it and is not a secret.
  */
 
-const JUDGE_E2E_PORT = 3100;
+/**
+ * The ports, both derived from one base.
+ *
+ * AURUM_E2E_PORT moves the pair. It exists because reuseExistingServer is on
+ * outside CI: with a development server already on 3000, started by hand with
+ * different environment variables, these specs would attach to it and assert
+ * fixture mode behaviour against a build that has none. Moving the run is the
+ * honest way to share a machine with a server somebody is using.
+ *
+ * A moved run also gets its own build output, for the same reason the judge
+ * server always has one: two Next servers sharing a .next directory write over
+ * each other's compiled routes. Nothing changes on the default ports.
+ */
+const BASE_PORT = Number(process.env.AURUM_E2E_PORT ?? 3000);
+const FIXTURE_PORT = BASE_PORT;
+const JUDGE_E2E_PORT = BASE_PORT + 100;
+
+/** True when this run was moved off the default ports. */
+const MOVED = BASE_PORT !== 3000;
+
+const FIXTURE_BASE_URL = `http://localhost:${String(FIXTURE_PORT)}`;
 
 /** The code e2e/judge-zero.spec.ts types into the judge access screen. */
 export const JUDGE_E2E_CODE = "aurum-e2e-judge";
@@ -62,7 +82,7 @@ export default defineConfig({
   timeout: 90_000,
   expect: { timeout: 15_000 },
   use: {
-    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000",
+    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? FIXTURE_BASE_URL,
     trace: "on-first-retry",
     navigationTimeout: 60_000,
   },
@@ -89,11 +109,16 @@ export default defineConfig({
     ? undefined
     : [
         {
-          command: "npm run dev",
-          url: "http://localhost:3000",
+          command: `npm run dev -- --port ${String(FIXTURE_PORT)}`,
+          url: FIXTURE_BASE_URL,
           reuseExistingServer: !process.env.CI,
           timeout: 120_000,
-          env: { AURUM_DEMO_FIXTURE: "true" },
+          env: {
+            AURUM_DEMO_FIXTURE: "true",
+            // Only on a moved run: on 3000 this is the ordinary .next, which is
+            // what npm run dev builds and what a developer already has warm.
+            ...(MOVED ? { AURUM_DIST_DIR: ".next/e2e-fixture" } : {}),
+          },
         },
         {
           command: `npm run dev -- --port ${String(JUDGE_E2E_PORT)}`,

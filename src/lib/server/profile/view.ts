@@ -330,7 +330,47 @@ export function demoFixtureProfileView(): ProfileView {
     saved,
     keepOriginals: false,
     isJudgeSession: true,
+    // The demo profile is a read profile. Nothing here is waiting on a photo,
+    // so the screen shows the rows alone and no invitation to take one.
+    hasProfile: true,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Has anything been read yet                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Whether this session has a reading behind it at all.
+ *
+ * /report, /color, /makeup, and /hair learn this by asking for their view and
+ * getting null. /looks and /profile cannot: both render something useful with no
+ * profile (a look composed on formality alone, the six rows with their honest
+ * nulls), so neither of them ever gets a null to read the state off. This is the
+ * one question they ask instead.
+ *
+ * A plan that is not "live" is the saved demo profile, seeded or checked in, and
+ * that always holds a reading, so it answers true without a query.
+ *
+ * A failed read answers true, deliberately. The flag exists to invite a person
+ * to take a photo, and inviting them to fix something that is not broken is
+ * worse than showing them nothing: with the database unreachable, the screens
+ * that need it say so in their own words (copy.looks.unavailable,
+ * copy.profile.unavailable). Absence of evidence is not evidence that nobody
+ * ever took a selfie.
+ */
+export async function hasAestheticProfile(
+  session: AppSession,
+): Promise<boolean> {
+  const plan = await planDemoRead(session);
+  if (plan.source !== "live") {
+    return true;
+  }
+  try {
+    return (await getAestheticProfile(plan.ownerId)) !== null;
+  } catch {
+    return true;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -382,6 +422,9 @@ export async function buildProfileView(
       saved: [],
       keepOriginals: consent.keepOriginals,
       isJudgeSession: session.kind === "judge",
+      // Nothing has ever been read for this session. The rows below say so one
+      // at a time; the screen puts the invitation above them.
+      hasProfile: false,
     };
   }
 
@@ -427,6 +470,7 @@ export async function buildProfileView(
     saved,
     keepOriginals: consent.keepOriginals,
     isJudgeSession: session.kind === "judge",
+    hasProfile: true,
   };
 }
 

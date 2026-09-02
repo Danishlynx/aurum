@@ -40,6 +40,43 @@ export const copy = {
     looks: "Looks",
     wardrobe: "Wardrobe",
     profile: "Profile",
+    /**
+     * In house. The back control in the header row of the screen skeleton
+     * (docs/02-design-system.md, "Layout"). It is one of the two controls that
+     * doc allows on screen without a visible label ("Icons never appear without
+     * a text label except the shutter and the back control"), so it carries this
+     * as its accessible name, the same way the shutter carries
+     * capture.shutterLabel. Which screen each one points at is the table in
+     * src/lib/shared/navigation.ts.
+     */
+    back: "Back",
+  },
+
+  /**
+   * The first run invitation: one line per screen a person can reach before
+   * they have ever taken a selfie.
+   *
+   * All in house. docs/01-user-flow.md writes each of these screens for a person
+   * whose profile is already read, and its global rule is what governs the state
+   * before that: "Empty screens invite action with one specific verb." The verb
+   * is the landing screen's own, copy.landing.primaryAction ("Start with a
+   * selfie"), reused rather than reworded, so the app asks for the same thing in
+   * the same words wherever it asks.
+   *
+   * Each line names what that screen in particular is waiting on, rather than
+   * repeating one sentence six times: the routine, the tone, the shades, the
+   * face shape, the palette, the rows.
+   */
+  firstRun: {
+    report:
+      "Your skin reading and the routine under it are built from one photo.",
+    color: "Your palette is read from your own skin tone, which takes one photo.",
+    makeup:
+      "Shades are chosen to sit next to your skin, so they wait on one photo.",
+    hair: "Styles are chosen for your face shape and hair type, both read from one photo.",
+    looks:
+      "Outfits are put together inside your palette, and the palette is read from one photo.",
+    profile: "Every row below is read from one photo. Nothing has been read yet.",
   },
 
   /** A. Landing (/) */
@@ -802,13 +839,6 @@ export const copy = {
    */
   common: {
     close: "Close",
-    /**
-     * The back control in the screen skeleton of docs/02-design-system.md
-     * ("back    title    profile"), which is one of the two controls that doc
-     * allows to carry an icon with no visible label. This is the name it gives
-     * a screen reader instead.
-     */
-    back: "Back",
   },
 } as const;
 
@@ -824,7 +854,13 @@ export type Copy = typeof copy;
  * the approved wording into docs/01-user-flow.md so this list can shrink.
  */
 export const COPY_NOT_IN_FLOW_DOC = [
-  "common.back",
+  "nav.back",
+  "firstRun.report",
+  "firstRun.color",
+  "firstRun.makeup",
+  "firstRun.hair",
+  "firstRun.looks",
+  "firstRun.profile",
   "capture.rejection.over_exposed",
   "capture.rejection.no_face",
   "capture.cameraUnavailable",

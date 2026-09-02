@@ -40,6 +40,7 @@ export {
 export {
   buildProfileView,
   demoFixtureProfileView,
+  hasAestheticProfile,
   savedHairRow,
   savedLookRow,
   skinTypeRowValue,

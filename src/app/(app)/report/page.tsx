@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 
+import { FirstRunInvitation } from "@/components/app-shell/FirstRunInvitation";
 import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { Column } from "@/components/layout/Column";
 import { ConcernList } from "@/components/report/ConcernList";
@@ -60,10 +61,22 @@ export default async function ReportPage() {
 
   const view = await buildReportView(session);
   if (view === null) {
-    // A session with no profile yet has nothing to report on. The person needs
-    // to take the selfie first, so send them there rather than draw an empty
-    // screen.
-    redirect("/capture");
+    /*
+     * A session with no profile yet has nothing to report on.
+     *
+     * This used to redirect to /capture. The pull is right and it stays, but it
+     * is said out loud now: docs/01-user-flow.md, "Global states and rules",
+     * asks an empty screen to invite action with one specific verb, and a
+     * redirect invites nothing. Somebody who taps "Report" in the bottom
+     * navigation and arrives at a camera has been moved without being told why.
+     * The title stays on screen so the navigation still says where they are.
+     */
+    return (
+      <div className="flex flex-col gap-8">
+        <ScreenTitle>{copy.nav.report}</ScreenTitle>
+        <FirstRunInvitation line={copy.firstRun.report} />
+      </div>
+    );
   }
 
   const skinAgeLine = reportSkinAgeLine(view);

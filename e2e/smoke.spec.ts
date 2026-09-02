@@ -1,6 +1,14 @@
 import { expect, test } from "@playwright/test";
 
 import { copy } from "../src/lib/shared/copy";
+import { BACK_TARGETS } from "../src/lib/shared/navigation";
+import {
+  PROFILE_ROW_ACTIONS,
+  PROFILE_ROW_KEYS,
+  PROFILE_ROW_LABELS,
+  type ProfileView,
+} from "../src/lib/shared/profile-view";
+import { CONSENT_VERSION } from "../src/lib/shared/schemas";
 
 /**
  * The Layer 0 and Layer 2 end to end flows, docs/09-build-order-and-demo.md.
@@ -118,6 +126,248 @@ test.describe("consent", () => {
     for (const point of copy.privacy.points) {
       await expect(sheet.getByText(point, { exact: true })).toBeVisible();
     }
+  });
+
+  /**
+   * docs/01-user-flow.md section C: the button is "Continue to capture", and a
+   * session with an analysis to spend goes there and nowhere else.
+   *
+   * POST /api/consent is answered here rather than reached, in its documented
+   * success shape, the same way e2e/analyzing.spec.ts answers GET /api/jobs.
+   * This server has no Supabase project and no judge cookie, so the real route
+   * would return 401 and the screen would show the session missing line, which
+   * says nothing about where a recorded consent leads. What the route itself
+   * does with a real session is proven against the route in
+   * e2e/judge-zero.spec.ts ("records consent against the session"); what is
+   * proven here is the half that only exists on the screen: the two boxes, the
+   * post, and then /capture.
+   */
+  test("takes a recorded consent straight to the capture screen", async ({
+    page,
+  }) => {
+    await page.route("**/api/consent", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          keepOriginals: false,
+          consentVersion: CONSENT_VERSION,
+        }),
+      }),
+    );
+
+    await page.goto("/welcome");
+    await page.getByText(copy.welcome.checkboxAge).click();
+    await page.getByText(copy.welcome.checkboxProcessing).click();
+
+    const continueButton = page.getByRole("button", {
+      name: copy.welcome.continueAction,
+    });
+    await expect(continueButton).toBeEnabled();
+    await continueButton.click();
+
+    await page.waitForURL("**/capture");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* The way back                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The back control from the screen skeleton in docs/02-design-system.md, and the
+ * table that decides where each one points
+ * (src/lib/shared/navigation.ts, which also writes down why every screen without
+ * one does not have one). The table itself is unit tested; these walk it.
+ */
+test.describe("the way back", () => {
+  test("lets a person leave the consent screen the way they came", async ({
+    page,
+  }) => {
+    await page.goto("/welcome");
+
+    const back = page.getByRole("link", { name: copy.nav.back });
+    await expect(back).toHaveAttribute("href", BACK_TARGETS["/welcome"] ?? "");
+    await expect(back).toHaveCount(1);
+
+    await back.click();
+    await expect(
+      page.getByRole("heading", { name: copy.landing.headline, level: 1 }),
+    ).toBeVisible();
+  });
+
+  /**
+   * The screen the founder found with no way off it. The control is on the
+   * canvas above the camera rather than over the preview, so it is legible
+   * whatever the camera is pointed at.
+   */
+  test("lets a person leave the capture screen for the consent screen", async ({
+    page,
+  }) => {
+    await page.goto("/capture");
+
+    const back = page.getByRole("link", { name: copy.nav.back });
+    await expect(back).toHaveCount(1);
+    await expect(back).toHaveAttribute("href", BACK_TARGETS["/capture"] ?? "");
+
+    await back.click();
+    await page.waitForURL("**/welcome");
+    await expect(
+      page.getByRole("heading", { name: copy.welcome.title, level: 1 }),
+    ).toBeVisible();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* The app shell                                                       */
+/* ------------------------------------------------------------------ */
+
+test.describe("the app shell", () => {
+  test.skip(
+    externalServer,
+    "Needs the fixture mode server playwright.config.ts starts.",
+  );
+
+  /**
+   * docs/01-user-flow.md "Screen map": the bottom navigation is Report, Color,
+   * Makeup, Hair, Looks, and the screen you are on is the one marked. A root of
+   * that navigation has no back control: a person reaches it without having come
+   * from anywhere, so a chevron there would be a claim about history the tab bar
+   * disproves (src/lib/shared/navigation.ts).
+   */
+  test("marks the screen you are on and offers no way back from a root", async ({
+    page,
+  }) => {
+    await page.goto("/report");
+
+    const nav = page.getByRole("navigation");
+    await expect(nav.getByRole("link")).toHaveCount(5);
+    await expect(
+      nav.getByRole("link", { name: copy.nav.report }),
+    ).toHaveAttribute("aria-current", "page");
+    await expect(
+      nav.getByRole("link", { name: copy.nav.color }),
+    ).not.toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("link", { name: copy.nav.back })).toHaveCount(0);
+
+    // Profile is reached from the top right of every screen in the group.
+    await expect(
+      // Exact, because /report also carries "Save to profile".
+      page.getByRole("link", { name: copy.nav.profile, exact: true }),
+    ).toHaveAttribute("href", "/profile");
+
+    await nav.getByRole("link", { name: copy.nav.color }).click();
+    await page.waitForURL("**/color");
+    await expect(
+      page.getByRole("link", { name: copy.nav.color }).first(),
+    ).toHaveAttribute("aria-current", "page");
+  });
+
+  /**
+   * "Wardrobe is reached from Looks." It is the one screen in the group the
+   * bottom navigation and the profile link do not reach, so it is the one screen
+   * in the group with a back control, and it goes where it was pushed from.
+   */
+  test("reaches the wardrobe from looks and gets back to it", async ({
+    page,
+  }) => {
+    await page.goto("/looks");
+
+    await page.getByRole("link", { name: copy.nav.wardrobe }).click();
+    await page.waitForURL("**/wardrobe");
+    await expect(
+      page.getByRole("heading", { name: copy.nav.wardrobe, level: 1 }),
+    ).toBeVisible();
+
+    const back = page.getByRole("link", { name: copy.nav.back });
+    await expect(back).toHaveAttribute("href", BACK_TARGETS["/wardrobe"] ?? "");
+
+    await back.click();
+    await page.waitForURL("**/looks");
+    await expect(
+      page.getByRole("heading", { name: copy.nav.looks, level: 1 }),
+    ).toBeVisible();
+  });
+
+  /** Reached from six screens, so there is no one screen behind it. */
+  test("gives the profile no back control", async ({ page }) => {
+    await page.goto("/profile");
+
+    await expect(page.getByRole("link", { name: copy.nav.back })).toHaveCount(0);
+    await expect(
+      // Exact, because /report also carries "Save to profile".
+      page.getByRole("link", { name: copy.nav.profile, exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* First run                                                           */
+/* ------------------------------------------------------------------ */
+
+test.describe("first run", () => {
+  test.skip(
+    externalServer,
+    "Needs the fixture mode server playwright.config.ts starts.",
+  );
+
+  /**
+   * The screen the founder found: a fresh session, six rows of "Not read from
+   * your photo yet", and nothing pulling toward the one thing that fills them.
+   *
+   * GET /api/profile is answered here in the shape the server sends for a
+   * session with no reading behind it, because neither end to end server can be
+   * in that state: the fixture server is the saved demo profile and the judge
+   * server has no analyses. The server half is proven in
+   * evals/safety/judge-zero.test.ts, which asks buildProfileView and
+   * hasAestheticProfile the same question with the database call replaced.
+   *
+   * What is proven here is the screen: the rows stay, because they are the
+   * honest inventory, and the invitation goes above them with one specific verb
+   * (docs/01-user-flow.md, "Global states and rules").
+   */
+  test("invites a person with no reading yet to start with a selfie", async ({
+    page,
+  }) => {
+    const empty: ProfileView = {
+      rows: PROFILE_ROW_KEYS.map((key) => ({
+        key,
+        label: PROFILE_ROW_LABELS[key],
+        value: null,
+        action: PROFILE_ROW_ACTIONS[key],
+      })),
+      saved: [],
+      keepOriginals: false,
+      isJudgeSession: false,
+      hasProfile: false,
+    };
+
+    await page.route("**/api/profile", (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify(empty),
+          })
+        : route.continue(),
+    );
+
+    await page.goto("/profile");
+
+    await expect(page.getByText(copy.firstRun.profile)).toBeVisible();
+    const start = page.getByRole("link", {
+      name: copy.landing.primaryAction,
+    });
+    await expect(start).toHaveAttribute("href", "/capture");
+
+    // The rows are still there, still saying the true thing about each value.
+    const rows = page.locator("main ul").first().locator("li");
+    await expect(rows).toHaveCount(6);
+    await expect(page.getByText(copy.profile.valueUnavailable)).toHaveCount(6);
+
+    // One invitation, and only one.
+    await expect(start).toHaveCount(1);
   });
 });
 
