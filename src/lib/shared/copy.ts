@@ -802,6 +802,13 @@ export const copy = {
    */
   common: {
     close: "Close",
+    /**
+     * The back control in the screen skeleton of docs/02-design-system.md
+     * ("back    title    profile"), which is one of the two controls that doc
+     * allows to carry an icon with no visible label. This is the name it gives
+     * a screen reader instead.
+     */
+    back: "Back",
   },
 } as const;
 
@@ -817,6 +824,7 @@ export type Copy = typeof copy;
  * the approved wording into docs/01-user-flow.md so this list can shrink.
  */
 export const COPY_NOT_IN_FLOW_DOC = [
+  "common.back",
   "capture.rejection.over_exposed",
   "capture.rejection.no_face",
   "capture.cameraUnavailable",

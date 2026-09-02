@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { UploadInstead } from "@/components/capture/UploadInstead";
 import { Column } from "@/components/layout/Column";
+import { BackControl } from "@/components/ui/BackControl";
 import { Button, ButtonLink } from "@/components/ui/Button";
 import { SkeletonRow } from "@/components/ui/SkeletonRow";
 import {
@@ -46,6 +47,20 @@ import type { CaptureAssessment, CaptureRejectionReason } from "@/lib/shared/qua
  * live guidance below it, a single shutter, and "Upload instead" for people
  * without a working camera.
  *
+ * Composition, docs/02-design-system.md "Layout": mobile first at 390px, and on
+ * desktop "a 480px column centered on the Obsidian canvas". The camera stage is
+ * inside that column with the guidance, the shutter, and the upload link, so a
+ * laptop webcam shows the same portrait frame a phone does rather than a wide
+ * strip with the controls floating under it. The feed is center cropped into
+ * the stage by object-cover, which crops the sides of a landscape webcam frame
+ * and leaves the vertical framing untouched: the gate and the guidance both
+ * measure the face against the frame height, so what the oval promises and what
+ * is measured stay the same picture.
+ *
+ * The preview is mirrored, as a person expects of a camera pointed at them. The
+ * frame that is taken is not: it is the picture the analysis reads and the one
+ * /report shows back, and mirroring it would put a mole on the wrong cheek.
+ *
  * On capture the frame is drawn to a canvas at a 1024px long edge, which strips
  * EXIF, hashed with SHA 256, and put through the shared quality gate before
  * anything is sent. docs/04-integrations.md: never send a photo that failed the
@@ -83,6 +98,21 @@ export interface CaptureScreenProps {
   readonly analysesExhausted?: boolean;
 }
 
+/**
+ * The still, at the size /analyzing is handed: small enough to travel through
+ * sessionStorage as a data URL, and the same picture the upload carries.
+ */
+function previewDataUrl(canvas: HTMLCanvasElement): string {
+  return toDataUrl(
+    drawToCanvas(
+      canvas,
+      { width: canvas.width, height: canvas.height },
+      PREVIEW_LONG_EDGE,
+    ),
+    PREVIEW_JPEG_QUALITY,
+  );
+}
+
 export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -91,6 +121,13 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     canvas: HTMLCanvasElement;
     assessment: CaptureAssessment;
   } | null>(null);
+  /**
+   * The still that froze on the screen when the shutter was tapped. It is the
+   * same data URL /analyzing is handed, drawn once and kept, so the frame the
+   * person is looking at while the upload runs is the frame the reveal opens
+   * with and the two screens never disagree.
+   */
+  const previewRef = useRef<string | null>(null);
 
   const [phase, setPhase] = useState<Phase>(
     analysesExhausted ? { name: "capped" } : { name: "starting" },
@@ -271,14 +308,12 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         decrementJudgeRemaining();
       }
 
-      const preview = drawToCanvas(
-        canvas,
-        { width: canvas.width, height: canvas.height },
-        PREVIEW_LONG_EDGE,
-      );
+      // Already drawn when the frame froze on the screen. Drawing it a second
+      // time here would cost another full size canvas pass at the one moment
+      // the person is waiting on us.
       rememberCapturePreview(
         created.data.captureId,
-        toDataUrl(preview, PREVIEW_JPEG_QUALITY),
+        previewRef.current ?? previewDataUrl(canvas),
       );
 
       router.push(
@@ -313,13 +348,6 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         faceBox: estimate.faceBox,
       });
 
-      const preview = drawToCanvas(
-        canvas,
-        { width: canvas.width, height: canvas.height },
-        PREVIEW_LONG_EDGE,
-      );
-      setStill(toDataUrl(preview, PREVIEW_JPEG_QUALITY));
-
       if (assessment.verdict === "accept") {
         await upload(canvas, assessment);
         return;
@@ -336,6 +364,21 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     [upload],
   );
 
+  /**
+   * The frame on the screen, the instant the shutter is tapped.
+   *
+   * docs/01-user-flow.md section D ends at "Route to /analyzing", and between
+   * the tap and that route there is a measure, a hash, an upload, and two
+   * requests. Freezing the frame first means the answer to the tap is the
+   * photo, not a live camera that carried on moving while the work happened.
+   */
+  function freeze(canvas: HTMLCanvasElement): void {
+    const dataUrl = previewDataUrl(canvas);
+    previewRef.current = dataUrl;
+    setStill(dataUrl);
+    setPhase({ name: "working" });
+  }
+
   function handleShutter(): void {
     const video = videoRef.current;
     if (video === null || video.videoWidth === 0) {
@@ -346,6 +389,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       { width: video.videoWidth, height: video.videoHeight },
       CAPTURE_LONG_EDGE,
     );
+    freeze(canvas);
     void assess(canvas);
   }
 
@@ -361,12 +405,14 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       }
       const canvas = drawToCanvas(decoded.source, decoded.size, CAPTURE_LONG_EDGE);
       decoded.release();
+      freeze(canvas);
       await assess(canvas);
     })();
   }
 
   function handleRetake(): void {
     pendingRef.current = null;
+    previewRef.current = null;
     setStill(null);
     setPhase(
       videoRef.current?.srcObject === null || videoRef.current === null
@@ -387,123 +433,167 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
   // Render
   // -------------------------------------------------------------------------
 
+  /*
+   * No camera in the two states that will never take a frame: the browser that
+   * refused it, and the judge session that has spent its analyses (which is
+   * either the state this screen opened in or the one a 429 moved it to).
+   */
+  const showCamera =
+    phase.name !== "camera_unavailable" && phase.name !== "capped";
+  /** Nothing to frame means no oval: an empty ring is decoration. */
+  const showOval = showCamera || still !== null;
+
+  /*
+   * docs/02-design-system.md, Tokens: Champagne is "the live 'Good. Tap to
+   * capture' frame" and nothing else on this screen, and Amber is for
+   * "borderline capture frames only". So a frame the gate refused outright
+   * keeps the ordinary Antique gold hairline: the words under it carry the
+   * refusal, which is the same rule as "there is no red".
+   */
   const frameTone =
-    phase.name === "review"
+    phase.name === "review" && phase.canUseAnyway
       ? "border-caution"
       : guidance === "ready" && phase.name === "live"
         ? "border-accent-bright"
         : "border-accent";
 
   return (
-    <main className="flex min-h-[100svh] flex-col">
-      <div className="relative min-h-[420px] flex-1 overflow-hidden bg-surface">
-        {phase.name === "camera_unavailable" || analysesExhausted ? null : (
-          <video
-            ref={videoRef}
-            muted
-            playsInline
-            autoPlay
-            aria-hidden="true"
-            className="absolute inset-0 h-full w-full scale-x-[-1] object-cover"
-          />
-        )}
-        {still !== null ? (
-          // The frame the person just took. Not decorative, but it has no
-          // description that is not already on the screen.
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={still}
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover"
-          />
-        ) : null}
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div
-            className={`aspect-[18/25] h-[62%] rounded-[50%] border ${frameTone}`}
+    <main className="flex min-h-[100svh] flex-col items-center bg-canvas">
+      <div className="flex w-full max-w-[var(--column-max)] flex-1 flex-col">
+        <div className="relative min-h-[420px] flex-1 overflow-hidden bg-surface">
+          {showCamera ? (
+            <video
+              ref={videoRef}
+              muted
+              playsInline
+              autoPlay
+              aria-hidden="true"
+              className="absolute inset-0 h-full w-full scale-x-[-1] object-cover"
+            />
+          ) : null}
+          {still !== null ? (
+            /*
+             * The frame the person just took. Not decorative, but it has no
+             * description that is not already on the screen.
+             *
+             * While the upload runs it sits at 70 percent, which is the pattern
+             * docs/02-design-system.md gives for a render that is being
+             * replaced. It is the one thing on the screen that says the tap
+             * landed and the work is still going.
+             */
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={still}
+              alt=""
+              className={`absolute inset-0 h-full w-full object-cover ${
+                phase.name === "working" ? "opacity-70" : ""
+              }`}
+            />
+          ) : null}
+          {showOval ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <div
+                className={`aspect-[18/25] h-[62%] rounded-[50%] border ${frameTone}`}
+              />
+            </div>
+          ) : null}
+          <BackControl
+            fallbackHref="/"
+            className="absolute left-[var(--column-padding)] top-[var(--column-padding)]"
           />
         </div>
-      </div>
 
-      <div className="bg-canvas py-6">
-        <Column className="flex flex-col gap-6">
-          {phase.name === "live" ? (
-            <>
-              <p
-                aria-live="polite"
-                className="min-h-[24px] font-body text-body text-text"
-              >
-                {copy.capture.guidance[guidance]}
-              </p>
-              <div className="flex justify-center">
-                <button
-                  type="button"
-                  aria-label={copy.capture.shutterLabel}
-                  onClick={handleShutter}
-                  className="flex h-[72px] w-[72px] items-center justify-center rounded-sm border border-accent bg-transparent"
+        <div className="py-6">
+          <Column className="flex flex-col gap-6">
+            {phase.name === "live" ? (
+              <>
+                <p
+                  aria-live="polite"
+                  className="min-h-[24px] font-body text-body text-text"
                 >
-                  <span
-                    aria-hidden="true"
-                    className="block h-10 w-10 rounded-sm bg-accent"
-                  />
-                </button>
-              </div>
-              <div className="flex justify-center">
+                  {copy.capture.guidance[guidance]}
+                </p>
+                {/*
+                 * docs/02-design-system.md, Layout: the shutter is one of the
+                 * three centered elements in the app. Everything else on this
+                 * screen, the guidance line and the upload link included, stays
+                 * left aligned with the column.
+                 */}
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    aria-label={copy.capture.shutterLabel}
+                    onClick={handleShutter}
+                    className="group flex h-[72px] w-[72px] items-center justify-center rounded-sm border border-accent bg-transparent active:bg-accent focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    {/*
+                     * Pressed, the control inverts: the ring fills with Antique
+                     * gold and the square goes to Obsidian. Two tokens, no
+                     * transition, so the change lands on the touch rather than
+                     * fading in after it.
+                     */}
+                    <span
+                      aria-hidden="true"
+                      className="block h-10 w-10 rounded-sm bg-accent group-active:bg-canvas"
+                    />
+                  </button>
+                </div>
                 <UploadInstead variant="quiet" onFile={handleFile} />
-              </div>
-            </>
-          ) : null}
+              </>
+            ) : null}
 
-          {phase.name === "starting" || phase.name === "working" ? (
-            <SkeletonRow lines={2} height={24} />
-          ) : null}
+            {phase.name === "starting" || phase.name === "working" ? (
+              <SkeletonRow lines={2} height={24} />
+            ) : null}
 
-          {phase.name === "camera_unavailable" ? (
-            <>
-              <p className="font-body text-body text-text">
-                {copy.capture.cameraUnavailable}
-              </p>
-              <UploadInstead variant="primary" onFile={handleFile} />
-            </>
-          ) : null}
+            {phase.name === "camera_unavailable" ? (
+              <>
+                <p className="font-body text-body text-text">
+                  {copy.capture.cameraUnavailable}
+                </p>
+                <UploadInstead variant="primary" onFile={handleFile} />
+              </>
+            ) : null}
 
-          {phase.name === "review" ? (
-            <>
-              <p role="status" className="font-body text-body text-text">
-                {captureRejectionCopy(phase.reason)}
-              </p>
-              <Button variant="primary" onClick={handleRetake}>
-                {copy.capture.retakeAction}
-              </Button>
-              {phase.canUseAnyway ? (
-                <Button variant="secondary" onClick={handleUseAnyway}>
-                  {copy.capture.useAnywayAction}
+            {phase.name === "review" ? (
+              <>
+                <p role="status" className="font-body text-body text-text">
+                  {captureRejectionCopy(phase.reason)}
+                </p>
+                <Button variant="primary" onClick={handleRetake}>
+                  {copy.capture.retakeAction}
                 </Button>
-              ) : null}
-            </>
-          ) : null}
+                {phase.canUseAnyway ? (
+                  <Button variant="secondary" onClick={handleUseAnyway}>
+                    {copy.capture.useAnywayAction}
+                  </Button>
+                ) : null}
+              </>
+            ) : null}
 
-          {phase.name === "failed" ? (
-            <>
-              <p role="status" className="font-body text-body text-text">
-                {phase.message}
-              </p>
-              <Button variant="primary" onClick={handleRetake}>
-                {copy.capture.retakeAction}
-              </Button>
-            </>
-          ) : null}
+            {phase.name === "failed" ? (
+              <>
+                <p role="status" className="font-body text-body text-text">
+                  {phase.message}
+                </p>
+                <Button variant="primary" onClick={handleRetake}>
+                  {copy.capture.retakeAction}
+                </Button>
+              </>
+            ) : null}
 
-          {phase.name === "capped" ? (
-            <>
-              <p role="status" className="font-body text-body text-text">
-                {copy.errors.judgeExhausted}
-              </p>
-              <ButtonLink variant="primary" href="/report">
-                {copy.judge.exploreDemoAction}
-              </ButtonLink>
-            </>
-          ) : null}
-        </Column>
+            {phase.name === "capped" ? (
+              <>
+                <p role="status" className="font-body text-body text-text">
+                  {copy.errors.judgeExhausted}
+                </p>
+                <ButtonLink variant="primary" href="/report">
+                  {copy.judge.exploreDemoAction}
+                </ButtonLink>
+              </>
+            ) : null}
+          </Column>
+        </div>
       </div>
     </main>
   );

@@ -1,0 +1,244 @@
+import { expect, test, type Page } from "@playwright/test";
+
+import { copy } from "../src/lib/shared/copy";
+
+/**
+ * D. Capture, docs/01-user-flow.md section D, as a person meets it.
+ *
+ * Three things are proved here, and all three come from watching someone use
+ * the screen rather than from a scanner.
+ *
+ * 1. Composition. docs/02-design-system.md, Layout: "Mobile first at 390px ...
+ *    On desktop, the app renders a 480px column centered on the Obsidian
+ *    canvas". A laptop webcam is landscape, so without that column the feed
+ *    filled the window as a wide strip with the shutter floating below it.
+ * 2. The way out. The camera is the one screen a person can arrive at by
+ *    accident, and docs/02 puts a back control in the screen skeleton.
+ * 3. The tap. The shutter answers instantly and the frame it took stays on the
+ *    screen, so there is no moment where nothing is happening.
+ *
+ * The camera tests run against Chromium's fake capture device, so no real face
+ * is involved. Nothing in this file spends a credit or writes a row: the gate
+ * runs in the browser, and the one request a frame could start is stubbed.
+ */
+
+/*
+ * Chromium's fake capture device, for the whole file: the screen under test is
+ * a camera screen, and the composition it is asked about is the composition it
+ * has with a feed running in it. Playwright allows launch options only at the
+ * top level of a file, because they decide the worker.
+ */
+test.use({
+  launchOptions: {
+    args: [
+      "--use-fake-device-for-media-stream",
+      "--use-fake-ui-for-media-stream",
+    ],
+  },
+  permissions: ["camera"],
+});
+
+/** The 480px column: the one child of main. */
+function column(page: Page) {
+  return page.locator("main > div").first();
+}
+
+/** The camera stage inside it. */
+function stage(page: Page) {
+  return column(page).locator("> div").first();
+}
+
+/** The resolved value of a design token, so no colour is written into a test. */
+function token(page: Page, name: string): Promise<string> {
+  return page.evaluate((variable) => {
+    const probe = document.createElement("span");
+    probe.style.color = `var(${variable})`;
+    document.body.append(probe);
+    const value = getComputedStyle(probe).color;
+    probe.remove();
+    return value;
+  }, name);
+}
+
+/** Every border colour actually painted on the screen. */
+function paintedBorders(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll("main *"))
+      .map((element) => getComputedStyle(element))
+      .filter((style) => Number.parseFloat(style.borderTopWidth) > 0)
+      .map((style) => style.borderTopColor)
+      .filter((color) => color !== "rgba(0, 0, 0, 0)"),
+  );
+}
+
+test.describe("the capture screen composes into one column", () => {
+  test("fills a phone, with the controls under the stage", async ({ page }) => {
+    await page.goto("/capture");
+    await expect(page.locator("main")).toBeVisible();
+
+    const box = await stage(page).boundingBox();
+    expect(box?.x).toBe(0);
+    expect(box?.width).toBe(390);
+    // Portrait, which is the shape a face is.
+    expect(box?.height ?? 0).toBeGreaterThan(box?.width ?? 0);
+  });
+
+  test.describe("on a laptop window", () => {
+    test.use({
+      viewport: { width: 1280, height: 900 },
+      isMobile: false,
+      hasTouch: false,
+    });
+
+    test("holds the 480px column rather than spreading sideways", async ({
+      page,
+    }) => {
+      await page.goto("/capture");
+      await expect(page.locator("main")).toBeVisible();
+
+      const columnBox = await column(page).boundingBox();
+      expect(columnBox?.width).toBe(480);
+      // Centered on the canvas, not left aligned in a 1280px window.
+      expect(Math.round((columnBox?.x ?? 0) + (columnBox?.width ?? 0) / 2)).toBe(
+        640,
+      );
+
+      // The stage is the column, and it is taller than it is wide: the same
+      // portrait frame the phone gets, not the webcam's landscape strip.
+      const stageBox = await stage(page).boundingBox();
+      expect(stageBox?.width).toBe(480);
+      expect(stageBox?.height ?? 0).toBeGreaterThan(stageBox?.width ?? 0);
+    });
+  });
+});
+
+test.describe("the way back", () => {
+  test("returns to the screen the camera was reached from", async ({ page }) => {
+    await page.goto("/welcome");
+    await page.goto("/capture");
+
+    const back = page.getByRole("button", { name: copy.common.back });
+    await expect(back).toBeVisible();
+
+    // docs/06-safety-privacy.md: "Tap targets are at least 44px."
+    const box = await back.boundingBox();
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+
+    await back.click();
+    await expect(page).toHaveURL(/\/welcome$/u);
+  });
+});
+
+test.describe("the camera itself", () => {
+  /**
+   * docs/01-user-flow.md section D: the guidance is "one line at a time,
+   * replaced as conditions change, never stacked".
+   */
+  test("shows one line of guidance, never two", async ({ page }) => {
+    await page.goto("/capture");
+    await expect(
+      page.getByRole("button", { name: copy.capture.shutterLabel }),
+    ).toBeVisible();
+
+    let onScreen = 0;
+    for (const line of Object.values(copy.capture.guidance)) {
+      onScreen += await page.getByText(line, { exact: true }).count();
+    }
+    expect(onScreen).toBe(1);
+
+    // Quiet, and still findable, under the shutter.
+    await expect(page.getByText(copy.capture.uploadInstead)).toBeVisible();
+  });
+
+  /**
+   * docs/02-design-system.md: a button "changes color the instant it is
+   * touched". The shutter carries no label, so the pressed state is the only
+   * thing that says the tap landed on it.
+   */
+  test("fills the shutter while it is held down", async ({ page }) => {
+    await page.goto("/capture");
+    const shutter = page.getByRole("button", {
+      name: copy.capture.shutterLabel,
+    });
+    await expect(shutter).toBeVisible();
+
+    const accent = await token(page, "--accent");
+    const resting = await shutter.evaluate(
+      (element) => getComputedStyle(element).backgroundColor,
+    );
+    expect(resting).not.toBe(accent);
+
+    const box = await shutter.boundingBox();
+    await page.mouse.move(
+      (box?.x ?? 0) + (box?.width ?? 0) / 2,
+      (box?.y ?? 0) + (box?.height ?? 0) / 2,
+    );
+    await page.mouse.down();
+    const pressed = await shutter.evaluate(
+      (element) => getComputedStyle(element).backgroundColor,
+    );
+    await page.mouse.up();
+
+    expect(pressed).toBe(accent);
+  });
+
+  /**
+   * The handoff, docs/01-user-flow.md section D: between the tap and the route
+   * there is a measure, a hash, and an upload. The frame the person took is on
+   * the screen for all of it, so the tap is never answered with nothing.
+   *
+   * The fake device is not a face, so the gate refuses this frame, which is the
+   * other half of what is checked here: the refusal is in the documented voice,
+   * Retake is the primary action, and the screen still holds the frame.
+   */
+  test("keeps the frame on screen and answers a refused one in words", async ({
+    page,
+  }) => {
+    // Nothing may reach the server from this test. A frame that passed the gate
+    // would try to create a capture; this is the one request that could.
+    await page.route("**/api/captures", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "e2e" }),
+      }),
+    );
+
+    await page.goto("/capture");
+    const shutter = page.getByRole("button", {
+      name: copy.capture.shutterLabel,
+    });
+    await expect(shutter).toBeVisible();
+    await expect(page.locator("main img")).toHaveCount(0);
+
+    await shutter.click();
+
+    // The still, drawn before the gate ran, and still there once it answered.
+    const still = page.locator("main img");
+    await expect(still).toHaveCount(1);
+    await expect(still).toHaveAttribute("src", /^data:image\//u);
+
+    await expect(
+      page.getByRole("button", { name: copy.capture.retakeAction }),
+    ).toBeVisible();
+    await expect(still).toHaveCount(1);
+
+    /*
+     * docs/02-design-system.md: "There is no red." The only borders this screen
+     * paints are the three the design system gives it, plus the Umber hairline
+     * every quiet control carries.
+     */
+    const allowed = new Set(
+      await Promise.all([
+        token(page, "--accent"),
+        token(page, "--accent-bright"),
+        token(page, "--caution"),
+        token(page, "--raised"),
+      ]),
+    );
+    for (const color of await paintedBorders(page)) {
+      expect(allowed.has(color)).toBe(true);
+    }
+  });
+});
