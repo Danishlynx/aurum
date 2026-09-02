@@ -1105,8 +1105,26 @@ async function pollToTerminal(args: {
   return snapshot;
 }
 
-function extensionFor(contentType: string): string {
-  return contentType.includes("png") ? "png" : "jpg";
+/**
+ * The extension an asset should be saved under, read from the bytes.
+ *
+ * The content type is not trustworthy here. Result URLs are pre signed S3 links
+ * and the first makeup render came back over one announcing a generic binary
+ * type, so trusting the header wrote a PNG into a file called makeup-1.jpg. The
+ * header is kept only as the last resort, for bytes that are neither.
+ */
+function extensionFor(asset: {
+  readonly bytes: ArrayBuffer;
+  readonly contentType: string;
+}): string {
+  const head = new Uint8Array(asset.bytes.slice(0, 8));
+  if (PNG_SIGNATURE.every((value, index) => head[index] === value)) {
+    return "png";
+  }
+  if (head[0] === 0xff && head[1] === 0xd8) {
+    return "jpg";
+  }
+  return asset.contentType.includes("png") ? "png" : "jpg";
 }
 
 /**
@@ -1201,6 +1219,66 @@ export function hairstyleBodyFor(args: {
   return { [fileField]: args.fileId, template_id: templateId };
 }
 
+/**
+ * The tone result a previous run recorded, read back as the summary that run
+ * produced.
+ *
+ * raw/tone.json is written by normalize() as the parsed provider result, so the
+ * way back to a summary is the same normalize() over a snapshot built around it,
+ * exactly as ingest mode does for the skin analysis. Deriving the shades a second
+ * way here would let this file and the app disagree about the same face.
+ *
+ * Returns null when there is no readable recording, which the caller turns into
+ * a refusal rather than a guess.
+ */
+export function readRecordedAttributes(
+  io: GoldenRunIo,
+  outDir: string,
+): unknown | null {
+  const path = resolve(outDir, "raw", "tone.json");
+  if (!io.exists(path)) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    const text = new TextDecoder()
+      .decode(io.readFile(path))
+      .replace(/^﻿/u, "");
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const snapshot: TaskSnapshot = {
+    endpointKey: "facialColorTones",
+    taskId: "recorded-response",
+    state: "succeeded",
+    results: parsed,
+    errorCode: null,
+    pollingIntervalSeconds: null,
+  };
+  try {
+    return normalize("attributes", snapshot).summary;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * This run's calls, on top of the ones a previous run recorded.
+ *
+ * A step run again replaces its old entry rather than sitting beside it, so
+ * running the same step twice leaves one record and not two. Pure, so the rule
+ * is testable without a disk.
+ */
+export function mergeCallRecords(
+  previous: PreviousManifest | null,
+  records: readonly CallRecord[],
+): unknown[] {
+  const rerun = new Set<string>(records.map((record) => record.step));
+  const kept = (previous?.calls ?? []).filter((call) => !rerun.has(call.step));
+  return [...kept, ...records];
+}
+
 interface RunState {
   spentUnits: number;
   balance: number | null;
@@ -1274,13 +1352,30 @@ export async function runGoldenRun(
       return 1;
     }
   }
+  /*
+   * The makeup shades are derived from the tone result. Running tone again to
+   * get them would cost 20 units for an answer already sitting on disk, so a
+   * renders only pass reads the recorded one instead. That is free: the units
+   * were spent when it was recorded.
+   */
+  let recordedAttributes: unknown = null;
   if (options.steps.includes("makeup") && !options.steps.includes("tone")) {
-    io.errorLog("");
-    io.errorLog(
-      "The makeup step takes its shades from the tone step, so run tone in the same pass.",
+    recordedAttributes = readRecordedAttributes(io, options.outDir);
+    if (recordedAttributes === null) {
+      io.errorLog("");
+      io.errorLog(
+        "The makeup step takes its shades from the tone step. Either run tone in the same pass, or " +
+          `leave the recorded tone result at ${resolve(options.outDir, "raw", "tone.json")} for this ` +
+          "run to read.",
+      );
+      io.errorLog("Nothing was called.");
+      return 1;
+    }
+    io.log("");
+    io.log(
+      "Reusing the recorded tone result for the makeup shades. No tone task is created and nothing " +
+        "is charged for it: those units were spent when it was recorded.",
     );
-    io.errorLog("Nothing was called.");
-    return 1;
   }
 
   io.log("");
@@ -1312,6 +1407,9 @@ export async function runGoldenRun(
   const imageSha256 = createHash("sha256").update(imageBytes).digest("hex");
   const records: CallRecord[] = [];
   const summaries: Partial<Record<AnalysisKind, unknown>> = {};
+  if (recordedAttributes !== null) {
+    summaries.attributes = recordedAttributes;
+  }
   let failed = false;
 
   try {
@@ -1371,7 +1469,7 @@ export async function runGoldenRun(
               if (mask === undefined) {
                 continue;
               }
-              const name = `masks/${mask.key}.${extensionFor(asset.contentType)}`;
+              const name = `masks/${mask.key}.${extensionFor(asset)}`;
               io.writeFile(
                 resolve(options.outDir, name),
                 new Uint8Array(asset.bytes),
@@ -1409,7 +1507,7 @@ export async function runGoldenRun(
           io.ensureDir(resolve(options.outDir, "renders"));
           const assets = await downloadResultAssets(urls);
           for (const [index, asset] of assets.entries()) {
-            const name = `renders/${call.step}-${String(index + 1)}.${extensionFor(asset.contentType)}`;
+            const name = `renders/${call.step}-${String(index + 1)}.${extensionFor(asset)}`;
             io.writeFile(
               resolve(options.outDir, name),
               new Uint8Array(asset.bytes),
@@ -1485,10 +1583,17 @@ export async function runGoldenRun(
     );
   }
 
+  /*
+   * A later pass must not erase what an earlier one recorded. The golden capture
+   * is built up over several runs (the analyses first, the renders once their
+   * request bodies are right), and a manifest that only ever holds the last pass
+   * would throw away the record of the 20 and 16 units already spent.
+   */
+  const previous = readPreviousManifest(io, options.outDir);
   const manifest = {
     recordedOn,
     captureId: options.captureId,
-    fixtureFile,
+    fixtureFile: fixtureFile ?? previous?.fixtureFile ?? null,
     image: {
       sha256: imageSha256,
       contentType: header.contentType,
@@ -1503,9 +1608,12 @@ export async function runGoldenRun(
       spentUnits: state.spentUnits,
       balanceBeforeUnits: balanceBefore,
       balanceAfterUnits: state.balance,
+      note:
+        "This block covers this run only. Every call ever recorded is in calls below, each with " +
+        "the units it measured, so the whole capture adds up from there.",
     },
     skippedAnalyses: SKIPPED_ANALYSES,
-    calls: records,
+    calls: mergeCallRecords(previous, records),
   };
   writeJson(io, resolve(options.outDir, "manifest.json"), manifest);
 
@@ -1617,6 +1725,8 @@ export function localMaskFileFor(args: {
 /** One call as the manifest records it, read back loosely from a previous run. */
 const previousManifestSchema = z.object({
   recordedOn: z.string().min(1).optional(),
+  /** Carried forward so a renders only pass does not orphan the fixture. */
+  fixtureFile: z.string().nullable().optional(),
   spend: z.unknown().optional(),
   calls: z
     .array(

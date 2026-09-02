@@ -106,12 +106,23 @@ export const HAIRSTYLE_TEMPLATE_CATALOG: readonly HairstyleTemplate[] = [
  * template_id, the result carries a url, and one successful call costs 2 units.
  *
  * CONFIRMED, as of HAIRSTYLE_TEMPLATE_SOURCE.readOn: every id below exists in
- * the provider's live template list. What is still UNVERIFIED is the pairing at
- * the other end: no hairstyle task has been created on this account, so the
- * template_id field name is the reference page's word and not something we have
- * watched succeed, and no render has been looked at to check that a template
- * lands as the cut its title names. The first golden run settles both, and it
- * costs 2 units.
+ * the provider's live template list.
+ *
+ * CONFIRMED on 2026-09-02, from two free rejections: template_id is the field
+ * name, and this endpoint really does accept a file id rather than only a URL. A
+ * body carrying no source at all answers
+ *
+ *   "ref_file_url is required but wasn't included in your request., or
+ *    src_file_url is required ..., or ref_file_id is required ..., or
+ *    src_file_id is required ..."
+ *
+ * which names all four; and a body carrying a source but an invented template
+ * answers 400 InvalidTemplate, "This template ID doesn't exist.", which the
+ * server could only say by looking the id up. So { src_file_id, template_id } is
+ * the right pair of names, and the ids below are ids the server resolves.
+ *
+ * What is still UNVERIFIED is the pairing at the other end: whether a template
+ * lands as the cut its title names. Only looking at a render settles that.
  *
  * Which template each of our cuts maps to is a curation call, not a fact the
  * provider states, so each one records how close the match is:
@@ -215,6 +226,12 @@ export const HAIR_COLOR_INTENSITY = 100;
  *      neighbour, with the full versus ombre mode the reference page does
  *      confirm.
  *
+ * On 2026-09-02 the makeup payload itself was corrected against the live API
+ * (see src/lib/server/renders/makeup.ts), so this body was corrected with it:
+ * palettes is a flat list of colours, and the strength field is colorIntensity
+ * rather than intensity. That makes the guess a better guess. It does not make
+ * it a fact: no hair colour task has ever been created on this account.
+ *
  * Nothing has ever been rendered from it. What is confirmed is only the price,
  * 1 unit per render for both modes.
  *
@@ -233,9 +250,8 @@ export function hairColorTaskBody(args: {
     mode: HAIR_COLOR_MODE,
     palettes: [
       {
-        colors: [
-          { color: args.params.colorHex, intensity: HAIR_COLOR_INTENSITY },
-        ],
+        color: args.params.colorHex.trim().toUpperCase(),
+        colorIntensity: HAIR_COLOR_INTENSITY,
       },
     ],
   };

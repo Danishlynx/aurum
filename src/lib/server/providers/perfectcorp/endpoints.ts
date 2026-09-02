@@ -453,13 +453,25 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
     },
     verification: {
       state: "confirmed",
-      source: `${MAKEUPAR}/reference/makeup_vto`,
-      checkedOn: CHECKED_ON,
+      source: `${MAKEUPAR}/reference/makeup_vto/section/overview/integration-guide and ${LIVE_API}`,
+      checkedOn: AUTH_CHECKED_ON,
       note:
-        "Request body { src_file_url or src_file_id, effects: [...], version: \"1.0\" }. Categories " +
-        "include foundation, blush, lip_color, eye_shadow, eye_liner, eyebrows, highlighter, " +
-        "bronzer, concealer, contour, eyelashes, lip_liner, skin_smooth. Result is " +
-        "data.results.url. Cost is 1 unit per successful call.",
+        "Request body { src_file_url or src_file_id, effects: [...], version: \"1.0\" }. Both source " +
+        "fields are real: src_file_url with an unreachable host creates a task (which then errors " +
+        "and is refunded), and src_file_id with a real uploaded id gets past the source check. " +
+        "Categories include foundation, blush, lip_color, eye_shadow, eye_liner, eyebrows, " +
+        "highlighter, bronzer, concealer, contour, eyelashes, lip_liner, skin_smooth. One effect is " +
+        "{ category, then a shape selector, then palettes: [{ color, texture, colorIntensity }] }, " +
+        "where palettes is a FLAT list of colours and the strength field is colorIntensity. The " +
+        "shape selector is pattern: { name } for blush and eye_shadow (name from the catalogs at " +
+        "plugins-media.makeupar.com/wcm-saas/patterns/<blush|eyeshadow>.json, whose colorNum sets " +
+        "how many palette entries are required), and shape: { name } plus style: { type } for " +
+        "lip_color. foundation needs no selector but its palette entry needs color, colorIntensity, " +
+        "coverageIntensity, and glowIntensity. All of this was driven out for free: a src_file_id " +
+        "the file service cannot resolve is always rejected, and the 400 body distinguishes a wrong " +
+        "effects array (a detailed \"... is required but wasn't included\" enumeration) from a right " +
+        "one (\"One or more parameters in this request are invalid.\"). Result is data.results.url. " +
+        "Cost is 1 unit per successful call, reserved at creation and refunded if the engine errors.",
     },
     analysisKind: null,
   },
@@ -481,16 +493,20 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
     },
     verification: {
       state: "confirmed",
-      source: `${MAKEUPAR}/reference/ai_hairstyle`,
-      checkedOn: CHECKED_ON,
+      source: `${MAKEUPAR}/reference/ai_hairstyle and ${LIVE_API}`,
+      checkedOn: AUTH_CHECKED_ON,
       note:
         "Note the v2.1 path, not v2.0. Request takes src_file_id or src_file_url plus one of " +
-        "ref_file_id, ref_file_url, or template_id. Result carries a url. Cost is 2 units whether " +
-        "a template or a reference image is used. The template ids come from " +
+        "ref_file_id, ref_file_url, or template_id, and the server names all four itself: a body " +
+        "with no source answers 400 InvalidParameters listing ref_file_url, src_file_url, " +
+        "ref_file_id, and src_file_id, and a body with a source but no reference lists the other " +
+        "three plus template_id. An invented template answers 400 InvalidTemplate, \"This template " +
+        "ID doesn't exist.\", so template_id is looked up server side and the catalog ids resolve. " +
+        "Both facts came from free rejections. Result carries a url. Cost is 2 units whether a " +
+        "template or a reference image is used. The template ids come from " +
         "PERFECTCORP_HAIR_TEMPLATE_ENDPOINT, read live on 2026-09-02 and recorded in " +
-        "src/lib/server/renders/hair.ts. Still unwatched, because no hairstyle task has been " +
-        "created on this account: that the field is spelled template_id, and that a template " +
-        "renders as the cut its title names. The first golden run settles both for 2 units.",
+        "src/lib/server/renders/hair.ts. Still unwatched: whether a template renders as the cut " +
+        "its title names, which only looking at a render settles.",
     },
     analysisKind: null,
   },
