@@ -124,6 +124,76 @@ export interface PerfectCorpEndpoint {
 const MAKEUPAR = "https://docs.makeupar.com";
 const CHECKED_ON = "2026-09-01";
 
+/** The live API itself, probed with the real key. The strongest source we have. */
+const LIVE_API = "live API probe against https://yce-api-01.makeupar.com";
+const AUTH_CHECKED_ON = "2026-09-02";
+
+/**
+ * How we authenticate.
+ *
+ * The API console issues a key and a secret, which looks like a token exchange.
+ * It is not one, at least not a required one. Both shapes were exercised against
+ * the live API on 2026-09-02 and the finding is recorded here so nobody has to
+ * spend an afternoon on it again:
+ *
+ * 1. "Authorization: Bearer <PERFECTCORP_API_KEY>" is accepted directly. A GET
+ *    on /s2s/v2.0/task/skin-analysis/<made up id> answered 400 InvalidTaskId,
+ *    which means the request got past auth and died on the task id. The same GET
+ *    with no Authorization header answered 401 InvalidApiKey. So the key alone
+ *    authenticates, and client.ts is right to send it.
+ * 2. The RSA token exchange also exists and works:
+ *    POST /s2s/v1.0/client/auth with { client_id, id_token }, where id_token is
+ *    "client_id=<key>&timestamp=<ms since epoch>" encrypted with the secret
+ *    (a base64 DER RSA 1024 bit public key, PKCS1 padding) and base64 encoded.
+ *    It answers 200 with { status, result: { access_token } }, and a deliberately
+ *    corrupt id_token answers 401 InvalidAuthentication, so the server really does
+ *    verify it. The access token is opaque, carries no expiry field, and is
+ *    accepted on exactly the same endpoints as the raw key.
+ *
+ * Since the exchange buys nothing and costs a round trip plus an expiry we
+ * cannot see, we do not do it. PERFECTCORP_API_SECRET is unused on purpose.
+ */
+export const PERFECTCORP_AUTH = {
+  /** What client.ts sends: the API key straight into the Authorization header. */
+  scheme: "bearer_api_key",
+  /** Real, works, deliberately not used. Kept so the finding is not lost. */
+  tokenExchangePath: "/s2s/v1.0/client/auth",
+  verification: {
+    state: "confirmed",
+    source: LIVE_API,
+    checkedOn: AUTH_CHECKED_ON,
+    note:
+      "Bearer <api key> answered 400 InvalidTaskId on a bogus task id (auth passed) and 401 " +
+      "InvalidApiKey with no header. The /s2s/v1.0/client/auth RSA exchange answered 200 with " +
+      "result.access_token and 401 InvalidAuthentication on a corrupt id_token. Both shapes " +
+      "authenticate; the key alone is enough, so the secret is not read anywhere.",
+  },
+} as const satisfies {
+  scheme: string;
+  tokenExchangePath: string;
+  verification: Verification;
+};
+
+/**
+ * Remaining units on the account. A plain GET, no task, no credit spent.
+ * Not on the public reference pages: found by probing the live API.
+ */
+export const PERFECTCORP_CREDIT_ENDPOINT = {
+  path: "/s2s/v1.0/client/credit",
+  verification: {
+    state: "confirmed",
+    source: LIVE_API,
+    checkedOn: AUTH_CHECKED_ON,
+    note:
+      "GET with the API key as a bearer token answers 200 with " +
+      "{ status, results: [{ id, type, amount, amount_dec, expiry }] }. Note results, not the " +
+      "{ status, data } envelope the task APIs use. type is a grant kind such as ApiPaygToken, " +
+      "amount is the remaining units on that grant, and expiry is milliseconds since epoch. " +
+      "The neighbouring guesses (/client/credits, /credit, /client/quota, /client/balance, and " +
+      "the v2.0 equivalents) all answer 404, so this is the only spelling that exists.",
+  },
+} as const satisfies { path: string; verification: Verification };
+
 /**
  * The file API. Confirmed request and response bodies, quoted on the skin
  * analysis integration guide.

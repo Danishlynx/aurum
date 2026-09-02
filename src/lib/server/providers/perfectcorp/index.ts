@@ -11,6 +11,7 @@ import {
 } from "./client";
 import {
   CAPTURE_ANALYSIS_KEYS,
+  PERFECTCORP_CREDIT_ENDPOINT,
   PERFECTCORP_FILE_ENDPOINT,
   getEndpoint,
   statusPathFor,
@@ -19,6 +20,7 @@ import {
   type PerfectCorpEndpointKey,
 } from "./endpoints";
 import {
+  creditBalanceResponseSchema,
   facialColorTonesResultSchema,
   faceAttributesResultSchema,
   fileResponseSchema,
@@ -35,6 +37,8 @@ import {
 
 export {
   CAPTURE_ANALYSIS_KEYS,
+  PERFECTCORP_AUTH,
+  PERFECTCORP_CREDIT_ENDPOINT,
   PERFECTCORP_ENDPOINTS,
   PERFECTCORP_TASK_TIMEOUT_MS,
   getEndpoint,
@@ -52,6 +56,71 @@ export type { NormalizedTaskState } from "./schemas";
 export { isPerfectCorpConfigured } from "./client";
 
 const PROVIDER = "perfectcorp" as const;
+
+/* ------------------------------------------------------------------ */
+/* Account: what is left to spend                                      */
+/* ------------------------------------------------------------------ */
+
+/** One grant of units, as the account reports it. */
+export interface CreditGrant {
+  /** The grant kind, for example "ApiPaygToken". */
+  readonly kind: string;
+  readonly units: number;
+  /** ISO date the grant lapses, or null when the account does not say. */
+  readonly expiresAt: string | null;
+}
+
+export interface CreditBalance {
+  /** Every grant added up. This is the number worth watching. */
+  readonly totalUnits: number;
+  readonly grants: readonly CreditGrant[];
+}
+
+/** Pure, so the summing rule is testable without a network call. */
+export function totalCreditUnits(grants: readonly CreditGrant[]): number {
+  return grants.reduce((sum, grant) => sum + grant.units, 0);
+}
+
+/**
+ * Milliseconds since epoch to an ISO date. A value outside the range Date can
+ * hold comes back as null: an unreadable expiry is not worth a thrown health
+ * check.
+ */
+export function creditExpiryToIso(milliseconds: number | undefined): string | null {
+  if (milliseconds === undefined) {
+    return null;
+  }
+  const date = new Date(milliseconds);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+/**
+ * Remaining units on the Perfect Corp account. A plain GET: it creates no task,
+ * so it costs nothing and is safe to call from a health check.
+ *
+ * The daily cap in DAILY_CAP_PERFECTCORP_UNITS is our own guard rail. This is
+ * the real ceiling behind it, which is the number that decides whether a demo
+ * can run at all (docs/07-payments-and-judge-mode.md, "Caps").
+ */
+export async function getCreditBalance(args: {
+  readonly timeoutMs?: number;
+} = {}): Promise<CreditBalance> {
+  const response = await perfectCorpJson({
+    path: PERFECTCORP_CREDIT_ENDPOINT.path,
+    method: "GET",
+    schema: creditBalanceResponseSchema,
+    context: "The credit balance request",
+    timeoutMs: args.timeoutMs,
+  });
+
+  const grants: CreditGrant[] = response.results.map((entry) => ({
+    kind: entry.type,
+    units: entry.amount,
+    expiresAt: creditExpiryToIso(entry.expiry),
+  }));
+
+  return { totalUnits: totalCreditUnits(grants), grants };
+}
 
 /* ------------------------------------------------------------------ */
 /* Step 1 and 2: upload slot, then PUT the bytes                       */

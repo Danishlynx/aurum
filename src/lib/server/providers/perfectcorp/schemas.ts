@@ -42,6 +42,33 @@ export const fileResponseSchema = envelope(
 export type FileSlot = z.infer<typeof fileSlotSchema>;
 
 /* ------------------------------------------------------------------ */
+/* Credit balance                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One grant of units on the account. Only the three fields we display are
+ * required: the endpoint also returns id and amount_dec, and a health route
+ * should not break because a bookkeeping field changed shape.
+ */
+export const creditGrantSchema = z.object({
+  type: z.string(),
+  amount: z.number(),
+  /** Milliseconds since epoch. */
+  expiry: z.number().optional(),
+});
+
+/**
+ * The one response that is not wrapped in { status, data }: the credit endpoint
+ * uses { status, results }. Confirmed against the live API, see endpoints.ts.
+ */
+export const creditBalanceResponseSchema = z.object({
+  status: z.number(),
+  results: z.array(creditGrantSchema),
+});
+
+export type CreditGrantResponse = z.infer<typeof creditGrantSchema>;
+
+/* ------------------------------------------------------------------ */
 /* Task creation and polling                                           */
 /* ------------------------------------------------------------------ */
 
