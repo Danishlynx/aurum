@@ -45,6 +45,20 @@ const { groundRoutineSteps, MAPS_ENGINE, SHOPPING_ENGINE, fetchShoppingBody } =
 const { placesResponseSchema, toNearbyPlace } = await import(
   "@/lib/server/providers/serpapi/schemas"
 );
+const {
+  RECORDED_LISTING_RESPONSES,
+  RECORDED_LISTINGS_GL,
+  RECORDED_LISTINGS_HL,
+  RECORDED_LISTINGS_RECORDED_ON,
+  recordedShoppingBody,
+  recordedTopListing,
+} = await import("@/lib/server/profile/recorded-listings");
+const { DEMO_FIXTURE_REPORT_VIEW } = await import(
+  "@/lib/server/profile/demo-fixture"
+);
+const { DEMO_FIXTURE_LOOKS, DEMO_FIXTURE_SAVED_OCCASIONS } = await import(
+  "@/lib/server/profile/demo-fixture-looks"
+);
 
 /**
  * eval:grounding, deterministic over recorded listing fixtures, runs on every PR.
@@ -57,10 +71,20 @@ const { placesResponseSchema, toNearbyPlace } = await import(
  * shown when the recorded response is empty. Live check (on demand): HEAD
  * requests to the top 20 listing URLs return 2xx or 3xx."
  *
- * The fixtures are synthetic until a SerpApi key exists. What passes here is
- * evidence about our normalizer, blocked host list, ranking rule, and cache
- * freshness rule, not about SerpApi's field names.
- * See evals/fixtures/listings/README.md.
+ * Two fixture sets, and they prove different things.
+ *
+ * 1. evals/fixtures/listings, hand written to the documented response shape.
+ *    They cover the states a real recording rarely holds all at once: an empty
+ *    result, a provider error, a blocked aggregator that is also the cheapest,
+ *    a base64 thumbnail, a price with no parsed number, an injected title. What
+ *    passes over them is evidence about our normalizer, blocked host list,
+ *    ranking rule, and cache freshness rule, not about SerpApi's field names.
+ *    See evals/fixtures/listings/README.md.
+ * 2. src/lib/server/profile/recorded-listings, real responses recorded once
+ *    against the live engine. They are what the demo profile actually serves,
+ *    so the section over them is the check that a judge sees real products and
+ *    that the field names in our schema are the ones SerpApi sends.
+ *    See that folder's README.md.
  */
 
 const FIXTURES = resolve(
@@ -699,6 +723,148 @@ describe("eval:grounding, with no SerpApi key", () => {
       warnings.filter((line) => line.includes("invalid_options")),
     ).toHaveLength(1);
     expect(fetchCalls).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The real recordings the demo profile serves
+// ---------------------------------------------------------------------------
+
+const RECORDED_DIR = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "src",
+  "lib",
+  "server",
+  "profile",
+  "recorded-listings",
+);
+
+const recordedManifestSchema = z.object({
+  recordedOn: z.string().min(1),
+  synthetic: z.literal(false),
+  gl: z.string().min(2),
+  hl: z.string().min(2),
+  entries: z.array(
+    z.object({
+      source: z.enum(["routine", "gap"]),
+      query: z.string().min(1),
+      engine: z.literal("google_shopping"),
+      file: z.string().min(1),
+      resultCount: z.number().int().nonnegative(),
+    }),
+  ),
+});
+
+describe("eval:grounding, the recorded responses the demo serves", () => {
+  const manifestText = readFileSync(
+    resolve(RECORDED_DIR, "manifest.json"),
+    "utf8",
+  );
+  const recorded = recordedManifestSchema.parse(
+    JSON.parse(manifestText) as unknown,
+  );
+
+  it("says out loud that these came off the wire, and when", () => {
+    expect(recorded.synthetic).toBe(false);
+    expect(Number.isNaN(Date.parse(recorded.recordedOn))).toBe(false);
+    expect(recorded.entries.length).toBeGreaterThan(0);
+  });
+
+  it("carries no key, no account field, and no search parameters", () => {
+    // evals/fixtures/listings/README.md, and stripResponse in
+    // scripts/record-serpapi.ts, which is what enforced it at recording time.
+    for (const entry of recorded.entries) {
+      const text = readFileSync(resolve(RECORDED_DIR, entry.file), "utf8");
+      expect(text).not.toContain("api_key");
+      expect(text).not.toContain("serpapi_api_key");
+      expect(text).not.toContain("search_parameters");
+      expect(text).not.toContain("total_time_taken");
+    }
+  });
+
+  it("loads every response the manifest lists, through one loader", () => {
+    expect(RECORDED_LISTING_RESPONSES).toHaveLength(recorded.entries.length);
+    expect(RECORDED_LISTINGS_RECORDED_ON).toBe(recorded.recordedOn);
+    expect(RECORDED_LISTINGS_GL).toBe(recorded.gl);
+    expect(RECORDED_LISTINGS_HL).toBe(recorded.hl);
+    for (const entry of recorded.entries) {
+      expect(recordedShoppingBody(entry.query)).not.toBeNull();
+    }
+  });
+
+  it("parses every recorded body with the shipped provider schema", () => {
+    for (const response of RECORDED_LISTING_RESPONSES) {
+      const outcome = normalizeShoppingResponse(response.body, response.query);
+      expect(outcome.malformed).toBe(false);
+      expect(outcome.listings.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("gives every listing it would show a source URL, a price, and an allowed host", () => {
+    for (const response of RECORDED_LISTING_RESPONSES) {
+      const outcome = normalizeShoppingResponse(response.body, response.query);
+      for (const listing of outcome.listings) {
+        const url = new URL(listing.url);
+        expect(["http:", "https:"]).toContain(url.protocol);
+        expect(listing.priceText.trim().length).toBeGreaterThan(0);
+        expect(isBlockedListingUrl(listing.url)).toBe(false);
+        if (listing.imageUrl !== null) {
+          // docs/03-architecture.md: "Never store an image as base64 in
+          // Postgres", and these become product_cache rows.
+          expect(hostOfUrl(listing.imageUrl)).not.toBeNull();
+        }
+      }
+    }
+  });
+
+  it("shares at least one key token between every top listing and its query", () => {
+    for (const response of RECORDED_LISTING_RESPONSES) {
+      const outcome = normalizeShoppingResponse(response.body, response.query);
+      const top = topListing(outcome.listings);
+      expect(top).not.toBeNull();
+      expect(
+        relevanceScore(top?.title ?? "", queryKeyTokens(response.query)),
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("shows a real product on every routine step of the demo report", () => {
+    // The drift guard between the routine and the recordings: change a product
+    // query and the step loses its recording, and this fails rather than the
+    // demo quietly going back to the empty state.
+    const steps = [
+      ...DEMO_FIXTURE_REPORT_VIEW.routine.morning,
+      ...DEMO_FIXTURE_REPORT_VIEW.routine.night,
+    ];
+    expect(steps.length).toBeGreaterThan(0);
+    for (const step of steps) {
+      expect(recordedTopListing(step.productQuery)).not.toBeNull();
+      const product = step.product;
+      expect(product).not.toBeNull();
+      expect(product?.url.startsWith("http")).toBe(true);
+      expect(product?.priceText.trim().length).toBeGreaterThan(0);
+      // No local search was recorded, so the card claims no distance.
+      expect(product?.distanceText).toBeNull();
+    }
+  });
+
+  it("shows real listings on a shop the gap card of a saved look", () => {
+    const withListings = DEMO_FIXTURE_SAVED_OCCASIONS.flatMap((occasion) =>
+      DEMO_FIXTURE_LOOKS[occasion].looks.flatMap((look) =>
+        look.gaps.filter((gap) => gap.listings.length > 0),
+      ),
+    );
+    expect(withListings.length).toBeGreaterThan(0);
+    for (const gap of withListings) {
+      expect(gap.listings.length).toBeLessThanOrEqual(3);
+      for (const listing of gap.listings) {
+        expect(listing.url.startsWith("http")).toBe(true);
+        expect(listing.priceText.trim().length).toBeGreaterThan(0);
+        expect(isBlockedListingUrl(listing.url)).toBe(false);
+      }
+    }
   });
 });
 

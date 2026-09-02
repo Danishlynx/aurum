@@ -2,12 +2,15 @@
  * Records the SerpApi responses the demo profile is served from.
  *
  * docs/07-payments-and-judge-mode.md: "Product listings for the demo are
- * recorded responses so they never depend on live quota." Today every listing
- * fixture in the repository is hand written and says so, and
- * RECORDED_GAP_RESPONSES in src/lib/server/profile/demo-fixture-looks.ts is
- * empty, which is why the demo shows "No listing found near you yet" on every
- * row. This script is how that becomes real without a person copying JSON out
- * of a browser tab.
+ * recorded responses so they never depend on live quota." This script is how
+ * those recordings are made, without a person copying JSON out of a browser
+ * tab.
+ *
+ * It writes straight into src/lib/server/profile/recorded-listings, which is
+ * where the demo profile reads them from: the fixture report, the fixture
+ * looks, and the product_cache rows scripts/seed-demo.ts writes all go through
+ * the loader in that folder. So a re recording is picked up with no second
+ * edit, and there is no stale copy anywhere to disagree with it.
  *
  * What it searches for is not typed in here. It is read from the demo profile
  * itself: the routine steps the report would ground, and the gap queries the
@@ -76,7 +79,12 @@ export interface RecordOptions {
 }
 
 export const DEFAULT_MAX_SEARCHES = 12;
-export const DEFAULT_RECORD_OUT_DIR = "evals/fixtures/listings/recorded";
+/**
+ * Where the demo profile reads its listings from, so a recording lands ready to
+ * serve. See src/lib/server/profile/recorded-listings/README.md for why that is
+ * under src rather than under evals.
+ */
+export const DEFAULT_RECORD_OUT_DIR = "src/lib/server/profile/recorded-listings";
 const DEFAULT_LIMIT = 10;
 
 function requireValue(flag: string, value: string | undefined): string {

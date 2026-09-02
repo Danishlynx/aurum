@@ -16,10 +16,11 @@ import {
 import type { ReportListing } from "@/lib/shared/report-view";
 import type { GarmentView } from "@/lib/shared/wardrobe-view";
 
+import { gapQueryFor, paletteColorFor } from "../looks/gaps";
 import { buildRulesRationale } from "../looks/rationale";
-import { normalizeShoppingResponse } from "../products/normalize";
 import { DEMO_FIXTURE_PALETTE } from "./demo-fixture";
 import { DEMO_FIXTURE_WARDROBE } from "./demo-fixture-wardrobe";
+import { recordedListingsFor } from "./recorded-listings";
 
 /**
  * The looks the app serves when AURUM_DEMO_FIXTURE is "true".
@@ -51,61 +52,47 @@ import { DEMO_FIXTURE_WARDROBE } from "./demo-fixture-wardrobe";
  *    up try on.
  * 2. rationaleSource is "rules" on every look, because the rules wrote them.
  *    No ANTHROPIC_API_KEY exists, so no stylist has ever ranked these.
- * 3. Every gap is listed with an empty listings array while
- *    RECORDED_GAP_RESPONSES is empty. See the note there: a listing is only
- *    ever shown when a real one came back (docs/06-safety-privacy.md,
- *    "Grounding and honesty"), and the recorded responses in the repository
- *    today are hand written stand ins rather than real recordings.
+ * 3. A gap only carries listings when a response was recorded for its own
+ *    query. The recording run covered the shop the gap queries of the saved
+ *    occasions (docs/SUBMISSION-RUNBOOK.md, section A14), so those cards show
+ *    real products and the rest show "No listing found near you yet", which is
+ *    true of them: a listing is only ever shown when a real one came back
+ *    (docs/06-safety-privacy.md, "Grounding and honesty").
  */
 
 /**
- * A recorded google_shopping response for one gap, as
- * docs/07-payments-and-judge-mode.md asks for: "Product listings for the demo
- * are recorded responses so they never depend on live quota."
+ * The query one gap is shopped for.
  *
- * EMPTY ON PURPOSE, and this is the one thing about this file that is waiting on
- * a person rather than on code. The only shopping responses in the repository
- * are hand written to the documented shape (evals/fixtures/listings/README.md
- * says so in writing, and evals/fixtures/garments/gap-listing-injected.json
- * repeats it). Serving one of them here would put a price, a store, and a "View
- * listing" link in front of a judge for a product that does not exist, which is
- * the one thing the grounding rule forbids. So the demo shows the gap and the
- * "No listing found near you yet" state, which is true.
- *
- * TODO for the human, the day a SERPAPI_API_KEY exists: run one search per gap
- * below, strip the response as evals/fixtures/listings/README.md describes, and
- * paste each one in here with its query. Nothing else changes: the entries are
- * read through normalizeShoppingResponse, the same function the live screen
- * uses, so what the demo shows is what the ranking actually picks.
+ * Built by the same gapQueryFor and paletteColorFor the live screen calls
+ * (src/lib/server/looks/gaps.ts), over the same palette and the same rotation
+ * by position, which is also how scripts/record-serpapi.ts decided what to
+ * record. The fixture and the recording therefore agree by construction: change
+ * the palette or the query grammar and the gap stops matching a recording and
+ * honestly falls back to the empty state, rather than showing a product that
+ * was found for a different question.
  */
-interface RecordedGapResponse {
-  /** The garment type word the rules engine reports as missing. */
-  readonly type: string;
-  /** The query the response was recorded for. */
-  readonly query: string;
-  /** The provider response body, exactly as it came back. */
-  readonly body: unknown;
+function gapQuery(
+  occasion: Occasion,
+  type: string,
+  index: number,
+): string | null {
+  return gapQueryFor({
+    colorName: paletteColorFor(DEMO_FIXTURE_PALETTE, index),
+    garmentType: type,
+    occasion,
+  });
 }
 
-const RECORDED_GAP_RESPONSES: readonly RecordedGapResponse[] = [];
-
 /**
- * The listings for one gap, through the real normalizer.
- *
- * Empty until a real response is recorded, which is the honest state and the
- * one the screen already has copy for.
+ * The listings for one gap query, through the real normalizer and the real
+ * ranker (./recorded-listings). Empty when nothing was recorded for it, which
+ * is the honest state and the one the screen already has copy for.
  */
-export function fixtureGapListings(type: string): ReportListing[] {
-  const recorded = RECORDED_GAP_RESPONSES.find((entry) => entry.type === type);
-  if (recorded === undefined) {
+export function fixtureGapListings(query: string | null): ReportListing[] {
+  if (query === null) {
     return [];
   }
-  const outcome = normalizeShoppingResponse(recorded.body, recorded.query);
-  return outcome.listings.slice(0, GAP_LISTING_COUNT).map((listing) => ({
-    ...listing,
-    // No local search has been run for the fixture, so no distance is claimed.
-    distanceText: null,
-  }));
+  return recordedListingsFor(query, GAP_LISTING_COUNT);
 }
 
 const GARMENTS_BY_ID: ReadonlyMap<string, GarmentView> = new Map(
@@ -129,10 +116,10 @@ function itemsOf(candidate: Candidate): LookItem[] {
   return items;
 }
 
-function gapsOf(candidate: Candidate): LookGap[] {
-  return candidate.gaps.map((type) => ({
+function gapsOf(candidate: Candidate, occasion: Occasion): LookGap[] {
+  return candidate.gaps.map((type, index) => ({
     type,
-    listings: fixtureGapListings(type),
+    listings: fixtureGapListings(gapQuery(occasion, type, index)),
   }));
 }
 
@@ -166,7 +153,7 @@ function looksFor(occasion: Occasion): LookView[] {
       heroGarmentId: candidate.heroGarmentId,
       renderUrl: null,
       renderStatus: "none",
-      gaps: gapsOf(candidate),
+      gaps: gapsOf(candidate, occasion),
     });
   }
   return looks;

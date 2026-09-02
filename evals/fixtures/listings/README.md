@@ -4,13 +4,21 @@ Spec: docs/05-evals.md, "Fixtures" and suite eval:grounding. These files let
 eval:grounding run deterministically, on every PR, without spending SerpApi
 quota.
 
-## Status: synthetic, pending a real recording
+## Status: synthetic, and kept that way on purpose
 
 Every file here is hand written to the shape SerpApi's documented google_shopping
-and google_maps responses use. None of them came off the wire, because this
-build has no SerpApi key yet. Each file says so in its own `_aurum_fixture` key,
-which the provider's zod schema strips, so the note cannot change how the
-fixture parses.
+and google_maps responses use. None of them came off the wire. Each file says so
+in its own `_aurum_fixture` key, which the provider's zod schema strips, so the
+note cannot change how the fixture parses.
+
+Real recordings now exist, in
+`src/lib/server/profile/recorded-listings`, because the demo profile serves them
+at runtime and a deployed server must not read the data it renders out of
+`evals`. `eval:grounding` runs over both sets and says which is which. These
+hand written ones stay because they cover states a real recording rarely holds
+all at once: an empty result, a provider error, a blocked aggregator that is
+also the cheapest, a base64 thumbnail, a price with no parsed number, and an
+injected title.
 
 What that means for a reader of a passing eval:grounding run: it is evidence
 about our normalizer, our blocked host list, our ranking rule, and our cache
@@ -18,18 +26,18 @@ freshness rule. It is not evidence about SerpApi's field names. Those are read
 from the engine pages recorded in
 `src/lib/server/providers/serpapi/endpoints.ts`.
 
-Replace these the first day a key exists:
+## How a response is stripped before it may be committed
 
-1. Run each query in `manifest.json` once against the live engine.
-2. Save the response body, then strip `search_metadata` down to `id` and
-   `status`, and delete `search_parameters`, `serpapi_*` account fields, and
-   anything carrying the key.
-3. Delete the `_aurum_fixture` key, set `"synthetic": false` and fill
-   `"recordedOn"` in `manifest.json`.
-4. Update `expectedTopTitle` in the manifest to whatever the real ranking picks,
-   and note in the PR whether the ranking still chose sensibly. If it did not,
-   that is a real failure: make it a fixture and fix the ranker
-   (docs/05-evals.md, "When we find a real failure").
+The rules any recording follows, here or under `src`. `scripts/record-serpapi.ts`
+applies them in code (`stripResponse` and `assertNoSecret`), which is the only
+way a response should ever reach the repository:
+
+1. Delete `search_parameters`, in full.
+2. Delete every `serpapi_*` account field and any `api_key`, at every depth.
+3. Cut `search_metadata` down to `id` and `status`.
+4. In a hand written file here, keep the `_aurum_fixture` key and leave
+   `"synthetic": true`. In a real recording, there is no such key and the
+   manifest says `"synthetic": false` with `"recordedOn"` filled in.
 
 ## What each file covers
 

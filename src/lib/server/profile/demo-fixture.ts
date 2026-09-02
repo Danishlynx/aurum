@@ -20,11 +20,17 @@ import type {
   HairView,
 } from "@/lib/shared/hair-view";
 import { derivePalette, type Palette, type Undertone } from "@/lib/shared/palette";
-import type { ConcernView, ReportView } from "@/lib/shared/report-view";
+import type {
+  ConcernView,
+  ReportView,
+  RoutineStepView,
+} from "@/lib/shared/report-view";
 
 import type { StoredConcern } from "./db";
 import { buildDeterministicRoutine, buildGoingWell } from "./fallback";
 import { factsFromStoredProfile } from "./facts";
+import { recordedTopListing } from "./recorded-listings";
+import type { RoutineStepPlan } from "./routine";
 import { buildMakeupCategoryViews } from "./shades";
 
 /**
@@ -39,17 +45,18 @@ import { buildMakeupCategoryViews } from "./shades";
  * shape one analysis set produces, and they match the deep warm, pigmentation
  * led fixture in evals/fixtures/analyses (a09), which the eval suite asserts.
  *
- * Two things are deliberately absent, and both are honesty rather than
- * omission:
+ * The products are the one part of this screen that is not synthetic. Each
+ * routine step carries the top listing of a real Google Shopping response,
+ * recorded once against the live engine and read through the same normalizer
+ * and ranker the live screen uses (./recorded-listings). A product is only ever
+ * shown with a real listing that came back with a URL and a price
+ * (docs/06-safety-privacy.md, "Grounding and honesty"), so a step with no
+ * recording, or one whose recording had nothing that survived the grounding
+ * rules, still renders "No listing found near you yet".
  *
- * 1. Every product is null. A product is only ever shown with a real listing
- *    that came back with a URL and a price (docs/06-safety-privacy.md,
- *    "Grounding and honesty"), and with no SerpApi key nothing real has been
- *    fetched. The report renders the "No listing found near you yet" state,
- *    which is the true state. Open item: once a key exists, record real
- *    listings for these seven queries and put them here.
- * 2. captureImageUrl is null. No fixture face is checked in: every face in this
- *    repository needs a written consent record (evals/fixtures/README.md).
+ * One thing is deliberately absent, and it is honesty rather than omission:
+ * captureImageUrl is null. No fixture face is checked in, because every face in
+ * this repository needs a written consent record (evals/fixtures/README.md).
  *
  * The reading is the example docs/01-user-flow.md section F item 2 gives as the
  * standard, quoted word for word. readingSource is "fallback" because no model
@@ -133,6 +140,25 @@ function concernViews(): ConcernView[] {
 const routine = buildDeterministicRoutine(facts);
 
 /**
+ * One routine step, with the listing recorded for its own product query.
+ *
+ * The query is the one buildDeterministicRoutine produced, and it is the query
+ * the recording was made for, so the two cannot drift: change the routine and
+ * the step loses its recording and honestly shows the empty state until it is
+ * recorded again.
+ */
+function stepView(step: RoutineStepPlan): RoutineStepView {
+  return {
+    stepName: step.stepName,
+    concernKey: step.concernKey,
+    concernLabel: step.concernLabel,
+    why: step.why,
+    productQuery: step.productQuery,
+    product: recordedTopListing(step.productQuery),
+  };
+}
+
+/**
  * The fixture report. Frozen, because it is module level state that several
  * requests read and nothing is allowed to mutate it.
  */
@@ -151,22 +177,8 @@ export const DEMO_FIXTURE_REPORT_VIEW: ReportView = Object.freeze({
       CONCERNS_REQUIRING_ESCALATION_LINE.includes(concern.key),
   ),
   routine: {
-    morning: routine.morning.map((step) => ({
-      stepName: step.stepName,
-      concernKey: step.concernKey,
-      concernLabel: step.concernLabel,
-      why: step.why,
-      productQuery: step.productQuery,
-      product: null,
-    })),
-    night: routine.night.map((step) => ({
-      stepName: step.stepName,
-      concernKey: step.concernKey,
-      concernLabel: step.concernLabel,
-      why: step.why,
-      productQuery: step.productQuery,
-      product: null,
-    })),
+    morning: routine.morning.map(stepView),
+    night: routine.night.map(stepView),
   },
 });
 
@@ -205,8 +217,10 @@ export const DEMO_FIXTURE_COLOR_VIEW: ColorView = Object.freeze({
  *    this shade." state (docs/01-user-flow.md section H), which is the true
  *    state: with no Perfect Corp key nothing has been rendered, and a stand in
  *    image would be a made up try on.
- * 2. product is null. Nothing has been fetched from SerpApi, so every row shows
- *    "No listing found near you yet" rather than an invented product.
+ * 2. product is null. The recording run covered the routine steps and the shop
+ *    the gap queries, not a makeup shade query, so nothing real has come back
+ *    for this screen and every row shows "No listing found near you yet"
+ *    rather than an invented product.
  *
  * The shade rows themselves are real: they come from the same
  * buildMakeupCategoryViews the live screen uses, over the fixture palette.

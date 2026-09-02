@@ -337,15 +337,23 @@ describe("eval:synthesis, the demo fixture", () => {
     expect(problems).toEqual([]);
   });
 
-  it("shows no product, because no listing has ever been fetched for it", () => {
+  it("carries a product query on every step, and a real listing where one was recorded", () => {
+    // The products come from responses recorded off the wire
+    // (src/lib/server/profile/recorded-listings). eval:grounding owns the check
+    // that every step still finds its recording; what matters here is that the
+    // step keeps its own query, which is what the recording was made for and
+    // what a live search would send.
     const steps = [
       ...DEMO_FIXTURE_REPORT_VIEW.routine.morning,
       ...DEMO_FIXTURE_REPORT_VIEW.routine.night,
     ];
     expect(steps).toHaveLength(7);
     for (const step of steps) {
-      expect(step.product).toBeNull();
       expect(step.productQuery.length).toBeGreaterThan(0);
+      if (step.product !== null) {
+        expect(step.product.url.startsWith("http")).toBe(true);
+        expect(step.product.priceText.trim().length).toBeGreaterThan(0);
+      }
     }
   });
 

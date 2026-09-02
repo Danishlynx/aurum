@@ -290,12 +290,40 @@ describe("eval:safety, copy provenance and formatting", () => {
   });
 });
 
+/**
+ * The one thing under src the dash rule does not govern: the recorded provider
+ * responses in src/lib/server/profile/recorded-listings.
+ *
+ * CLAUDE.md bans the two dashes from our copy, our docs, and our comments. A
+ * product title in one of those files is not ours: it is what a shop wrote,
+ * recorded off the wire, and docs/06-safety-privacy.md says a provider response
+ * is data. Editing a dash out of a real listing title would be falsifying a
+ * recording of a real product, which the grounding rule forbids more strongly
+ * than the dash rule forbids the character. The .json extension keeps them out
+ * of the ESLint rule for the same reason.
+ *
+ * Nothing in these files is ever written as our own text: they are read only
+ * through normalizeShoppingResponse and rendered as text nodes.
+ */
+const RECORDED_LISTINGS_DIR = resolve(
+  REPO_ROOT,
+  "src",
+  "lib",
+  "server",
+  "profile",
+  "recorded-listings",
+);
+
+function isRecordedProviderResponse(file: string): boolean {
+  return file.startsWith(RECORDED_LISTINGS_DIR) && file.endsWith(".json");
+}
+
 describe("eval:safety, no em dash or en dash anywhere in src and docs", () => {
   it("finds no em dash and no en dash in any file under src or docs", () => {
     const files = [
       ...walkFiles(resolve(REPO_ROOT, "src")),
       ...walkFiles(resolve(REPO_ROOT, "docs")),
-    ];
+    ].filter((file) => !isRecordedProviderResponse(file));
     expect(files.length).toBeGreaterThan(10);
 
     const offenders: string[] = [];
@@ -374,16 +402,31 @@ describe("eval:safety, lexicon over the demo fixture report", () => {
     }
   });
 
-  it("shows no product, so nothing on the demo report is an invented listing", () => {
-    // docs/06-safety-privacy.md, "Grounding and honesty". No listing has ever
-    // been fetched for the fixture, so every step has to be in the empty state.
+  it("shows only real listings, never an invented one", () => {
+    // docs/06-safety-privacy.md, "Grounding and honesty": a product appears
+    // only with a real listing (URL and price). Every product on the fixture
+    // report comes from a response recorded off the wire
+    // (src/lib/server/profile/recorded-listings), and a step with no recording
+    // stays null and renders the "No listing found near you yet" state. What
+    // must never happen is a product with no URL, no price, or a claimed
+    // distance nobody looked up.
     const steps = [
       ...DEMO_FIXTURE_REPORT_VIEW.routine.morning,
       ...DEMO_FIXTURE_REPORT_VIEW.routine.night,
     ];
     expect(steps.length).toBeGreaterThan(0);
     for (const step of steps) {
-      expect(step.product, `${step.stepName} carries a listing`).toBeNull();
+      const product = step.product;
+      if (product === null) {
+        continue;
+      }
+      expect(product.url.startsWith("http"), `${step.stepName} URL`).toBe(true);
+      expect(
+        product.priceText.trim().length,
+        `${step.stepName} price`,
+      ).toBeGreaterThan(0);
+      // No local search was recorded, so no distance may be claimed.
+      expect(product.distanceText, `${step.stepName} distance`).toBeNull();
     }
   });
 });

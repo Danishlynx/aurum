@@ -84,6 +84,12 @@ import {
 import { DEMO_OWNER_ID } from "@/lib/server/judge";
 import { toStoredGarments } from "@/lib/server/looks/stored";
 import {
+  normalizeShoppingResponse,
+  productCacheKey,
+  sanitizeProductQuery,
+  SHOPPING_ENGINE,
+} from "@/lib/server/products";
+import {
   DEMO_FIXTURE_COLOR_VIEW,
   DEMO_FIXTURE_CONCERNS,
   DEMO_FIXTURE_EYE_COLOR_HEX,
@@ -108,6 +114,13 @@ import {
 } from "@/lib/server/profile/demo-fixture-wardrobe";
 import { readProfileFacts } from "@/lib/server/profile/facts";
 import { buildFallbackNarrative } from "@/lib/server/profile/fallback";
+import {
+  RECORDED_LISTING_RESPONSES,
+  RECORDED_LISTINGS_GL,
+  RECORDED_LISTINGS_HL,
+  RECORDED_LISTINGS_LOCATION,
+  RECORDED_LISTINGS_RECORDED_ON,
+} from "@/lib/server/profile/recorded-listings";
 import {
   canonicalHairstyleParams,
   canonicalMakeupParams,
@@ -290,12 +303,22 @@ export interface SeedObject {
 }
 
 /**
- * Everything this script does to Supabase, as five operations.
+ * Everything this script does to Supabase, as six operations.
  *
  * The seam exists so the seeding logic can be exercised with a recording double
  * in a unit test: no network, no keys, no project. Every method throws
  * SeedError on failure rather than returning one, because a half seeded demo
  * profile is not a state anything should carry on from.
+ *
+ * product_cache gets an operation of its own rather than joining the delete
+ * then insert pair, and that is a decision rather than an accident. Every other
+ * table this script writes is owned by the demo id, so deleting by owner and
+ * inserting fresh is safe and total. product_cache is owned by nobody: it is a
+ * shared cache keyed on query_hash, and rows in it were paid for with SerpApi
+ * quota by whoever searched first. Deleting them to seed a demo would throw
+ * away searches other people already bought. So the recorded entries are
+ * upserted on query_hash, exactly the way writeProductCache does it in the app
+ * (src/lib/server/products/cache.ts).
  */
 export interface SeedWriter {
   deleteOwnedRows(table: SeedTableName, ownerId: string): Promise<void>;
@@ -303,6 +326,7 @@ export interface SeedWriter {
     table: T,
     rows: readonly Insert<T>[],
   ): Promise<void>;
+  upsertProductCache(rows: readonly Insert<"product_cache">[]): Promise<void>;
   listObjects(bucket: BucketName, prefix: string): Promise<string[]>;
   removeObjects(bucket: BucketName, paths: readonly string[]): Promise<void>;
   putObject(object: SeedObject): Promise<void>;
@@ -311,6 +335,10 @@ export interface SeedWriter {
 /** The shape of one PostgREST query builder, narrowed to what is used here. */
 interface PostgrestLike {
   insert(rows: unknown): PromiseLike<{ error: { message: string } | null }>;
+  upsert(
+    rows: unknown,
+    options: { onConflict: string },
+  ): PromiseLike<{ error: { message: string } | null }>;
   delete(): {
     eq(column: string, value: string): PromiseLike<{ error: { message: string } | null }>;
   };
@@ -334,7 +362,7 @@ export function supabaseWriter(
    * checked, at the call sites, because insertRows is generic over the table
    * name and takes Insert<T> from src/lib/server/db/types.ts.
    */
-  const table = (name: SeedTableName): PostgrestLike =>
+  const table = (name: SeedTableName | "product_cache"): PostgrestLike =>
     client.from(name) as unknown as PostgrestLike;
 
   async function walk(
@@ -377,6 +405,18 @@ export function supabaseWriter(
       const { error } = await table(name).insert(rows);
       if (error !== null) {
         throw new SeedError(`insert into ${name}`, error.message);
+      }
+    },
+
+    async upsertProductCache(rows) {
+      if (rows.length === 0) {
+        return;
+      }
+      const { error } = await table("product_cache").upsert([...rows], {
+        onConflict: "query_hash",
+      });
+      if (error !== null) {
+        throw new SeedError("upsert into product_cache", error.message);
       }
     },
 
@@ -1208,6 +1248,76 @@ function fileStem(path: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// The recorded product responses
+// ---------------------------------------------------------------------------
+
+/**
+ * The product_cache rows the recorded SerpApi responses become.
+ *
+ * docs/07-payments-and-judge-mode.md: "Product listings for the demo are
+ * recorded responses so they never depend on live quota." A judge session with
+ * no analyses left reads the seeded demo profile out of the database, and the
+ * report grounds its routine through src/lib/server/products, which looks in
+ * product_cache first. Putting the recordings there is what makes that read a
+ * hit instead of a live search.
+ *
+ * Nothing is restated. The query is cleaned by the same sanitizeProductQuery
+ * the grounding layer cleans it with, the key is built by the same
+ * productCacheKey, the listings are produced by the same
+ * normalizeShoppingResponse, and the results column holds the normalized
+ * listing shape the column comment names, never a raw provider body. A row this
+ * script writes and a row a live search writes are therefore the same row.
+ *
+ * Two honest limits, both printed in the run summary:
+ *
+ * 1. fetched_at is when the provider was actually called, which is the
+ *    recording date, not now. src/lib/server/db/types.ts says the column means
+ *    that, and writing a fresher time would be a lie about the age of a price.
+ *    A shopping entry is fresh for 24 hours, so a seed run more than a day
+ *    after the recording writes rows that read as stale, and the grounding
+ *    layer falls back to a live search or to the honest empty state.
+ * 2. The key covers gl and hl, which are taken from the recording. If the
+ *    deployment runs with a different SERPAPI_DEFAULT_GL or
+ *    SERPAPI_DEFAULT_HL, its reads will key differently and miss these rows.
+ */
+export function buildProductCacheRows(): Insert<"product_cache">[] {
+  if (
+    RECORDED_LISTINGS_RECORDED_ON === null ||
+    RECORDED_LISTINGS_GL === null ||
+    RECORDED_LISTINGS_HL === null
+  ) {
+    return [];
+  }
+
+  const rows: Insert<"product_cache">[] = [];
+  for (const response of RECORDED_LISTING_RESPONSES) {
+    const query = sanitizeProductQuery(response.query);
+    if (query === null) {
+      continue;
+    }
+    const parts = {
+      engine: SHOPPING_ENGINE,
+      query,
+      // The recordings carry no location, so they are the online only key,
+      // which is the key a judge session reads on: it has no profiles row and
+      // therefore no approximate location.
+      location: null,
+      gl: RECORDED_LISTINGS_GL,
+      hl: RECORDED_LISTINGS_HL,
+    };
+    const outcome = normalizeShoppingResponse(response.body, query);
+    rows.push({
+      query_hash: productCacheKey(parts),
+      engine: parts.engine,
+      query: parts as unknown as Json,
+      results: outcome.listings as unknown as Json,
+      fetched_at: RECORDED_LISTINGS_RECORDED_ON,
+    });
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
 // The plan
 // ---------------------------------------------------------------------------
 
@@ -1329,13 +1439,26 @@ export const NO_PROFILES_ROW_NOTE =
   "No profiles row is written: profiles.user_id references auth.users and the demo owner is not an auth user, the same way a judge session is not. Consent for the demo face is a written record kept outside the database (evals/fixtures/README.md).";
 
 /**
- * Why product_cache is left empty. The only shopping responses in the
- * repository are hand written to the documented shape, and serving one would
- * put a price, a store, and a link in front of a judge for a product that does
- * not exist (docs/06-safety-privacy.md, "Grounding and honesty").
+ * What the product cache step says when there is nothing recorded to seed. The
+ * demo then shows the empty product state, which is true of it.
  */
-export const PRODUCT_CACHE_NOTE =
-  "Nothing seeded. The repository holds no recorded SerpApi response yet, and RECORDED_GAP_RESPONSES in src/lib/server/profile/demo-fixture-looks.ts is empty on purpose. The demo shows the empty product state, which is true, until real responses are recorded.";
+export const PRODUCT_CACHE_EMPTY_NOTE =
+  "Nothing seeded. src/lib/server/profile/recorded-listings holds no readable recording, so the demo shows the empty product state, which is true until responses are recorded (npm run golden:serpapi).";
+
+/**
+ * The freshness warning printed beside every seeded product cache row.
+ *
+ * The same shape as KEEP_ORIGINALS_NOTE above: a true statement about how long
+ * the seeded state stays useful, and the two safe answers, rather than a
+ * timestamp bent to make the demo look permanent.
+ */
+export function productCacheFreshnessNote(recordedOn: string): string {
+  return [
+    `fetched_at is ${recordedOn}, when the provider was actually called, because that is what the column means (src/lib/server/db/types.ts).`,
+    "A shopping entry is fresh for 24 hours (docs/03-architecture.md, Caching), so these rows read as stale a day after the recording and the grounding layer falls back to a live search or to the honest empty state.",
+    "Two safe answers, for the human to pick: record again and re seed on the day of judging, or leave a SERPAPI_API_KEY set so the first read after they expire buys one fresh search per query inside the daily cap.",
+  ].join(" ");
+}
 
 // ---------------------------------------------------------------------------
 // The run
@@ -1560,9 +1683,30 @@ export async function runSeed(options: RunSeedOptions): Promise<SeedReport> {
     {
       const current = step("product-cache");
       log("[9/9] Product cache");
-      current.status = "skipped";
-      current.note = PRODUCT_CACHE_NOTE;
-      log(`      ${PRODUCT_CACHE_NOTE}`);
+      const rows = buildProductCacheRows();
+      if (rows.length === 0 || RECORDED_LISTINGS_RECORDED_ON === null) {
+        current.status = "skipped";
+        current.note = PRODUCT_CACHE_EMPTY_NOTE;
+        log(`      ${current.note}`);
+      } else {
+        if (!options.dryRun) {
+          await options.writer.upsertProductCache(rows);
+        }
+        log(`      ${String(rows.length)} row(s) upserted into public.product_cache`);
+        current.status = "written";
+        current.rows = rows.length;
+        const listings = RECORDED_LISTING_RESPONSES.length;
+        const location =
+          RECORDED_LISTINGS_LOCATION === null
+            ? "no location"
+            : RECORDED_LISTINGS_LOCATION;
+        current.note = [
+          `${String(rows.length)} recorded google_shopping response(s) of ${String(listings)}, keyed on gl ${String(RECORDED_LISTINGS_GL)}, hl ${String(RECORDED_LISTINGS_HL)}, ${location}.`,
+          "Upserted on query_hash rather than deleted first: product_cache is a shared cache that nobody owns, and clearing it would throw away searches other people paid for.",
+          productCacheFreshnessNote(RECORDED_LISTINGS_RECORDED_ON),
+        ].join(" ");
+        log(`      ${current.note}`);
+      }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1962,6 +2106,7 @@ function noopWriter(): SeedWriter {
   return {
     deleteOwnedRows: () => refuse("delete rows"),
     insertRows: () => refuse("insert rows"),
+    upsertProductCache: () => refuse("upsert the product cache"),
     listObjects: () => refuse("list objects"),
     removeObjects: () => refuse("remove objects"),
     putObject: () => refuse("upload object"),

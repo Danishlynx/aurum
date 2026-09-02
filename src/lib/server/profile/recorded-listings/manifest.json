@@ -1,0 +1,60 @@
+{
+  "recordedOn": "2026-09-02T08:54:15.675Z",
+  "synthetic": false,
+  "note": "Recorded once against the live engine by scripts/record-serpapi.ts. search_parameters, the serpapi account fields, and everything in search_metadata except id and status were stripped before writing, per evals/fixtures/listings/README.md.",
+  "gl": "in",
+  "hl": "en",
+  "location": null,
+  "limit": 10,
+  "searchesRun": 6,
+  "entries": [
+    {
+      "source": "routine",
+      "label": "gel cleanser",
+      "query": "gel cleanser for oiliness combination",
+      "engine": "google_shopping",
+      "file": "01-gel-cleanser-for-oiliness-combination.json",
+      "resultCount": 40
+    },
+    {
+      "source": "routine",
+      "label": "niacinamide serum",
+      "query": "niacinamide serum for pigmentation combination",
+      "engine": "google_shopping",
+      "file": "02-niacinamide-serum-for-pigmentation-combination.json",
+      "resultCount": 40
+    },
+    {
+      "source": "routine",
+      "label": "light gel cream moisturizer",
+      "query": "light gel cream moisturizer for texture combination",
+      "engine": "google_shopping",
+      "file": "03-light-gel-cream-moisturizer-for-texture-combination.json",
+      "resultCount": 40
+    },
+    {
+      "source": "routine",
+      "label": "broad spectrum sunscreen",
+      "query": "broad spectrum sunscreen for pigmentation combination",
+      "engine": "google_shopping",
+      "file": "04-broad-spectrum-sunscreen-for-pigmentation-combination.json",
+      "resultCount": 40
+    },
+    {
+      "source": "routine",
+      "label": "alpha arbutin serum",
+      "query": "alpha arbutin serum for dark spots combination",
+      "engine": "google_shopping",
+      "file": "05-alpha-arbutin-serum-for-dark-spots-combination.json",
+      "resultCount": 40
+    },
+    {
+      "source": "gap",
+      "label": "wedding_guest: shoes",
+      "query": "Cream shoes smart",
+      "engine": "google_shopping",
+      "file": "06-cream-shoes-smart.json",
+      "resultCount": 40
+    }
+  ]
+}

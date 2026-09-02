@@ -12,7 +12,19 @@ vi.mock("server-only", () => ({}));
 import type { BucketName } from "@/lib/server/db/storage";
 import type { Insert } from "@/lib/server/db/types";
 import { DEMO_OWNER_ID } from "@/lib/server/judge";
+import {
+  productCacheKey,
+  sanitizeProductQuery,
+  SHOPPING_ENGINE,
+} from "@/lib/server/products";
+import { cachedListingsSchema } from "@/lib/server/products/schemas";
 import { DEMO_FIXTURE_WARDROBE } from "@/lib/server/profile/demo-fixture-wardrobe";
+import {
+  RECORDED_LISTING_RESPONSES,
+  RECORDED_LISTINGS_GL,
+  RECORDED_LISTINGS_HL,
+  RECORDED_LISTINGS_RECORDED_ON,
+} from "@/lib/server/profile/recorded-listings";
 import {
   canonicalHairstyleParams,
   canonicalMakeupParams,
@@ -70,6 +82,8 @@ class RecordingWriter implements SeedWriter {
   /** Every operation in order, so the delete then insert order is assertable. */
   readonly calls: string[] = [];
   readonly rows = new Map<SeedTableName, unknown[]>();
+  /** Kept apart from rows: product_cache is upserted, never owner scoped. */
+  readonly productCacheRows: Insert<"product_cache">[] = [];
   readonly objects = new Map<string, SeedObject>();
   /** Set to make one insert fail, which is how the failure exit is exercised. */
   failInsertInto: SeedTableName | null = null;
@@ -95,6 +109,12 @@ class RecordingWriter implements SeedWriter {
     }
     this.calls.push(`insert ${table} ${String(inserted.length)}`);
     this.rows.set(table, [...(this.rows.get(table) ?? []), ...inserted]);
+    return Promise.resolve();
+  }
+
+  upsertProductCache(rows: readonly Insert<"product_cache">[]): Promise<void> {
+    this.calls.push(`upsert product_cache ${String(rows.length)}`);
+    this.productCacheRows.push(...rows);
     return Promise.resolve();
   }
 
@@ -499,7 +519,7 @@ describe("parseEnvFile", () => {
 // ---------------------------------------------------------------------------
 
 describe("runSeed, --from-fixtures", () => {
-  it("writes the wardrobe, the two looks, and the profile, and nothing else", async () => {
+  it("writes the wardrobe, the two looks, the profile, and the recorded listings", async () => {
     const writer = new RecordingWriter();
     const report = await seed({ writer });
 
@@ -526,9 +546,63 @@ describe("runSeed, --from-fixtures", () => {
     expect(steps.get("capture")?.status).toBe("skipped");
     expect(steps.get("analyses")?.status).toBe("skipped");
     expect(steps.get("renders")?.status).toBe("skipped");
-    expect(steps.get("product-cache")?.status).toBe("skipped");
     expect(steps.get("wardrobe")?.status).toBe("written");
+    expect(steps.get("product-cache")?.status).toBe("written");
     expect(report.assumptions).toEqual([]);
+  });
+
+  it("seeds one product cache row per recorded response, keyed the way a live search keys it", async () => {
+    const writer = new RecordingWriter();
+    const report = await seed({ writer });
+
+    expect(RECORDED_LISTING_RESPONSES.length).toBeGreaterThan(0);
+    expect(writer.productCacheRows).toHaveLength(
+      RECORDED_LISTING_RESPONSES.length,
+    );
+
+    const steps = new Map(report.steps.map((step) => [step.id, step] as const));
+    expect(steps.get("product-cache")?.rows).toBe(
+      RECORDED_LISTING_RESPONSES.length,
+    );
+
+    for (const response of RECORDED_LISTING_RESPONSES) {
+      const query = sanitizeProductQuery(response.query);
+      expect(query).not.toBeNull();
+      if (query === null) {
+        continue;
+      }
+      const expectedKey = productCacheKey({
+        engine: SHOPPING_ENGINE,
+        query,
+        location: null,
+        gl: RECORDED_LISTINGS_GL ?? "",
+        hl: RECORDED_LISTINGS_HL ?? "",
+      });
+      const row = writer.productCacheRows.find(
+        (candidate) => candidate.query_hash === expectedKey,
+      );
+      expect(row).toBeDefined();
+      expect(row?.engine).toBe(SHOPPING_ENGINE);
+      // fetched_at is when the provider was actually called, never now.
+      expect(row?.fetched_at).toBe(RECORDED_LISTINGS_RECORDED_ON);
+
+      // The results column holds the normalized listing shape the grounding
+      // layer reads back, not a raw provider body.
+      const results = cachedListingsSchema.safeParse(row?.results);
+      expect(results.success).toBe(true);
+    }
+  });
+
+  it("upserts the product cache rather than clearing a cache nobody owns", async () => {
+    const writer = new RecordingWriter();
+    await seed({ writer });
+
+    expect(
+      writer.calls.filter((call) => call.startsWith("upsert product_cache")),
+    ).toHaveLength(1);
+    expect(
+      writer.calls.filter((call) => call.includes("product_cache")),
+    ).toHaveLength(1);
   });
 
   it("deletes children before parents, and only for the demo owner", async () => {
