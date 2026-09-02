@@ -240,8 +240,11 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         stream = await media.getUserMedia({
           video: {
             facingMode: "user",
-            width: { ideal: 1280 },
-            height: { ideal: 1280 },
+            // 1920 over 1280: the capture is downscaled to 1024, and starting
+            // from a larger, denoised sensor frame keeps that 1024 crisp. A
+            // night time room at 1280 was reaching the gate visibly soft.
+            width: { ideal: 1920 },
+            height: { ideal: 1920 },
           },
           audio: false,
         });
