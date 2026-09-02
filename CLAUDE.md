@@ -65,6 +65,9 @@ Keep these working at all times. If you add a command, add it here and to packag
 - npm run eval:smoke: the fast subset that runs on every PR
 - npm run db:migrate and npm run db:types: apply Supabase migrations and regenerate types
 - npm run shots: capture every screen at 390px in fixture mode and run the automatable anti slop checks
+- npm run golden:run: the one frugal Perfect Corp pass over the founder's selfie (plan, confirm, spend ceiling)
+- npm run golden:serpapi: record the demo profile's SerpApi responses once, under a max searches ceiling
+- npm run seed:demo: seed the demo profile into Supabase, from fixtures or from a golden run output
 
 ## Repository layout
 
