@@ -24,6 +24,7 @@ import {
   buildProfileView,
   savedHairRow,
   savedLookRow,
+  savedMakeupRow,
   skinTypeRowValue,
   toneRowValue,
   topConcernRowValue,
@@ -741,6 +742,42 @@ describe("eval:safety, the plain rows", () => {
       label: copy.looks.occasionWeddingGuest,
       detail: "Blazer, shoes",
     });
+  });
+
+  /*
+   * docs/01-user-flow.md section L item 2, the third saved item. "Exactly what
+   * is stored" cuts both ways here: the row has to name the shades that are
+   * actually on the column, and it has to be absent rather than empty when
+   * nothing readable is.
+   */
+  it("lists the saved makeup look by its shade names", () => {
+    expect(
+      savedMakeupRow([
+        { shadeName: "rust" },
+        { shadeName: "warm rose" },
+        { shadeName: "deep bronze" },
+      ]),
+    ).toEqual({
+      kind: "makeup",
+      label: copy.profile.savedMakeupLabel,
+      detail: "Rust, warm rose, deep bronze",
+    });
+  });
+
+  it("says nothing rather than saying something was saved it cannot name", () => {
+    // Nothing saved, and a column that parsed to nothing usable, are the same
+    // thing to this row: the label over an empty line would claim a saved look
+    // while being unable to say what is in it.
+    expect(savedMakeupRow([])).toBeNull();
+    expect(savedMakeupRow([{ shadeName: "   " }])).toBeNull();
+  });
+
+  it("names one shade once, however many categories carry it", () => {
+    // A lip and a blush picked from the same family are one word to a person
+    // reading the row, and "Rust, rust" reads like a mistake.
+    expect(
+      savedMakeupRow([{ shadeName: "rust" }, { shadeName: "rust" }])?.detail,
+    ).toBe("Rust");
   });
 });
 

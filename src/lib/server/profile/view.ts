@@ -35,6 +35,7 @@ import {
   DEMO_FIXTURE_SAVED_OCCASIONS,
 } from "./demo-fixture-looks";
 import { readSavedColorName, readSavedStyleId, readStoredHairType } from "./hair";
+import { readSavedMakeup } from "./makeup";
 import { readUndertone } from "./report-view";
 import { skinTypeFromZones } from "./skin-type";
 
@@ -59,13 +60,12 @@ import { skinTypeFromZones } from "./skin-type";
  *    concern ranking, and the hair catalog are all read from the layers that own
  *    them, so this file cannot disagree with the report, /color, or /hair.
  *
- * "Exactly what is stored" is meant literally, and the saved list still holds no
- * makeup row. A saved makeup look now has both a column and a route (migration
- * 0013 and src/lib/server/profile/makeup.ts), so the reason is no longer that
- * there is nothing to show: it is that docs/01 section L item 2 says a row and
- * says nothing about what it reads, and inventing a label for a list of shades
- * is a copy decision rather than a reading. Open item for the human: name the
- * row and it lands here, next to the saved looks it will sit beside.
+ * "Exactly what is stored" is meant literally, and the saved list now holds all
+ * three of the items docs/01 section L item 2 names. The makeup row was the last
+ * one to land: it waited on the column and the route (migration 0013 and
+ * src/lib/server/profile/makeup.ts), and then on a label, because unlike the
+ * other two a saved makeup look has no name of its own to borrow. The label is
+ * copy.profile.savedMakeupLabel and the shades are the detail beside it.
  */
 
 /* ------------------------------------------------------------------ */
@@ -174,6 +174,40 @@ export function toProfileRows(values: ProfileRowValues): ProfileSummaryRow[] {
 /* ------------------------------------------------------------------ */
 /* Saved items                                                         */
 /* ------------------------------------------------------------------ */
+
+/**
+ * The saved makeup look, docs/01-user-flow.md section L item 2.
+ *
+ * The detail is the shade names in the order the shade rows are laid out on
+ * /makeup, so the profile lists them the way the person picked them. They are
+ * the model's own words for a colour, stored with the look, which is why they
+ * are read from the row rather than recomputed: a shade renamed by a later
+ * catalog change must not silently rename what somebody saved.
+ *
+ * Null when nothing is saved, or when the column holds a shape the schema does
+ * not accept. A saved look nobody can read is not a row about the person, and
+ * "Makeup look" over an empty line would say something was saved without being
+ * able to say what.
+ */
+export function savedMakeupRow(
+  categories: readonly { readonly shadeName: string }[],
+): SavedItemRow | null {
+  const names: string[] = [];
+  for (const category of categories) {
+    const name = category.shadeName.trim();
+    if (name.length > 0 && !names.includes(name)) {
+      names.push(name);
+    }
+  }
+  if (names.length === 0) {
+    return null;
+  }
+  return {
+    kind: "makeup",
+    label: copy.profile.savedMakeupLabel,
+    detail: sentenceCase(names.join(", ")),
+  };
+}
 
 /**
  * The saved hair choice, docs/01-user-flow.md section L item 2.
@@ -356,6 +390,11 @@ export async function buildProfileView(
   const hairType = readStoredHairType(profile.hair_type);
 
   const saved: SavedItemRow[] = [];
+  // docs/01 section L item 2 lists them in this order: makeup, hair, looks.
+  const makeupRow = savedMakeupRow(readSavedMakeup(profile));
+  if (makeupRow !== null) {
+    saved.push(makeupRow);
+  }
   const hairRow = savedHairRow({
     styleId: readSavedStyleId(profile),
     colorName: readSavedColorName(profile),
