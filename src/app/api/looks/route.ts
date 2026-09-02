@@ -43,6 +43,10 @@ const FIXTURE_SESSION: AppSession = {
   ownerType: "user",
 };
 
+// Vercel ends a function at its plan default (10 seconds on Hobby) unless the
+// route declares its own budget. This route waits on providers, so it does.
+export const maxDuration = 60;
+
 export async function GET(request: NextRequest): Promise<Response> {
   return handleRoute(request, "/api/looks", async (route) => {
     const session = isDemoFixtureMode()

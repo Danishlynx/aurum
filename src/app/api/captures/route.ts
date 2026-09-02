@@ -65,6 +65,10 @@ function qualityJson(quality: CaptureCreateRequest["quality"]): Json {
   };
 }
 
+// Vercel ends a function at its plan default (10 seconds on Hobby) unless the
+// route declares its own budget. This route waits on providers, so it does.
+export const maxDuration = 30;
+
 export async function POST(request: NextRequest): Promise<Response> {
   return handleRoute(request, "/api/captures", async (context) => {
     const session = await requireSession(context);

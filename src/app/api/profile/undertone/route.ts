@@ -31,6 +31,10 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Vercel ends a function at its plan default (10 seconds on Hobby) unless the
+// route declares its own budget. This route waits on providers, so it does.
+export const maxDuration = 30;
+
 export async function POST(request: NextRequest): Promise<Response> {
   return handleRoute(request, "/api/profile/undertone", async (route) => {
     // Fixture mode is answered before the session, because there is no database

@@ -31,6 +31,10 @@ export const dynamic = "force-dynamic";
 
 const querySchema = z.object({ capture: z.uuid() });
 
+// Vercel ends a function at its plan default (10 seconds on Hobby) unless the
+// route declares its own budget. This route waits on providers, so it does.
+export const maxDuration = 60;
+
 export async function GET(request: NextRequest): Promise<Response> {
   return handleRoute(request, "/api/jobs", async (route) => {
     const session = await requireSession(route);
