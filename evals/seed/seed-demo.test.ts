@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 /*
  * scripts/seed-demo.ts imports modules under src/lib/server, every one of which
