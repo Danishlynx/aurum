@@ -73,7 +73,13 @@ export function MakeupScreen({ view }: MakeupScreenProps) {
 
   const initial = useMemo(() => initialSelection(categories), [categories]);
   const [selection, setSelection] = useState<number[]>(initial);
-  const [renderUrl, setRenderUrl] = useState<string | null>(null);
+  /*
+   * The try on the server already found for the shades the rows open on, when
+   * there is one (src/lib/server/profile/makeup.ts). Starting from it puts the
+   * look on the screen at the first paint and saves a request that could only
+   * ever answer with the same picture.
+   */
+  const [renderUrl, setRenderUrl] = useState<string | null>(view.renderUrl);
   const [pending, setPending] = useState(false);
   const [pendingLine, setPendingLine] = useState<string | null>(null);
   /*
@@ -186,19 +192,26 @@ export function MakeupScreen({ view }: MakeupScreenProps) {
   );
 
   /**
-   * The recommended full look, asked for once when the screen opens (section H
+   * The look the rows open on, asked for once when the screen opens (section H
    * item 1). It carries no status line: the doc's line names the shade a person
    * just chose, and nobody chose this one. The same parameters answer from the
    * render cache on every later visit, so opening the screen twice costs one
    * render (docs/03-architecture.md, "Caching").
+   *
+   * Nothing is asked for when the view already carries the render for those
+   * shades: it is that same cache hit, already made on the server, and asking
+   * again would only spend a round trip on the picture that is on the screen.
    */
   useEffect(() => {
     if (askedForFirstLookRef.current) {
       return;
     }
     askedForFirstLookRef.current = true;
+    if (view.renderUrl !== null) {
+      return;
+    }
     void applyLook(initial, null);
-  }, [applyLook, initial]);
+  }, [applyLook, initial, view.renderUrl]);
 
   /**
    * The listing for the newly selected shade, from the same route that filled

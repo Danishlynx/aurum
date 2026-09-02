@@ -244,6 +244,12 @@ type AestheticProfileRow = {
   saved_hair_style_id: string | null;
   /** Migration 0009. The catalog color name saved with it, or null for none. */
   saved_hair_color_name: string | null;
+  /**
+   * Migration 0013. The shades behind "Save this look" on /makeup, in the shape
+   * a makeup render is hashed under: {"categories":[{category, shadeHex,
+   * shadeName}]}. Read back through makeupRenderParamsSchema.
+   */
+  saved_makeup: Json | null;
   season: string | null;
   palette: Json | null;
   reading: string | null;

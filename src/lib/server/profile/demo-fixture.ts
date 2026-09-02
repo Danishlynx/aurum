@@ -227,6 +227,10 @@ export const DEMO_FIXTURE_COLOR_VIEW: ColorView = Object.freeze({
  */
 export const DEMO_FIXTURE_MAKEUP_VIEW: MakeupView = Object.freeze({
   captureImageUrl: null,
+  // Nothing has been rendered on a face that does not exist, and no saved look
+  // is stored on a fixture with no database behind it, so the rows open on the
+  // palette's recommendation and the hero has nothing to draw.
+  renderUrl: null,
   categories: buildMakeupCategoryViews({
     palette: DEMO_FIXTURE_PALETTE,
     skinToneHex: DEMO_FIXTURE_SKIN_TONE_HEX,

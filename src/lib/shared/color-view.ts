@@ -113,15 +113,40 @@ export type MakeupCategoryView = {
   category: MakeupCategory;
   /** The row label from copy.ts, for example "Lip". */
   label: string;
-  /** Three swatches, ordered lightest first. */
+  /**
+   * Three swatches, ordered lightest first. Four when a saved shade was not one
+   * of the three the palette derives: it is added rather than dropped, because
+   * the person chose it (docs/01-user-flow.md section H item 4).
+   */
   shades: ShadeOption[];
-  /** The middle one, which is the shade the row opens on. */
+  /** The middle one, which is the shade the palette recommends. */
   recommendedIndex: number;
+  /**
+   * The saved shade's position, when this profile has a saved look. The row
+   * opens on it instead of the recommendation, which is what makes "Save this
+   * look" mean something on the next visit: the same shades, and therefore the
+   * same render, rather than a fresh one that costs a credit.
+   *
+   * Absent when nothing has been saved for this category.
+   */
+  savedIndex?: number;
 };
 
 export type MakeupView = {
   /** Signed URL for the selfie, null once retention has deleted the original. */
   captureImageUrl: string | null;
+  /**
+   * The stored try on for the shades the rows open on, when one exists in our
+   * own bucket, as a short lived signed URL.
+   *
+   * It is here so a look that was already rendered is on the screen at the first
+   * paint, without a request that could refuse: the render already exists, it
+   * belongs to this owner, and asking POST /api/renders for it again would need
+   * consent and a cap check to answer with the same picture. Null means nothing
+   * has been rendered for these shades, and the screen then asks for one. It is
+   * never a substitute image (docs/01-user-flow.md section H, "Try on failed").
+   */
+  renderUrl: string | null;
   /**
    * Only the categories that could be built honestly. Lip, blush, and eye need a
    * palette; foundation needs a detected skin tone. A category with neither is
@@ -151,12 +176,17 @@ export type MakeupView = {
  */
 export const MAKEUP_GROUND_PARAM = "ground";
 
-/** An index that is absent, out of range, or not a number reads as null. */
+/**
+ * An index that is absent, out of range, or not a number reads as null.
+ *
+ * The ceiling is 3 rather than 2 because a row holds four swatches when a saved
+ * shade was not one of the three the palette derives (MakeupCategoryView above).
+ */
 const shadeIndexSchema = z.coerce
   .number()
   .int()
   .min(0)
-  .max(2)
+  .max(3)
   .nullish()
   .catch(null);
 
@@ -211,6 +241,24 @@ export const makeupRenderRequestSchema = z.object({
   kind: z.literal("makeup"),
   params: makeupRenderParamsSchema,
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/profile/makeup
+// ---------------------------------------------------------------------------
+
+/**
+ * "Save this look", docs/01-user-flow.md section H item 4: the selected shades
+ * are saved to the profile (migration 0013).
+ *
+ * The body is makeupRenderParamsSchema, the same shape a render is created
+ * under, because it is the same look. Saving it in that shape is what lets the
+ * next visit open on those shades and find the try on they were rendered with
+ * rather than asking for another one.
+ */
+export type MakeupSaveRequest = MakeupRenderParams;
+
+/** The save answer. Nothing to read back: the screen re reads the view. */
+export type MakeupSaveResponse = { ok: true };
 
 // ---------------------------------------------------------------------------
 // Layer 6: the skin simulation and the accessory try on

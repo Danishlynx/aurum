@@ -260,6 +260,7 @@ describe("eval:synthesis, the rebuild decision", () => {
     hair_type: null,
     saved_hair_style_id: null,
     saved_hair_color_name: null,
+    saved_makeup: null,
     season: null,
     palette: null,
     reading: DEMO_FIXTURE_READING,

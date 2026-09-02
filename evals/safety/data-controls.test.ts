@@ -126,6 +126,7 @@ const AESTHETIC_ROW: AestheticProfile = {
   hair_type: null,
   saved_hair_style_id: "textured-crop",
   saved_hair_color_name: "Warm chestnut",
+  saved_makeup: null,
   season: "deep_autumn",
   palette: null,
   reading: "Your skin is combination: oilier through the T zone, drier on the cheeks.",

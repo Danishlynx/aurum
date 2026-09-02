@@ -3,6 +3,7 @@ import "server-only";
 import type {
   MakeupCategory,
   MakeupCategoryView,
+  MakeupRenderCategoryInput,
   ShadeOption,
 } from "@/lib/shared/color-view";
 import { copy } from "@/lib/shared/copy";
@@ -475,6 +476,20 @@ export function buildMakeupCategoryViews(
   return rows;
 }
 
+/** The shade a row opens on: the saved one when there is one, else the middle. */
+export function openingIndex(row: MakeupCategoryView): number {
+  const saved = row.savedIndex;
+  if (
+    saved !== undefined &&
+    Number.isInteger(saved) &&
+    saved >= 0 &&
+    saved < row.shades.length
+  ) {
+    return saved;
+  }
+  return row.recommendedIndex;
+}
+
 /** The shade a row opens on, or the selected one when the screen sent an index. */
 export function selectedShade(
   row: MakeupCategoryView,
@@ -486,6 +501,102 @@ export function selectedShade(
     selectedIndex >= 0 &&
     selectedIndex < row.shades.length
       ? selectedIndex
-      : row.recommendedIndex;
+      : openingIndex(row);
   return row.shades[index] ?? null;
+}
+
+/* ------------------------------------------------------------------ */
+/* The saved look                                                      */
+/* ------------------------------------------------------------------ */
+
+/** Two hexes are the same shade whatever case they were written in. */
+function sameHex(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+/**
+ * Where a shade belongs in a row that runs lightest first, so an added swatch
+ * does not break the depth ladder the row reads as.
+ */
+function ladderPosition(shades: readonly ShadeOption[], hex: string): number {
+  const lightness = lightnessOf(hex);
+  if (lightness === null) {
+    return shades.length;
+  }
+  for (let index = 0; index < shades.length; index += 1) {
+    const other = lightnessOf(shades[index]?.hex ?? "");
+    if (other !== null && other < lightness) {
+      return index;
+    }
+  }
+  return shades.length;
+}
+
+/**
+ * The rows a saved look opens on, docs/01-user-flow.md section H item 4.
+ *
+ * A saved shade that is one of the three the palette derives simply becomes the
+ * row's opening swatch. A saved shade that is not (which is the ordinary case
+ * once a palette has been re derived, or once the person has saved a shade from
+ * a row that has since moved) is added to the row in its place on the depth
+ * ladder and opens the row from there. It is never dropped: the person chose it,
+ * a try on may already exist for it, and a row that quietly opened on something
+ * else would send the screen asking for a render nobody asked for.
+ *
+ * The swatch keeps the name it was saved under, because that is the name the
+ * person saw when they saved it and the name the stored render carries.
+ *
+ * A saved shade whose name cannot produce a product query is left out and the row
+ * is untouched: every swatch on this screen carries a query, and a swatch with an
+ * empty one would put a product card under a shade nobody can shop for.
+ *
+ * Pure, like the rest of this file.
+ */
+export function applySavedShades(
+  rows: readonly MakeupCategoryView[],
+  saved: readonly MakeupRenderCategoryInput[],
+): MakeupCategoryView[] {
+  if (saved.length === 0) {
+    return [...rows];
+  }
+  const savedByCategory = new Map<MakeupCategory, MakeupRenderCategoryInput>(
+    saved.map((entry) => [entry.category, entry] as const),
+  );
+
+  return rows.map((row) => {
+    const choice = savedByCategory.get(row.category);
+    if (choice === undefined) {
+      return row;
+    }
+
+    const existing = row.shades.findIndex((shade) =>
+      sameHex(shade.hex, choice.shadeHex),
+    );
+    if (existing !== -1) {
+      return { ...row, savedIndex: existing };
+    }
+
+    const added = toShade(choice.shadeName, choice.shadeHex, row.category);
+    if (added === null) {
+      return row;
+    }
+
+    const position = ladderPosition(row.shades, choice.shadeHex);
+    const shades = [
+      ...row.shades.slice(0, position),
+      added,
+      ...row.shades.slice(position),
+    ];
+    return {
+      ...row,
+      shades,
+      // The recommendation is still the same swatch, one place further along
+      // when the saved shade was inserted before it.
+      recommendedIndex:
+        row.recommendedIndex >= position
+          ? row.recommendedIndex + 1
+          : row.recommendedIndex,
+      savedIndex: position,
+    };
+  });
 }

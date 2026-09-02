@@ -113,6 +113,7 @@ function profileRow(overrides: Partial<AestheticProfile> = {}): AestheticProfile
     hair_type: null,
     saved_hair_style_id: null,
     saved_hair_color_name: null,
+    saved_makeup: null,
     season: "deep_autumn",
     palette: null,
     reading: "An older reading, written before the undertone was confirmed.",

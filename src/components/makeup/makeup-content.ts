@@ -37,21 +37,29 @@ export function categoryLabel(category: MakeupCategory): string {
 
 /**
  * The shade selected when the screen opens. docs/01 section H item 2: "Each row
- * shows three swatches inside the palette, the middle one selected."
+ * shows three swatches inside the palette, the middle one selected", and item 4:
+ * "Save this look" saves the selected shades, which is what the person expects
+ * to find the next time they open the screen.
  *
- * The view carries recommendedIndex, which is the shade the palette recommends
- * and the one the middle position is meant to hold. It is used when it points at
- * a real shade; anything else falls back to the middle of the row, so a row can
- * never open with nothing selected.
+ * So the saved shade wins when the row carries one, and the palette's
+ * recommendation is what a row with nothing saved opens on. Either index is used
+ * only when it points at a real shade; anything else falls back to the middle of
+ * the row, so a row can never open with nothing selected.
  */
 export function selectedShadeIndex(category: MakeupCategoryView): number {
   const count = category.shades.length;
   if (count === 0) {
     return 0;
   }
-  const recommended = category.recommendedIndex;
-  if (Number.isInteger(recommended) && recommended >= 0 && recommended < count) {
-    return recommended;
+  for (const candidate of [category.savedIndex, category.recommendedIndex]) {
+    if (
+      candidate !== undefined &&
+      Number.isInteger(candidate) &&
+      candidate >= 0 &&
+      candidate < count
+    ) {
+      return candidate;
+    }
   }
   return Math.floor((count - 1) / 2);
 }

@@ -129,6 +129,7 @@ import {
 import {
   MAKEUP_CATEGORIES,
   makeupRenderParamsSchema,
+  type MakeupRenderParams,
 } from "@/lib/shared/color-view";
 import { hairstyleRenderParamsSchema } from "@/lib/shared/hair-view";
 import type { LookItem } from "@/lib/shared/looks-view";
@@ -625,6 +626,10 @@ export function buildFixtureProfileRow(): Insert<"aesthetic_profiles"> {
     hair_type: null,
     saved_hair_style_id: DEMO_FIXTURE_HAIR_VIEW.savedStyleId,
     saved_hair_color_name: DEMO_FIXTURE_HAIR_VIEW.savedColorName,
+    // Nothing has been rendered in this mode, so there is no look to open on:
+    // the shade rows open on the palette's recommendation, which is what
+    // docs/01 section H item 2 describes for a first visit.
+    saved_makeup: null,
     season: DEMO_FIXTURE_PALETTE.season,
     palette: DEMO_FIXTURE_PALETTE as unknown as Json,
     reading: DEMO_FIXTURE_READING,
@@ -1091,6 +1096,17 @@ export function buildAnalysesSeed(input: GoldenInput): AnalysesSeed {
 export interface RendersSeed {
   readonly rows: readonly Insert<"renders">[];
   readonly objects: readonly SeedObject[];
+  /**
+   * The shades the seeded makeup render was made with, in the shape
+   * "Save this look" stores (docs/01-user-flow.md section H item 4, migration
+   * 0013). Null when the run bought no makeup render.
+   *
+   * It is taken from the canonical parameters the render row is hashed under, so
+   * the saved look and the render are the same look by construction: /makeup
+   * opens on these shades, hashes them, and finds this row instead of asking for
+   * a try on the demo profile cannot buy.
+   */
+  readonly savedMakeup: MakeupRenderParams | null;
 }
 
 /** The golden run's own default, scripts/golden-run.ts DEFAULT_HAIRSTYLE_STYLE_ID. */
@@ -1118,6 +1134,7 @@ export function buildRendersSeed(input: GoldenInput): RendersSeed {
   const rows: Insert<"renders">[] = [];
   const objects: SeedObject[] = [];
   const calls = callsByStep(input.manifest);
+  let savedMakeup: MakeupRenderParams | null = null;
 
   for (const step of ["makeup", "hairstyle"] as const) {
     const call = calls.get(step);
@@ -1155,6 +1172,21 @@ export function buildRendersSeed(input: GoldenInput): RendersSeed {
       });
       params = stored as unknown as Json;
       hash = paramsHash("makeup", stored);
+      /*
+       * The same canonical shades the row is hashed under, read back through the
+       * request schema so what is saved to the profile is a look this build can
+       * draw and not simply whatever was in the file.
+       */
+      const asSaved = makeupRenderParamsSchema.safeParse({
+        categories: stored.categories,
+      });
+      if (!asSaved.success) {
+        throw new SeedError(
+          "read the makeup render params",
+          asSaved.error.message,
+        );
+      }
+      savedMakeup = asSaved.data;
       input.notes.push(
         recorded === null
           ? `The makeup shades were recomputed with makeupParamsFrom over the recorded attributes summary and the default categories (${MAKEUP_CATEGORIES.join(", ")}). If the run was given a narrower --makeup-categories, write ${paramsFile} and seed again, or the saved render will not be found by the cache.`
@@ -1202,7 +1234,7 @@ export function buildRendersSeed(input: GoldenInput): RendersSeed {
     });
   }
 
-  return { rows, objects };
+  return { rows, objects, savedMakeup };
 }
 
 /**
@@ -1245,6 +1277,12 @@ function recomputedMakeupParams(input: GoldenInput): unknown {
 export function buildGoldenProfileRow(
   input: GoldenInput,
   analyses: readonly Insert<"analyses">[],
+  /**
+   * The shades the seeded makeup render was made with, from buildRendersSeed.
+   * They are stored as the saved look so /makeup opens on the try on this run
+   * paid for rather than on shades nothing has been rendered for.
+   */
+  savedMakeup: MakeupRenderParams | null = null,
 ): Insert<"aesthetic_profiles"> {
   const rows: Analysis[] = analyses.map((row) => ({
     // readProfileFacts never reads the analysis id, so an insert row that has
@@ -1317,6 +1355,16 @@ export function buildGoldenProfileRow(
     hair_type: null,
     saved_hair_style_id: null,
     saved_hair_color_name: null,
+    /*
+     * docs/01-user-flow.md section H item 4, migration 0013. Seeded rather than
+     * left null because the run bought one makeup try on and the screen has to
+     * open on the shades it wore: any other shades hash to a render that does
+     * not exist, and the demo profile cannot buy a second one.
+     */
+    saved_makeup:
+      savedMakeup === null
+        ? null
+        : ({ categories: savedMakeup.categories } as unknown as Json),
     season: palette?.season ?? null,
     palette: palette === null ? null : (palette as unknown as Json),
     reading,
@@ -1726,6 +1774,7 @@ export async function runSeed(options: RunSeedOptions): Promise<SeedReport> {
     }
 
     // 7. renders -------------------------------------------------------------
+    let savedMakeup: MakeupRenderParams | null = null;
     {
       const current = step("renders");
       log("[7/9] Saved renders");
@@ -1736,6 +1785,7 @@ export async function runSeed(options: RunSeedOptions): Promise<SeedReport> {
         log(`      ${current.note}`);
       } else {
         const seed = buildRendersSeed(golden);
+        savedMakeup = seed.savedMakeup;
         await putAll(seed.objects);
         await insert("renders", seed.rows);
         current.status = "written";
@@ -1752,14 +1802,18 @@ export async function runSeed(options: RunSeedOptions): Promise<SeedReport> {
       const row =
         golden === null
           ? buildFixtureProfileRow()
-          : buildGoldenProfileRow(golden, analysisRows);
+          : buildGoldenProfileRow(golden, analysisRows, savedMakeup);
       await insert("aesthetic_profiles", [row]);
       current.status = "written";
       current.rows = 1;
+      const savedLookNote =
+        savedMakeup === null
+          ? ""
+          : ` The makeup look the run rendered (${savedMakeup.categories.map((entry) => `${entry.category} ${entry.shadeHex}`).join(", ")}) is saved on the row, so /makeup opens on it and finds that render instead of asking for one.`;
       current.note =
         golden === null
           ? "Built from the checked in fixture. capture_id is null because no photo exists."
-          : `Rebuilt from the real analyses through readProfileFacts, derivePalette, and the fallback narrative. capture_id ${captureWritten ? "points at the golden capture" : "is null"}.`;
+          : `Rebuilt from the real analyses through readProfileFacts, derivePalette, and the fallback narrative. capture_id ${captureWritten ? "points at the golden capture" : "is null"}.${savedLookNote}`;
       log(`      ${current.note}`);
     }
 

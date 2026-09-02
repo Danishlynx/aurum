@@ -148,11 +148,11 @@ export async function fetchRender(renderId: string): Promise<RenderResult> {
  * "Save this look", docs/01-user-flow.md section H item 4: the selected shades
  * are saved to the profile.
  *
- * UNVERIFIED: the saved look route is not part of the shared contract for this
- * layer yet. This posts the same category list the render takes to
- * POST /api/profile/makeup, which is the read route for this screen. Until that
- * route exists the call answers 404, the screen says the look was not saved, and
- * nothing is claimed to have been stored.
+ * POST /api/profile/makeup takes the same category list the render takes and
+ * stores it on the profile row (migration 0013), so the next visit opens on
+ * these shades and the try on they were rendered with is the one the hero shows.
+ * A judge session reading the demo profile gets 403 and the screen says the look
+ * was not saved, which is true of it.
  *
  * Only the status is read. The body is not parsed into anything the screen
  * shows, so there is nothing here for a schema to guard.

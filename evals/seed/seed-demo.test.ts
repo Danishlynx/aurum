@@ -462,6 +462,7 @@ const INSERTABLE_COLUMNS: Readonly<Record<SeedTableName, readonly string[]>> = {
     "hair_type",
     "saved_hair_style_id",
     "saved_hair_color_name",
+    "saved_makeup",
     "season",
     "palette",
     "reading",
@@ -731,6 +732,15 @@ describe("runSeed, --from-fixtures", () => {
     }
   });
 
+  it("saves no makeup look, because nothing has been rendered", async () => {
+    const writer = new RecordingWriter();
+    await seed({ writer });
+
+    // docs/01 section H item 2: with nothing saved the rows open on the
+    // palette's recommendation, which is what a first visit is.
+    expect(writer.rowsOf("aesthetic_profiles")[0]?.saved_makeup).toBeNull();
+  });
+
   it("writes a profile row with no capture and a fallback reading", async () => {
     const writer = new RecordingWriter();
     await seed({ writer });
@@ -997,6 +1007,65 @@ describe("runSeed, --from-golden", () => {
     // The reading came from the deterministic fallback, and says so.
     expect(String(row?.reading).length).toBeGreaterThan(0);
     expect(String(row?.reading_model).startsWith("fallback/")).toBe(true);
+  });
+
+  /**
+   * docs/01-user-flow.md section H item 4, and the reason the demo needs it.
+   *
+   * A makeup render is keyed by the capture and the exact shades it was made
+   * with. The run bought one, with the shades in renders/makeup-params.json, and
+   * the palette those shades came from has since been re derived. Unless the
+   * profile says which look was rendered, /makeup opens on shades nothing was
+   * rendered for, asks for a try on the demo profile cannot buy, and the picture
+   * the founder paid for never appears.
+   */
+  it("saves the makeup look the run rendered, so /makeup opens on it", async () => {
+    const writer = new RecordingWriter();
+    await seed({ writer, golden: goldenInput() });
+
+    const profile = writer.rowsOf("aesthetic_profiles")[0];
+    const render = writer
+      .rowsOf("renders")
+      .find((row) => row.kind === "makeup");
+    const stored = render?.params as {
+      readonly captureId: string;
+      readonly categories: unknown[];
+    };
+
+    // The same shades the render row carries, in the shape the save writes.
+    expect(profile?.saved_makeup).toEqual({ categories: stored.categories });
+
+    // And they hash to that row, which is the whole point: the screen opens on
+    // this look, hashes it, and finds the render instead of asking for one.
+    const params = makeupRenderParamsSchema.parse(profile?.saved_makeup);
+    expect(
+      paramsHash(
+        "makeup",
+        canonicalMakeupParams({ captureId: DEMO_CAPTURE_ID, params }),
+      ),
+    ).toBe(render?.params_hash);
+  });
+
+  it("saves the recorded shades when the run wrote a params file", async () => {
+    const writer = new RecordingWriter();
+    await seed({
+      writer,
+      golden: goldenInput({
+        "renders/makeup-params.json": {
+          categories: [
+            { category: "lip", shadeHex: "#9C5A44", shadeName: "Terracotta" },
+          ],
+        },
+      }),
+    });
+
+    // Stored the way the render is hashed: the hex lower cased, so the saved
+    // look and the render row cannot differ by a capital letter.
+    expect(writer.rowsOf("aesthetic_profiles")[0]?.saved_makeup).toEqual({
+      categories: [
+        { category: "lip", shadeHex: "#9c5a44", shadeName: "Terracotta" },
+      ],
+    });
   });
 
   it("uses a recorded reading when one sits beside the run", async () => {

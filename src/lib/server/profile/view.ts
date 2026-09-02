@@ -59,13 +59,13 @@ import { skinTypeFromZones } from "./skin-type";
  *    concern ranking, and the hair catalog are all read from the layers that own
  *    them, so this file cannot disagree with the report, /color, or /hair.
  *
- * "Exactly what is stored" is meant literally, which is why the saved list holds
- * no makeup row today: there is no column for a saved makeup selection and no
- * route that writes one (src/lib/server/profile/hair.ts records the doc gap for
- * the hair columns; makeup has no equivalent). Showing one would claim a save
- * the server never made. Recorded as an open item for the human: docs/01 section
- * L item 2 asks for a saved makeup look, so either a column lands or the doc
- * drops the row.
+ * "Exactly what is stored" is meant literally, and the saved list still holds no
+ * makeup row. A saved makeup look now has both a column and a route (migration
+ * 0013 and src/lib/server/profile/makeup.ts), so the reason is no longer that
+ * there is nothing to show: it is that docs/01 section L item 2 says a row and
+ * says nothing about what it reads, and inventing a label for a list of shades
+ * is a copy decision rather than a reading. Open item for the human: name the
+ * row and it lands here, next to the saved looks it will sit beside.
  */
 
 /* ------------------------------------------------------------------ */

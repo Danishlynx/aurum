@@ -76,11 +76,33 @@ describe("selectedShadeIndex", () => {
       selectedShadeIndex({ ...LIP, shades: [], recommendedIndex: 1 }),
     ).toBe(0);
   });
+
+  /*
+   * docs/01 section H item 4: "Save this look" saves the selected shades, so the
+   * next visit opens on them rather than on the recommendation. It is also what
+   * makes the saved look find its own render instead of asking for a new one
+   * (src/lib/server/profile/makeup.ts).
+   */
+  it("opens on the saved shade when the row carries one", () => {
+    expect(selectedShadeIndex({ ...LIP, savedIndex: 2 })).toBe(2);
+    expect(selectedShadeIndex({ ...LIP, savedIndex: 0 })).toBe(0);
+  });
+
+  it("ignores a saved index that points at no shade", () => {
+    expect(selectedShadeIndex({ ...LIP, savedIndex: 9 })).toBe(1);
+    expect(selectedShadeIndex({ ...LIP, savedIndex: -1 })).toBe(1);
+  });
 });
 
 describe("initialSelection", () => {
   it("gives one index per row", () => {
     expect(initialSelection([LIP, BLUSH])).toEqual([1, 0]);
+  });
+
+  it("opens each row on its saved shade when there is one", () => {
+    expect(
+      initialSelection([{ ...LIP, savedIndex: 2 }, BLUSH]),
+    ).toEqual([2, 0]);
   });
 });
 
