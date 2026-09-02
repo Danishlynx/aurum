@@ -29,6 +29,8 @@ bash: `cp .env.example .env.local`
 
 **A2. Get the Perfect Corp key.** Redeem the hackathon code at https://yce.perfectcorp.com/api-console/en/redeem-code/ and create a key at https://yce.perfectcorp.com/api-console/en/api-keys/ . Put it in `PERFECTCORP_API_KEY`, and the base URL the console gives you in `PERFECTCORP_BASE_URL`.
 
+The console also issues a secret. Leave `PERFECTCORP_API_SECRET` blank. Settled against the live API on 2026-09-02: the key alone authenticates as `Authorization: Bearer <key>`, and the RSA token exchange the secret is for works but buys nothing. The evidence is in `docs/04-integrations.md` ("Authentication") and in `PERFECTCORP_AUTH` in `src/lib/server/providers/perfectcorp/endpoints.ts`. Nothing further to verify here.
+
 **A3. Read the real credit costs out of the API console** and write them into `src/lib/server/providers/perfectcorp/endpoints.ts` (`unitCost`) and the credit table in `docs/04-integrations.md`. The rows still marked TBD are `skinAnalysis`, `clothTryOn`, and the accessory APIs other than the watch. Until `skinAnalysis` has a number, the cost of one capture set cannot be computed and A9 cannot be finished. Spends nothing.
 
 **A4. Confirm the endpoint surface against the live docs.** Open https://docs.perfectcorp.com/develop/introduction and the reference page for each API, or add the MCP server from https://docs.perfectcorp.com/develop/mcp with your key and list its tools. For every entry in `endpoints.ts` whose paths, request fields, and result fields you have now read, set `verification.state` to `"confirmed"` and update the note with the source and the date. Spends nothing.
@@ -77,7 +79,7 @@ Once A3 has replaced the unpriced rows with real figures, redo it with them:
 
 1. Take `documentedSessionUnits` from the results file. Call it S.
 2. Set `JUDGE_CREDITS_CAP` to `ceil(S x 3.6)`. That is the cap the doc asks for: three full sessions with 20 percent headroom.
-3. Check the balance covers the judging window. For N judge sessions the worst case spend is `N x cap`. If your balance is less than that, lower `JUDGE_ANALYSES_ALLOWED` (each analysis is one capture set) rather than raising the cap, and recompute.
+3. Check the balance covers the judging window. Read it with `curl http://localhost:3000/api/health` and take `perfectcorpCredits`, which is the live figure from `GET /s2s/v1.0/client/credit` and costs nothing. For N judge sessions the worst case spend is `N x cap`. If your balance is less than that, lower `JUDGE_ANALYSES_ALLOWED` (each analysis is one capture set) rather than raising the cap, and recompute. As of 2026-09-02 the balance is 40 units, which is less than one capture set, so this step cannot be satisfied until the account is topped up.
 4. Set `DAILY_CAP_PERFECTCORP_UNITS` from the same balance, and `DAILY_CAP_SERPAPI_SEARCHES` from the SerpApi plan quota.
 5. Change the four `it.fails` in `evals/budget/budget.test.ts` back to `it`, update the arithmetic comments and the exact shortfall assertions with the new numbers, and run `npm run eval:budget` again. It must be green.
 
@@ -93,7 +95,7 @@ Put the printed hash in `JUDGE_ACCESS_CODE_HASH`. Keep the plain code out of git
 
     npm run dev
 
-Then open http://localhost:3000/api/health . Every provider you configured reads true, and no key value appears anywhere in the response.
+Then open http://localhost:3000/api/health . Every provider you configured reads true, and no key value appears anywhere in the response. `perfectcorpCredits` carries the units left on the Perfect Corp account, or null when the key is missing or the provider did not answer inside four seconds. Reading it creates no task and spends nothing.
 
 ## B. With a Supabase project
 

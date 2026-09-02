@@ -38,6 +38,16 @@ What we use and where
 - Cloth try on and accessory try on (Layer 4 and 6): garments on the person; watches, bracelets, rings, earrings, necklaces, scarves, hats, shoes, bags.
 - Skin simulation (Layer 6): before and after visuals for the projected improvement.
 
+Authentication
+
+Settled against the live API on 2026-09-02. Recorded in code as PERFECTCORP_AUTH in src/lib/server/providers/perfectcorp/endpoints.ts.
+
+The API console issues a key and a secret, which reads like a token exchange. It is not a required one.
+
+- What we do: send the key straight through, "Authorization: Bearer <PERFECTCORP_API_KEY>". Proof: GET /s2s/v2.0/task/skin-analysis/<made up id> answered 400 InvalidTaskId with the header (past auth, died on the task id) and 401 InvalidApiKey without it. This matches the integration guide at https://docs.makeupar.com/reference/ai_skin_analysis/section/overview/integration-guide, which shows "Authorization: Bearer YOUR_API_KEY" on both the file and the task calls and documents no auth step.
+- What we do not do: the RSA exchange. It is real and it works. POST /s2s/v1.0/client/auth with { client_id, id_token }, where id_token is "client_id=<key>&timestamp=<ms since epoch>" RSA encrypted (PKCS1 padding) with the secret, which is a base64 DER RSA 1024 bit public key, then base64 encoded. It answers 200 with { status, result: { access_token } }, and a corrupt id_token answers 401 InvalidAuthentication. The returned token is opaque, comes with no expiry field, and is accepted on exactly the same endpoints as the raw key. It buys nothing and adds a round trip plus an expiry we cannot see, so PERFECTCORP_API_SECRET is read by nothing.
+- Balance: GET /s2s/v1.0/client/credit, same bearer key, answers 200 with { status, results: [{ id, type, amount, amount_dec, expiry }] }. Note results, not the { status, data } envelope every task API uses. It creates no task and spends nothing. Exposed by getCreditBalance() and reported by GET /api/health as perfectcorpCredits.
+
 The call pattern
 
 Every YouCam API we use is asynchronous. The shape, to be confirmed against the docs and recorded in endpoints.ts:
@@ -75,6 +85,8 @@ Read from the public reference pages on 2026-09-01. Note that docs.perfectcorp.c
     skin simulation             4 / 6             ai_skin_simulation        4 for 1 to 4 concerns, 6 for 5 to 10 concerns.
 
 Known cost of one capture set, with the rows above: fitzpatrick 10, facial color tones 20, face attributes 10 to 30 depending on how many attributes are asked for, hair type 2 (only if three photos exist). Skin analysis is the missing row, so the capture set total cannot be computed yet and JUDGE_CREDITS_CAP cannot be set from the table. src/lib/server/providers/perfectcorp/endpoints.ts returns null from unitsForCall for every row still marked TBD, which the credits layer reads as "do not reserve, do not call".
+
+What is actually on the account: 40 units, read from GET /s2s/v1.0/client/credit on 2026-09-02 (one grant, type ApiPaygToken, expiry 2027-09-02). That is the hard ceiling, and it is smaller than one capture set of the known rows alone (10 plus 20 plus 10 to 30, before skin analysis). It is also exactly DAILY_CAP_PERFECTCORP_UNITS, so the daily cap is not a cap at all today, and JUDGE_CREDITS_CAP=120 is three times the units that exist. Two consequences, both open: the account needs topping up before any judge session can run for real, and until it is, every screenshot and eval has to come from a fixture. Check the live number with GET /api/health rather than guessing.
 
 Budget per full session (target): one capture set (5 analyses) plus up to 6 renders. Compute the total from the table and set JUDGE_CREDITS_CAP so that 3 full sessions fit with 20 percent headroom.
 
