@@ -411,11 +411,18 @@ export function normalize(
 }
 
 /**
- * Pulls mask images into the private masks bucket. Result URLs expire, so this
- * runs the moment a task succeeds.
+ * Pulls mask images into the private masks bucket. Result URLs expire two hours
+ * after the task finishes, so this runs the moment a task succeeds rather than
+ * being deferred to the profile build or to a later request.
  *
  * A mask that cannot be fetched is dropped rather than failing the analysis: the
  * scores are the product, the masks are the illustration.
+ *
+ * Each mask is fetched on its own. It used to be one downloadResultAssets call
+ * over all eight URLs, which is a single Promise.all: one expired or refused URL
+ * rejected the whole call and the capture kept none of its masks, including the
+ * seven that were still there. Isolating them keeps the parallel fetch and loses
+ * only the mask that actually failed.
  */
 export async function persistMasks(args: {
   readonly ownerId: string;
@@ -426,27 +433,34 @@ export async function persistMasks(args: {
     return [];
   }
 
-  let assets: Awaited<ReturnType<typeof downloadResultAssets>>;
-  try {
-    assets = await downloadResultAssets(args.masks.map((mask) => mask.url));
-  } catch {
-    return [];
-  }
+  const fetched = await Promise.all(
+    args.masks.map(async (mask) => {
+      try {
+        const [asset] = await downloadResultAssets([mask.url]);
+        return asset === undefined ? null : { mask, asset };
+      } catch {
+        return null;
+      }
+    }),
+  );
 
   const paths: string[] = [];
-  for (let index = 0; index < assets.length; index += 1) {
-    const asset = assets[index];
-    const mask = args.masks[index];
-    if (asset === undefined || mask === undefined) {
+  for (const entry of fetched) {
+    if (entry === null) {
       continue;
     }
-    const extension = asset.contentType.includes("jpeg") ? "jpg" : "png";
+    const extension = entry.asset.contentType.includes("jpeg") ? "jpg" : "png";
     try {
       const stored = await uploadObject({
         bucket: BUCKETS.masks,
-        storagePath: maskPath(args.ownerId, args.captureId, mask.key, extension),
-        bytes: asset.bytes,
-        contentType: asset.contentType,
+        storagePath: maskPath(
+          args.ownerId,
+          args.captureId,
+          entry.mask.key,
+          extension,
+        ),
+        bytes: entry.asset.bytes,
+        contentType: entry.asset.contentType,
       });
       paths.push(stored);
     } catch {

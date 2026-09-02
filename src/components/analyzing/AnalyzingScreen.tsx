@@ -95,7 +95,14 @@ export function AnalyzingScreen() {
       router.replace("/report");
       return;
     }
-    setProblem(copy.errors.providerTimeout);
+    /*
+     * The reading stopped. The server already turned the provider's refusal into
+     * a sentence that says what to do about it (a turned head, a frame with no
+     * face), so that sentence is what shows. The timeout line is the fallback
+     * for a core job that failed without saying why, which is what a timeout
+     * looks like from here.
+     */
+    setProblem(state.problem ?? copy.errors.providerTimeout);
   }, [captureId, router]);
 
   useEffect(() => {

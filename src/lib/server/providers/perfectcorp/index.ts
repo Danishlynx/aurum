@@ -29,6 +29,7 @@ import {
   renderResultSchema,
   skinAnalysisResultSchema,
   taskCreateResponseSchema,
+  taskFailureCode,
   taskStatusResponseSchema,
   type FaceAngleStrictnessLevel,
   type NormalizedTaskState,
@@ -63,6 +64,7 @@ export {
   skinAnalysisResultSchema,
   skinTypeZoneFor,
   skinTypeZoneLabel,
+  taskFailureCode,
   taskStatusResponseSchema,
 } from "./schemas";
 export type {
@@ -296,19 +298,16 @@ export async function getTaskSnapshot(args: {
 
   const state = normalizeTaskState(response.data.task_status);
   /**
-   * Both of these arrive as null on a successful task rather than as absent,
-   * so both nullish checks are load bearing: `?? null` on a null error_code
-   * would otherwise turn into the string "null" on the snapshot.
+   * Both fields arrive as null on a successful task rather than as absent, and
+   * taskFailureCode reads both: data.error first, because that is where every
+   * refusal read live actually was.
    */
-  const rawCode = response.data.error_code ?? null;
-  const rawError = response.data.error ?? null;
   return {
     endpointKey: args.endpointKey,
     taskId: args.taskId,
     state,
     results: state === "succeeded" ? (response.data.results ?? undefined) : undefined,
-    errorCode:
-      state === "failed" ? (rawCode === null ? rawError : String(rawCode)) : null,
+    errorCode: state === "failed" ? taskFailureCode(response.data) : null,
     pollingIntervalSeconds: response.data.polling_interval ?? null,
   };
 }

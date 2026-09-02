@@ -1,6 +1,11 @@
 import "server-only";
 
-import { copy } from "@/lib/shared/copy";
+import {
+  analysisFailureReasonFor,
+  isRetakeFailure,
+  type AnalysisFailureReason,
+} from "@/lib/shared/analysis-failure";
+import { analysisFailureCopy, copy } from "@/lib/shared/copy";
 
 import {
   ensureAnalysis,
@@ -53,6 +58,24 @@ import {
  * idempotency  creating a job for a subject that already has one running
  *          returns the running job
  * timeout  a job running longer than 120 seconds fails with the timeout copy
+ *
+ * What a refused reading costs a judge, decided here so it is decided once.
+ *
+ * docs/07-payments-and-judge-mode.md: "Each capture that reaches the analyze
+ * step decrements analyses_used." A capture whose tasks were created and then
+ * refused by the engine (a turned head, no face) reached that step, so the
+ * count moves and stays moved, and a retake is a new capture and a new count.
+ * Two things make that honest rather than punitive. Retaking the same photo
+ * costs nothing, because the capture is keyed by content hash and a capture
+ * that already has jobs is never charged or counted again. And the reveal now
+ * says which frame problem stopped the reading, so the next photo is a better
+ * one rather than another guess.
+ *
+ * Giving the analysis back from the poll was considered and not done: a poll is
+ * repeatable, so without a per capture marker column a refresh loop on a failed
+ * capture would walk analyses_used back to zero and break the cap that
+ * docs/07 exists to enforce. The one case that can be given back safely is
+ * settled in the analyze route, which runs once: see the note there.
  */
 
 /** docs/03-architecture.md: attempts are capped at 2. */
@@ -120,9 +143,50 @@ export function messageForFailure(thrown: unknown): string {
     case "endpoint_unverified":
     case "provider_not_configured":
       return messages.analysisUnavailable;
+    case "task_failed":
+      return messageForTaskFailure(thrown.providerCode);
     default:
       return messages.providerRefused;
   }
+}
+
+/**
+ * The sentence for a task the engine created, accepted, and then refused.
+ *
+ * This is the path the live run found. A tone reading on a head turned a few
+ * degrees comes back as error_face_angle_rightward, and until now every one of
+ * those became the same generic line, which told a person nothing they could
+ * act on. The code decides the reason (src/lib/shared/analysis-failure.ts) and
+ * the reason decides the words (src/lib/shared/copy.ts). The provider's own
+ * text never reaches a screen.
+ */
+export function messageForTaskFailure(errorCode: string | null): string {
+  return analysisFailureCopy(analysisFailureReasonFor(errorCode));
+}
+
+/**
+ * One line per refused task, so a live run can be read back afterwards.
+ *
+ * The provider code is an identifier, not a payload: it carries no image, no
+ * signed URL, and nothing about the person. docs/03-architecture.md asks for
+ * the status and the provider error code in the log, and this is that.
+ */
+function logTaskFailure(args: {
+  readonly captureId: string;
+  readonly kind: AnalysisKind;
+  readonly providerCode: string | null;
+  readonly reason: AnalysisFailureReason;
+}): void {
+  console.warn(
+    JSON.stringify({
+      event: "aurum.analysis_refused",
+      captureId: args.captureId,
+      kind: args.kind,
+      providerCode: args.providerCode,
+      reason: args.reason,
+      retake: isRetakeFailure(args.reason),
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -488,14 +552,56 @@ async function failJob(args: {
   });
 }
 
+/**
+ * A task the provider says succeeded, whose result we could not read.
+ *
+ * It is not failJob: that one refunds, and refunding here would be a lie. A
+ * task that fails is charged nothing, but a task that succeeds is charged
+ * whether or not our schema can read the answer. That is not a hypothetical:
+ * the first live skin analysis cost 16 units and was recorded as failed and
+ * refunded, because data.error arrives as null and the schema wanted a string,
+ * and the ledger then said the account had 16 units it did not have. So the
+ * reservation is reconciled as spent, the analysis is marked failed, and the
+ * step is simply missing from the report.
+ */
+async function failChargedJob(args: {
+  readonly session: AppSession;
+  readonly job: JobRecord;
+  readonly analysis: Analysis;
+}): Promise<void> {
+  const reservation = await findReservation({
+    owner: { ownerType: args.session.ownerType, ownerId: args.session.id },
+    subjectId: args.analysis.id,
+    provider: "perfectcorp",
+  });
+  const units = reservation?.units ?? args.analysis.credits_used;
+  if (reservation !== null) {
+    await reconcile({
+      session: args.session,
+      reservation,
+      actualUnits: reservation.units,
+    });
+  }
+  await updateAnalysis(args.analysis.id, {
+    status: "failed",
+    error: messages.analysisUnavailable,
+    credits_used: units,
+  });
+  await updateJob(args.job.id, {
+    status: "failed",
+    error: messages.analysisUnavailable,
+    attempts: MAX_ATTEMPTS,
+  });
+}
+
 async function succeedJob(args: {
   readonly session: AppSession;
   readonly job: JobRecord;
   readonly analysis: Analysis;
   readonly captureId: string;
-  readonly snapshot: Awaited<ReturnType<typeof readTask>>;
+  readonly normalized: ReturnType<typeof normalize>;
 }): Promise<void> {
-  const normalized = normalize(args.analysis.kind, args.snapshot);
+  const normalized = args.normalized;
   const maskPaths = await persistMasks({
     ownerId: args.session.id,
     captureId: args.captureId,
@@ -596,22 +702,59 @@ export async function pollCaptureJobs(
       input.onProviderCall?.(1);
 
       if (snapshot.state === "succeeded") {
+        /*
+         * Normalizing is separated from storing on purpose. It is the step that
+         * can throw on a task the provider already charged for, and that case
+         * must not be refunded (failChargedJob). Everything after it is our own
+         * storage, where a throw is a server error and the poll retries.
+         */
+        let normalized;
+        try {
+          normalized = normalize(analysis.kind, snapshot);
+        } catch (thrown) {
+          console.warn(
+            JSON.stringify({
+              event: "aurum.analysis_unreadable",
+              captureId,
+              kind: analysis.kind,
+              issuePaths: isProviderError(thrown) ? thrown.issuePaths : [],
+            }),
+          );
+          await failChargedJob({ session: input.session, job, analysis });
+          continue;
+        }
         await succeedJob({
           session: input.session,
           job,
           analysis,
           captureId,
-          snapshot,
+          normalized,
         });
         continue;
       }
 
       if (snapshot.state === "failed") {
+        /*
+         * The refusal the person can act on. A failed task is charged nothing,
+         * so the reservation goes back whatever the reason
+         * (docs/04-integrations.md, "Input errors").
+         */
+        const reason = analysisFailureReasonFor(snapshot.errorCode);
+        logTaskFailure({
+          captureId,
+          kind: analysis.kind,
+          providerCode: snapshot.errorCode,
+          reason,
+        });
         await failJob({
           session: input.session,
           job,
           analysisId: analysis.id,
-          message: messages.providerRefused,
+          message: messageForTaskFailure(snapshot.errorCode),
+          // A refused frame is not a transient failure: sending the same photo
+          // again buys the same refusal. Retaking is the way out, so the job is
+          // closed at the attempt cap rather than left open for a retry.
+          attempts: isRetakeFailure(reason) ? MAX_ATTEMPTS : job.attempts,
         });
       }
       // Still running: last_polled_at was already stamped by the claim.

@@ -25,6 +25,12 @@ export const messages = {
   judgeCodeDidNotMatch: copy.judge.codeError,
   judgeSessionExhausted: copy.judge.exhausted,
   /**
+   * The engine refused the photo. It reads on screen as well as in a body now
+   * (the reveal shows the failure that stopped it), so the sentence lives in
+   * copy.ts and this is the re export.
+   */
+  providerRefused: copy.errors.readingRefused,
+  /**
    * The try on failed state, docs/01-user-flow.md section H. Used whenever a
    * render cannot be produced, so the body carries the same sentence the screen
    * shows and no substitute image is ever implied.
@@ -56,9 +62,6 @@ export const messages = {
   /** In house. A missing environment value. */
   notConfigured:
     "This build is missing a server setting, so that step cannot run yet.",
-  /** In house. The provider refused before the task started. */
-  providerRefused:
-    "Perfect Corp could not read this photo. Your photo is safe. Try again with a new one.",
   /** In house. An endpoint this build cannot call yet, or one not configured. */
   analysisUnavailable:
     "This part of the reading is not available yet. The rest of your profile is unaffected.",
@@ -136,7 +139,6 @@ export const SERVER_MESSAGES_NOT_IN_FLOW_DOC = [
   "providerCallsDisabled",
   "serverError",
   "notConfigured",
-  "providerRefused",
   "analysisUnavailable",
   "hairTypeNeedsThreePhotos",
   "renderInProgress",

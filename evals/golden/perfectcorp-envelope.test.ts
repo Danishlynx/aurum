@@ -24,6 +24,7 @@ import {
   skinAnalysisResultSchema,
   skinTypeZoneFor,
   skinTypeZoneLabel,
+  taskFailureCode,
   taskStatusResponseSchema,
   type TaskSnapshot,
 } from "@/lib/server/providers/perfectcorp";
@@ -125,6 +126,56 @@ describe("taskStatusResponseSchema against the real body", () => {
     const parsed = taskStatusResponseSchema.parse(loadSkinAnalysisStatus());
     expect(parsed.data.task_status).toBe("success");
     expect(parsed.status).toBe(200);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* A refused task                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The other half of the envelope. A task that fails carries its identifier in
+ * data.error, which is where every refusal read on 2026-09-02 was:
+ * error_face_angle_rightward and error_face_not_forward_facing from the skin
+ * tone analysis, error_no_face from a frame with nobody in it. A failed task is
+ * charged nothing, so what these bodies decide is only what the person is told.
+ */
+describe("taskFailureCode over a refused task body", () => {
+  function refusal(code: string) {
+    return taskStatusResponseSchema.parse({
+      status: 200,
+      data: { error: code, error_code: null, results: null, task_status: "error" },
+    });
+  }
+
+  it("reads the refusal out of data.error", () => {
+    for (const code of [
+      "error_face_angle_rightward",
+      "error_face_not_forward_facing",
+      "error_no_face",
+    ]) {
+      const parsed = refusal(code);
+      expect(normalizeTaskState(parsed.data.task_status)).toBe("failed");
+      expect(taskFailureCode(parsed.data)).toBe(code);
+    }
+  });
+
+  it("prefers the code the mapping can read over a bare number", () => {
+    // The shape that would lose the useful half if error_code were read first.
+    expect(
+      taskFailureCode({ error: "error_no_face", error_code: 1005 }),
+    ).toBe("error_no_face");
+  });
+
+  it("still reads a numeric code when that is all there is", () => {
+    expect(taskFailureCode({ error: null, error_code: 500 })).toBe("500");
+    expect(taskFailureCode({ error: "", error_code: "E123" })).toBe("E123");
+  });
+
+  it("returns null for the successful task, where both fields are null", () => {
+    const parsed = taskStatusResponseSchema.parse(loadSkinAnalysisStatus());
+    expect(parsed.data.error).toBeNull();
+    expect(taskFailureCode(parsed.data)).toBeNull();
   });
 });
 
