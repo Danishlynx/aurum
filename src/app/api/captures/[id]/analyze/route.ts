@@ -190,9 +190,39 @@ export async function POST(
       throw thrown;
     }
 
+    /*
+     * The fan out started nothing.
+     *
+     * Every kind came back failed, which means no task exists, every reservation
+     * that was taken has already been refunded inside createAnalysisJobs, and
+     * the session spent nothing. docs/07-payments-and-judge-mode.md counts "each
+     * capture that reaches the analyze step", and a capture that reached it and
+     * produced no task did not reach a reading, so the analysis goes back.
+     *
+     * This is safe to do here and only here: it runs in the same request that
+     * consumed the analysis, so it cannot run twice for one capture. The other
+     * total failure, where the tasks were created and the engine then refused
+     * every one of them, is settled on the polling route instead, and a poll can
+     * be repeated (a refresh, a second tab). Giving an analysis back from there
+     * without a per capture marker would let a refresh loop reset the cap, so
+     * that case keeps the documented decrement. See the note in
+     * src/lib/server/jobs/index.ts.
+     */
+    let returnedAnalysis = false;
+    if (
+      firstRun &&
+      session.kind === "judge" &&
+      view.jobs.length > 0 &&
+      view.jobs.every((job) => job.status === "failed")
+    ) {
+      await releaseJudgeAnalysis(session.id);
+      returnedAnalysis = true;
+    }
+
     const analysesRemaining =
       session.kind === "judge"
-        ? judgeAnalysesRemaining(session.session) - (firstRun ? 1 : 0)
+        ? judgeAnalysesRemaining(session.session) -
+          (firstRun && !returnedAnalysis ? 1 : 0)
         : undefined;
 
     // Retention is settled on the polling route: the original is removed once
