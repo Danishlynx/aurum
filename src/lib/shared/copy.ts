@@ -661,6 +661,15 @@ export const copy = {
     retakeAffordance: "Retake",
     adjustAffordance: "Adjust",
     savedHeading: "Saved",
+    /**
+     * In house. docs/01 section L item 2 lists "saved makeup look" as one of the
+     * three saved items but gives no label for the row, and unlike the other two
+     * this one has no name of its own to borrow: a saved hair choice carries its
+     * style name and a saved look carries its occasion, while a saved makeup
+     * look is a list of shades. So the label names the row and the shade names
+     * sit in the detail beside it, which is the same shape as the rows above.
+     */
+    savedMakeupLabel: "Makeup look",
     dataHeading: "Data",
     keepOriginalsToggle: "Keep original photos",
     downloadAction: "Download my data",
@@ -817,6 +826,7 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "productCard.distanceTemplate",
   "report.maskTogglesLabel",
   "color.adjusterFailed",
+  "profile.savedMakeupLabel",
   "makeup.beforeAfterLabel",
   "makeup.savedToast",
   "makeup.saveFailed",

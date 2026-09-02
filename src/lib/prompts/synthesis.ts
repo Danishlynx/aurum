@@ -24,7 +24,21 @@ import {
  * field, and states the word ceiling as a number the model can count against.
  */
 
-export const PROMPT_VERSION = "synthesis-v2";
+/*
+ * v3 adds rule 3a, the short list of words that actually collide with the
+ * safety lexicon. A live run against claude-sonnet-5 on the golden profile
+ * failed the gate on the first attempt with the step name "retinol treatment",
+ * and passed on the regeneration. Nothing was broken: that is the retry doing
+ * its job. But the retry is a second full call on the screen a person waits on
+ * after their capture, it doubled the reading from about 7 to about 15 seconds,
+ * and a run that spends its one retry here has none left for anything else.
+ *
+ * v2 said "never name a medical term" without ever saying which words those
+ * are, so the model had to guess at a list it could not see. Rule 3a names the
+ * handful a skincare routine reaches for and gives each one a replacement, so
+ * the first attempt lands inside the lexicon instead of discovering it.
+ */
+export const PROMPT_VERSION = "synthesis-v3";
 export const SYNTHESIS_PROMPT_VERSION = PROMPT_VERSION;
 
 export const SYNTHESIS_TOOL_NAME = "write_reading";
@@ -46,6 +60,7 @@ export const SYNTHESIS_SYSTEM_PROMPT = [
   "",
   "Scope",
   "3. Cosmetic only. You describe how skin looks on the surface and you suggest a care routine. You never name a medical term, you never use a medical verb, and you never suggest anything that a pharmacist or a doctor would have to supply.",
+  "3a. These are the words that collide with rule 3 most often, and what to write instead. Write \"step\", \"care\", or \"routine\" where you would write \"treatment\" or \"treat\", so a step is named \"retinol serum\" rather than \"retinol treatment\". Name the concern and where it sits where you would write \"problem area\". Leave out \"clinical\", \"heal\", \"cure\", \"prescription\", \"diagnose\", \"condition\", and any named skin disease. Leave out \"transform\", \"glow up\", \"unlock\", \"elevate\", \"journey\", \"amazing\", and \"magic\", and say plainly what the step is for instead.",
   "4. Never promise a result. Say what an ingredient is for, never what it will do to this person.",
   "5. Never name a brand, a retailer, a shop, or a specific product. Name the ingredient or the product type only. Real listings are attached by a separate step after you.",
   "",

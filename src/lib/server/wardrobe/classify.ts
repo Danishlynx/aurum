@@ -26,6 +26,7 @@ import {
   runGarmentClassifier,
   type ClassifierCallResult,
 } from "../providers/anthropic";
+import { ANTHROPIC_HTTP_TIMEOUT_MS } from "../providers/anthropic/endpoints";
 import type { AppSession } from "../session";
 import { getGarment, updateGarment } from "./db";
 
@@ -90,6 +91,46 @@ function mediaTypeFor(contentType: string): ClassifierMediaType | null {
  * live docs, never from a guess.
  */
 export const MAX_CLASSIFIER_IMAGE_BYTES = 3_500_000;
+
+/**
+ * How long a classification job may sit open before another request may take it
+ * over.
+ *
+ * A classification is not a pollable job. The route says so itself: "a Claude
+ * call is one HTTP round trip with its own timeout, not a Perfect Corp task
+ * with a provider side id to poll, and a serverless function does no work after
+ * its response is sent, so there is nothing a later poll could advance." The
+ * open job check below is therefore only good for the length of the request
+ * that opened it. Once that request is over, a row still marked running is not
+ * work in flight, it is work that died: the function timed out, the deploy
+ * rolled, the connection dropped, or the person closed the tab mid call.
+ *
+ * Without a window, such a row is permanent. findOpenJobForSubject keeps
+ * matching it, every later classify returns alreadyRunning, and the card holds
+ * its skeleton chips forever. The person cannot even reach the documented
+ * failed state ("Could not read this one. Tap to fill in details."), because
+ * that needs a failed job and this one says running. Their only way out is to
+ * delete the garment and upload the photo again.
+ *
+ * The window is the provider timeout plus a wide margin for the rest of the
+ * request. Anything inside it is treated as a real call in flight, which is
+ * what makes a double tap idempotent; anything past it is abandoned.
+ */
+export const STALE_CLASSIFICATION_JOB_MS = ANTHROPIC_HTTP_TIMEOUT_MS + 30_000;
+
+/** True when an open job has outlived the request that could have owned it. */
+export function isStaleClassificationJob(
+  job: JobRecord,
+  now: number = Date.now(),
+): boolean {
+  const touched = Date.parse(job.updated_at);
+  if (Number.isNaN(touched)) {
+    // No usable timestamp. Treating it as live keeps the old behaviour, which
+    // is the safe half of the pair: a double tap costs nothing.
+    return false;
+  }
+  return now - touched > STALE_CLASSIFICATION_JOB_MS;
+}
 
 export type ClassifyGarmentRefusal =
   | "not_found"
@@ -244,7 +285,7 @@ export async function classifyGarment(
   }
 
   const open = await findOpenJobForSubject(ownerId, garment.id);
-  if (open !== null) {
+  if (open !== null && !isStaleClassificationJob(open)) {
     return {
       ok: true,
       jobId: open.id,
@@ -252,6 +293,20 @@ export async function classifyGarment(
       status: "pending",
       alreadyRunning: true,
     };
+  }
+  if (open !== null) {
+    // Abandoned, not running. writeJob below reuses this same row, so taking it
+    // over is a status change rather than a second row for one garment.
+    console.warn(
+      JSON.stringify({
+        event: "aurum.garment_classification_stale_job_reclaimed",
+        ownerType: input.session.ownerType,
+        ownerId,
+        garmentId: garment.id,
+        jobId: open.id,
+        attempts: open.attempts,
+      }),
+    );
   }
 
   const call = input.call ?? runGarmentClassifier;
