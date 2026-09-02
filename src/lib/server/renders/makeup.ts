@@ -54,6 +54,28 @@ import type { StoredMakeupParams } from "./params";
  * The enumeration also names what each category wants, which is where the
  * foundation payload below comes from: "colorIntensity, coverageIntensity,
  * glowIntensity is required" is the foundation branch of the union.
+ *
+ * Checked again on 2026-09-02, one category at a time, because only lip colour
+ * and blush had ever been rendered and the other two rows had never been sent to
+ * the API at all:
+ *
+ *   foundation alone            passes
+ *   foundation without
+ *     coverageIntensity         "coverageIntensity is required but wasn't
+ *                               included in your request."
+ *   eye_shadow alone            passes
+ *   all four rows in one task   passes
+ *
+ * So the foundation branch really does want all four palette fields, and the
+ * eye_shadow body is the blush body with a different category, which is what
+ * this file already assumed. The same check was run against the request schema
+ * in the OpenAPI bundle behind the reference page
+ * (docs.makeupar.com/_bundle/reference/makeup_vto.json), which agrees field for
+ * field and names "original" as a lip shape label.
+ *
+ * One thing the oracle does not catch: an invented pattern name passes creation.
+ * A wrong pattern is only found later, as a failed task. So the names below are
+ * read from the live catalogs rather than trusted, most recently on 2026-09-02.
  */
 
 /** The provider's category name for each of our four rows. */
@@ -143,7 +165,8 @@ export const LIP_STYLE_TYPE = "full";
  *
  * UNVERIFIED. Foundation was left out of the corrected render, so no picture has
  * confirmed this number the way 30 and 22 were confirmed for lip and blush. It
- * is a sane default, not a measured one.
+ * is a sane default, not a measured one. The field it rides on is confirmed
+ * (see the header): it is the number that nobody has looked at.
  */
 export const FOUNDATION_COVERAGE_INTENSITY = 35;
 

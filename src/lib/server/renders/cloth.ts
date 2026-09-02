@@ -22,24 +22,47 @@ import type { StoredClothParams } from "./params";
  * outfit is a flat lay, which is the fallback docs/09-build-order-and-demo.md
  * names for Layer 4.
  *
- * UNVERIFIED, and recorded rather than guessed away: the exact spelling of the
- * category values. The reference page lists them in prose as "full_body, upper
- * body, and lower body", which reads as one snake case token and two written
- * with spaces. The tokens below are the snake case forms, which is what every
- * other field on this API uses, and the cost of the call is not published
- * either (the credit table says TBD, so the credits layer reserves one unit).
+ * CONFIRMED on 2026-09-02, where the category values used to be a guess: the
+ * reference page lists them in prose as "full_body, upper body, and lower body",
+ * and the snake case tokens below were inferred from that. The whole enum is now
+ * known, from the OpenAPI bundle behind that page and from the live API itself:
+ * full_body, lower_body, upper_body, shoes, auto, outer. It cost nothing to
+ * settle, with the oracle the makeup body was corrected with: a task creation
+ * that is rejected is free, and a src_file_id the file service cannot resolve is
+ * always rejected. Every one of the six passes; "torso" answers 400 with
+ * "garment_category is not one of the accepted values.", so the value really is
+ * read and checked when the task is created rather than at render time.
  *
- * TODO for the human: run one cloth try on from the API playground, record the
- * accepted garment_category values and the real unit cost in endpoints.ts and
- * in the credit table in docs/04-integrations.md, and correct the map below if
- * it differs. Nothing else has to change.
+ * Two of the six were news, and both are used below: there is a dedicated
+ * "shoes" category, and a dedicated "outer" for a layer worn over something.
+ *
+ * The request also takes an optional change_shoes boolean, which defaults to
+ * true and only has an effect on full_body and lower_body. It is deliberately
+ * not sent: it decides whether shoes are swapped when the reference image is a
+ * full body photo that happens to include them, and our reference is a photo of
+ * one garment.
+ *
+ * Still unpublished: the cost of a V4.0 call. The consumption table lists 2
+ * units for V2.0 and V3.0 and omits V4.0, so the credit table still says TBD and
+ * the credits layer reserves the unknown cost fallback of one unit.
  */
 
-/** The garment categories cloth-v4 accepts, as the reference page lists them. */
+/**
+ * The garment categories cloth-v4 accepts.
+ *
+ * The full enum, in the order the request schema lists it. "auto" is real and
+ * deliberately unused: the category is what decides whether a photo lands as a
+ * shirt or as trousers, and we already know which it is from the type the person
+ * or the classifier recorded. Asking the engine to guess again would be handing
+ * back the one thing we are sure of.
+ */
 export const CLOTH_GARMENT_CATEGORIES = [
   "full_body",
-  "upper_body",
   "lower_body",
+  "upper_body",
+  "shoes",
+  "auto",
+  "outer",
 ] as const;
 
 export type ClothGarmentCategory = (typeof CLOTH_GARMENT_CATEGORIES)[number];
@@ -47,24 +70,33 @@ export type ClothGarmentCategory = (typeof CLOTH_GARMENT_CATEGORIES)[number];
 /**
  * Where a garment sits, and which category it is sent as.
  *
- * A dress is the full body. A top and a layer are the upper body: a blazer is
- * worn over a shirt, and both are the piece a person sees from across a room,
- * which is why the hero is always one of these three
- * (src/lib/shared/looks.ts, HERO_SLOT_PREFERENCE). Bottoms and shoes have a
- * category too, so a later layer that renders them does not have to invent one.
+ * A dress is the full body. A top is the upper body. A layer is "outer", which
+ * is the category the enum keeps for a piece worn over another: a blazer is worn
+ * over a shirt, and sending it as an upper body garment asks the engine to put
+ * it in the shirt's place instead of over it. Both are still the piece a person
+ * sees from across a room, which is why the hero is one of these three
+ * (src/lib/shared/looks.ts, HERO_SLOT_PREFERENCE).
+ *
+ * Shoes have their own category too. They used to be sent as lower_body, which
+ * would have asked the engine to wear a photo of a shoe where the trousers are.
+ * Nobody had run one, so nobody had seen it happen.
  *
  * An accessory has no cloth category: accessory try on is its own set of
  * endpoints (docs/04-integrations.md, Layer 6), so it returns null here rather
  * than being sent to the cloth model as clothing.
+ *
+ * Which category each slot maps to is a curation call, not a fact the provider
+ * states. What is confirmed is only that all of these values are accepted. What
+ * a given one renders as is unwatched.
  */
 export const CLOTH_CATEGORY_OF_SLOT: Readonly<
   Record<GarmentSlot, ClothGarmentCategory | null>
 > = {
   dress: "full_body",
   top: "upper_body",
-  outerwear: "upper_body",
+  outerwear: "outer",
   bottom: "lower_body",
-  shoes: "lower_body",
+  shoes: "shoes",
   accessory: null,
 };
 

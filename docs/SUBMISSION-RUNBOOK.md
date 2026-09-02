@@ -35,14 +35,11 @@ The console also issues a secret. Leave `PERFECTCORP_API_SECRET` blank. Settled 
 
 **A4. Confirm the endpoint surface against the live docs.** Open https://docs.perfectcorp.com/develop/introduction and the reference page for each API, or add the MCP server from https://docs.perfectcorp.com/develop/mcp with your key and list its tools. For every entry in `endpoints.ts` whose paths, request fields, and result fields you have now read, set `verification.state` to `"confirmed"` and update the note with the source and the date. Spends nothing.
 
-**A5. Verify the last unverified endpoint the expensive way, only if A4 could not answer it.** `hairColorTryOn` is the entry whose task path and colour fields could not be read, so the render layer refuses to call it and `/hair` offers colours without rendering them. To confirm it against the real API:
+**A5. Done, and it cost nothing.** `hairColorTryOn` was the entry whose task path and colour fields could not be read, so the render layer refused to call it and `/hair` offered colours without rendering them. Settled on 2026-09-02 without spending a unit, along with the request body of every other render: the path is `/s2s/v2.0/task/hair-color`, from the OpenAPI bundle behind the reference page, and the body is `{ src_file_id, pattern: { name: "full" }, palettes: [{ color, color_intensity }] }`, driven through the provider's own validator with a file id it cannot resolve. `docs/04-integrations.md` ("Render request bodies") has all five bodies and the evidence for each, and `evals/golden/render-bodies.test.ts` holds them still.
 
-1. Add `PERFECTCORP_ALLOW_UNVERIFIED=true` to `.env.local`. This is the only thing that lets a guessed path be called at all.
-2. Needs B and C complete: a render needs a stored capture, so run it against the seeded demo profile with `npm run dev`, open `/hair`, and tap one colour.
-3. Read the request and the response in the server log, write the real path and field names into `endpoints.ts`, and set the entry to `"confirmed"`.
-4. Remove `PERFECTCORP_ALLOW_UNVERIFIED` from `.env.local` again.
+What that leaves unverified is the earrings and the bag, whose unit costs are published nowhere readable, so the credits layer has nothing true to reserve and `/looks` offers neither. Both paths were wrong and are corrected: earrings is `2d-vto/earring` and bag is `task/bag`, which is a different API with a required `gender` field. Read their costs from the API console (A3) before enabling either.
 
-Cost: 1 unit per attempt, and a failed task costs nothing.
+What no probe can answer is what a render looks like. Hair colour, cloth, the skin projection, and the watch have never been seen, only accepted. The first live run is where that gets watched.
 
 **A6. Record the real SerpApi fixtures.** Every file in `evals/fixtures/listings/` is hand written to the documented response shape and says so in its own `_aurum_fixture` key. Replace them, following `evals/fixtures/listings/README.md`:
 

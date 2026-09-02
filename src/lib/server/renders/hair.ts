@@ -206,8 +206,16 @@ export function hairstyleTaskBody(args: {
 /* Hair colour                                                         */
 /* ------------------------------------------------------------------ */
 
-/** Full head rather than ombre. Both cost 1 unit (docs/04-integrations.md). */
-export const HAIR_COLOR_MODE = "full";
+/**
+ * Whole head rather than ombre.
+ *
+ * This is a pattern name and not a mode, which is the correction at the heart of
+ * this section: the field is pattern.name, and its accepted values are "full"
+ * and "ombre". Both cost 1 unit (docs/04-integrations.md). Ombre would need
+ * blend_strength, line_offset, coloring_section, and a second palette entry, and
+ * the colour row offers one colour, so full is the only value this app sends.
+ */
+export const HAIR_COLOR_PATTERN_NAME = "full";
 
 /** Full strength. The swatch the person picked is the colour they asked for. */
 export const HAIR_COLOR_INTENSITY = 100;
@@ -215,29 +223,38 @@ export const HAIR_COLOR_INTENSITY = 100;
 /**
  * The body for one hair colour try on.
  *
- * UNVERIFIED, twice over, which is why the endpoint entry itself is marked
- * unverified and the render layer refuses to call it without
- * PERFECTCORP_ALLOW_UNVERIFIED:
+ * CONFIRMED on 2026-09-02, and it is worth writing down what it replaced,
+ * because every field of the old body was wrong in a different way:
  *
- *   1. the task path did not render on the reference page, so the path in
- *      endpoints.ts is a placeholder,
- *   2. the request fields that carry the colour are not confirmed. The shape
- *      below follows the makeup try on payload, which is the closest confirmed
- *      neighbour, with the full versus ombre mode the reference page does
- *      confirm.
+ *     was:  { src_file_id, mode: "full", palettes: [{ color, colorIntensity }] }
+ *     is:   { src_file_id, pattern: { name: "full" },
+ *             palettes: [{ color, color_intensity }] }
  *
- * On 2026-09-02 the makeup payload itself was corrected against the live API
- * (see src/lib/server/renders/makeup.ts), so this body was corrected with it:
- * palettes is a flat list of colours, and the strength field is colorIntensity
- * rather than intensity. That makes the guess a better guess. It does not make
- * it a fact: no hair colour task has ever been created on this account.
+ * "mode" is not a field this endpoint has: the old body answers 400 with
+ * "'pattern' is required and can't be null." So the first colour the founder
+ * tapped would have failed, with a picture that never arrived. And the strength
+ * was being dropped silently even where the request was accepted: this endpoint
+ * spells it color_intensity, in snake case, unlike makeup-vto next door, and a
+ * camel case colorIntensity of 500 sails through validation while a snake case
+ * color_intensity of 500 answers "color_intensity is above the allowed maximum."
  *
- * Nothing has ever been rendered from it. What is confirmed is only the price,
- * 1 unit per render for both modes.
+ * How it was settled without spending a unit, which is the same oracle the
+ * makeup body was corrected with (src/lib/server/renders/makeup.ts): a task
+ * creation that is rejected is free, and a src_file_id the file service cannot
+ * resolve is always rejected, so a bogus file id turns the endpoint into a
+ * validator that answers for nothing. The body below answers the generic
+ * "One or more parameters in this request are invalid.", which is what a right
+ * body with a wrong file id says. The path came from the OpenAPI bundle behind
+ * the reference page, which states it outright where the page never rendered it
+ * (endpoints.ts, hairColorTryOn).
  *
- * TODO for the human: run one hair colour try on from the API playground, record
- * the path and the colour payload in endpoints.ts, mark the entry confirmed, and
- * correct this body if it differs.
+ * The colour keeps its leading hash. The endpoint checks the format itself:
+ * "4A2C1A" without the hash answers "color doesn't match the required format."
+ *
+ * Still unwatched, and honestly so: what the render looks like. Nobody has seen
+ * one. The intensity of 100 is the colour the person asked for at full strength,
+ * which is the right default for hair in a way it was not for makeup, but no
+ * picture has confirmed that either.
  */
 export function hairColorTaskBody(args: {
   readonly fileId: string;
@@ -247,11 +264,11 @@ export function hairColorTaskBody(args: {
   const fileField = endpoint.sourceFileFields[0] ?? "src_file_id";
   return {
     [fileField]: args.fileId,
-    mode: HAIR_COLOR_MODE,
+    pattern: { name: HAIR_COLOR_PATTERN_NAME },
     palettes: [
       {
         color: args.params.colorHex.trim().toUpperCase(),
-        colorIntensity: HAIR_COLOR_INTENSITY,
+        color_intensity: HAIR_COLOR_INTENSITY,
       },
     ],
   };

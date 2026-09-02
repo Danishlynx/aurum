@@ -26,27 +26,39 @@ import type { StoredSkinSimulationParams } from "./params";
  * anywhere in this path: with no key, an unverified endpoint, or a failed task,
  * the row falls back to copy.report.projectionUnavailable.
  *
- * CONFIRMED, from src/lib/server/providers/perfectcorp/endpoints.ts: the ten
- * concerns the engine can simulate (radiance, acne, oiliness, eye bags, dark
- * circles, spots, pores, texture, wrinkles, redness), the 0.0 to 1.0 intensity
- * scale, the image limits, and the price (4 units for 1 to 4 concerns, 6 for 5
- * to 10).
+ * CONFIRMED on 2026-09-02, and the correction is worth writing down because the
+ * old body was not a wrong field name, it was the wrong shape entirely:
  *
- * UNVERIFIED, and this is why the endpoint entry is marked unverified and the
- * render layer refuses to call it without PERFECTCORP_ALLOW_UNVERIFIED, exactly
- * as it refuses the hair colour try on:
+ *     was:  { src_file_id, simulations: [{ concern, intensity }] }
+ *     is:   { src_file_id, texture: 1, pores: 1, ... }
  *
- *   1. the request field that carries the concern to intensity map,
- *   2. the result field that carries the render URL.
+ * There is no concern to intensity map. The concerns are top level fields on the
+ * request itself, one per concern, each a number from 0.0 to 1.0, and at least
+ * one has to be above zero. An unknown field is dropped rather than refused, so
+ * the old body answered "Simulation intensity cannot be all zero": the whole
+ * array went in the bin and nothing was left to simulate.
  *
- * The body below follows the shape of the confirmed neighbours (a source file id
- * plus one array of items), which is a guess about field names and is recorded
- * as one rather than presented as fact.
+ * Two of the ten names are singular where our own concern keys are plural, which
+ * is exactly the kind of thing that only a probe finds: the endpoint says
+ * wrinkle and dark_circle, and sending wrinkles and dark_circles lands in the
+ * same bin as the array did. PROVIDER_CONCERN_TOKEN below is where that lives.
  *
- * TODO for the human: run one skin simulation from the API playground, record
- * the request field and the result field in endpoints.ts, mark the entry
- * confirmed, and correct this body if it differs. Nothing else has to change:
- * the moment the entry is confirmed, the row on /report can render.
+ * Settled for free with the oracle the makeup and hair colour bodies were
+ * settled with (src/lib/server/renders/makeup.ts): a task creation that is
+ * rejected costs nothing, and a src_file_id the file service cannot resolve is
+ * always rejected. The corrected body answers the generic "One or more
+ * parameters in this request are invalid.", and an intensity of 5 answers
+ * "texture is above the allowed maximum.", so the values are read and checked.
+ * The result is data.results.url, the same single url the other renders return.
+ *
+ * Also confirmed, from endpoints.ts: the ten concerns the engine can simulate
+ * (radiance, acne, oiliness, eye bags, dark circles, spots, pores, texture,
+ * wrinkles, redness), the 0.0 to 1.0 scale, the image limits, and the price
+ * (4 units for 1 to 4 concerns, 6 for 5 to 10).
+ *
+ * Still unwatched: what a projection looks like. Nobody has run one. The
+ * endpoint is callable now, which means the row on /report draws its button, and
+ * a tap on it spends 4 units.
  */
 
 /**
@@ -61,8 +73,12 @@ export const SIMULATION_INTENSITY = 1;
 /**
  * Our concern key, in the provider's word for it.
  *
- * Nine of the ten are the same word with our underscores. The tenth is theirs:
- * the reference page calls dark spots "spots".
+ * Three of the ten differ, and all three are recorded from the request schema
+ * rather than guessed: dark spots are "spots", and wrinkles and dark circles are
+ * singular, "wrinkle" and "dark_circle". A plural where the endpoint wants a
+ * singular is not an error there. It is an unknown field, which is dropped, and
+ * a request whose concerns were all dropped answers "Simulation intensity cannot
+ * be all zero".
  */
 export const PROVIDER_CONCERN_TOKEN: Readonly<
   Record<SimulatableConcernKey, string>
@@ -74,8 +90,8 @@ export const PROVIDER_CONCERN_TOKEN: Readonly<
   acne: "acne",
   redness: "redness",
   radiance: "radiance",
-  wrinkles: "wrinkles",
-  dark_circles: "dark_circles",
+  wrinkles: "wrinkle",
+  dark_circles: "dark_circle",
   eye_bags: "eye_bags",
 };
 
@@ -108,25 +124,30 @@ export function simulationConcernsFor(
  * The body for one skin simulation. Returns null when no concern survived the
  * mapping, which the caller reads as "there is nothing to render" and refuses
  * before a credit is reserved.
+ *
+ * Null matters more here than it looks: a body with a source and no concern
+ * above zero is a request the endpoint refuses anyway, so returning null costs
+ * nothing and says the same thing one round trip earlier.
  */
 export function simulationTaskBody(args: {
   readonly fileId: string;
   readonly params: StoredSkinSimulationParams;
 }): Record<string, unknown> | null {
-  const simulations = args.params.concerns
-    .filter(isSimulatableConcern)
-    .map((concern) => ({
-      concern: PROVIDER_CONCERN_TOKEN[concern],
-      intensity: SIMULATION_INTENSITY,
-    }));
-  if (simulations.length === 0) {
+  const endpoint = getEndpoint("skinSimulation");
+  const fileField = endpoint.sourceFileFields[0] ?? "src_file_id";
+  const body: Record<string, unknown> = { [fileField]: args.fileId };
+
+  let asked = 0;
+  for (const concern of args.params.concerns) {
+    if (!isSimulatableConcern(concern)) {
+      continue;
+    }
+    body[PROVIDER_CONCERN_TOKEN[concern]] = SIMULATION_INTENSITY;
+    asked += 1;
+  }
+  if (asked === 0) {
     return null;
   }
 
-  const endpoint = getEndpoint("skinSimulation");
-  const fileField = endpoint.sourceFileFields[0] ?? "src_file_id";
-  return {
-    [fileField]: args.fileId,
-    simulations,
-  };
+  return body;
 }
