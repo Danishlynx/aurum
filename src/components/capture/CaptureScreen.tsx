@@ -457,13 +457,23 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     if (video === null || video.videoWidth === 0) {
       return;
     }
-    const canvas = drawToCanvas(
-      video,
-      { width: video.videoWidth, height: video.videoHeight },
-      CAPTURE_LONG_EDGE,
-    );
-    freeze(canvas);
-    void assess(canvas);
+    // The stage shows a center crop of the sensor, but the sensor frame is
+    // wider than the stage, so a face filling the oval on screen can still be
+    // a small fraction of the raw capture. The provider refused exactly that
+    // live (error_src_face_too_small, 2026-09-03). A video frame is a canvas
+    // image source, so the shutter goes through the same face framing pipeline
+    // the upload path uses, and both paths send what the person believed they
+    // framed.
+    void (async () => {
+      setPhase({ name: "working" });
+      const framed = await frameForUpload({
+        source: video,
+        size: { width: video.videoWidth, height: video.videoHeight },
+        release: () => {},
+      });
+      freeze(framed);
+      await assess(framed);
+    })();
   }
 
   function handleFile(file: File): void {
