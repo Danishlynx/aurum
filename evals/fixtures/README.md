@@ -133,13 +133,18 @@ images, in `evals/capture/capture.test.ts` and `src/lib/shared/quality.test.ts`.
 Those tests prove the decision logic, the reason precedence, and the accept and
 borderline boundaries.
 
-They do not prove the thresholds. `SHARPNESS_REJECT_BELOW`,
-`SHARPNESS_BORDERLINE_BELOW`, the exposure fractions, and the mean luminance
-bounds in `quality.ts` are marked PROVISIONAL and are numbers about real
-photographs. They get their real values from the first run of eval:capture
-against `faces` and `captures-bad`, against the threshold in docs/05-evals.md:
-every bad capture rejected, every good light face accepted, at most one indoor
-light face borderline.
+They do not prove the thresholds. `SHARPNESS_BORDERLINE_BELOW`, read at
+`SHARPNESS_MEASURE_LONG_EDGE`, the exposure fractions, and the mean luminance
+bounds in `quality.ts` are numbers about real photographs. They get their real
+values from the first run of eval:capture against `faces` and `captures-bad`,
+against the threshold in docs/05-evals.md: every bad capture rejected, every good
+light face accepted, at most one indoor light face borderline.
+
+Read "rejected" there as "not accepted". Sharpness has no reject threshold: a
+soft frame is borderline at every value and is offered with "Use it anyway",
+because the engine's own input gate reads the frame for free and is the
+authority. A fixture pass measures blur against the borderline line, not against
+a refusal.
 
 Until then, treat a passing eval:capture as evidence about the code, not about
 the camera.

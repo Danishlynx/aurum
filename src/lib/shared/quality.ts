@@ -6,6 +6,11 @@
  * sharpness is above threshold (Laplacian variance), and exposure is in range
  * (no blown highlights on the forehead, no crushed shadows).
  *
+ * Failing a check and being refused are different things. Only face detection
+ * and the exposure extremes refuse a frame outright. Everything else is
+ * borderline: the person is told what is wrong, Retake is the primary answer,
+ * and "Use it anyway" is there under it. See assessCapture.
+ *
  * docs/03-architecture.md keeps the deterministic logic pure and shared so the
  * same code runs client side before upload and server side before a credit is
  * spent. Nothing in this file touches the DOM, a canvas, or a provider.
@@ -44,21 +49,48 @@ export type Frame = {
 // ---------------------------------------------------------------------------
 
 /**
- * Sharpness is the variance of the Laplacian response, the standard blur
- * measure. On an 8 bit image downscaled to a 1024px long edge, a well focused
- * selfie sits in the hundreds; a motion blurred one collapses toward zero.
+ * The one size sharpness is ever measured at.
  *
- * CALIBRATED against the first real device, 2026-09-02: a Samsung S26 Ultra
- * front camera at night, held steady, was hard rejected in a loop at the old
- * floor of 60. Flagship night processing denoises skin into smooth regions,
- * which suppresses Laplacian variance even when the frame is genuinely usable,
- * and the person had no way forward. The floor now catches only real motion
- * smears (variance collapses toward zero); everything between it and the old
- * floor is borderline, which per docs/01 section D offers "Use it anyway".
- * The provider's own input gate is the true arbiter and refuses for free.
+ * Laplacian variance is not a property of a photograph, it is a property of a
+ * photograph at a resolution. Resampling smaller averages sensor noise away and
+ * carries the same edge across fewer pixels, so one frame reads one number at a
+ * 1024px long edge and quite another at a small preview sample. Two places in
+ * this app ask "is this sharp": the live line under the oval and this gate.
+ * Measured at their own sizes they cannot share a threshold, and on 2026-09-03
+ * they did not. On a Samsung S26 Ultra indoors at night the live line read
+ * "Good. Tap to capture." and the gate answered "A little blurry." on the very
+ * frame that had just been tapped. Every shot, every angle.
+ *
+ * So there is one measurement, sharpnessOf below, which resamples whatever it is
+ * handed down to this long edge before it measures anything.
+ * src/lib/client/guidance.ts and assessCapture both call it, and that is what
+ * makes "Good" and the verdict the same computation on the same face.
+ *
+ * 96, because both callers reach it by resampling down and neither ever has to
+ * resample up. The gate measures the face box inside a 1024px capture, which is
+ * 614px tall at the moment it clears FACE_COVERAGE_MIN. The guidance measures
+ * the face box inside a preview sample sized in guidance.ts so that the same
+ * face clears 96 there too. A face smaller than that on either side is a framing
+ * problem, and too_far comes before blurry in CAPTURE_REASON_PRECEDENCE, so
+ * sharpness is never the thing a person is told about a face too small to
+ * measure it on.
  */
-export const SHARPNESS_REJECT_BELOW = 12;
-/** Between this and SHARPNESS_REJECT_BELOW the frame is borderline. */
+export const SHARPNESS_MEASURE_LONG_EDGE = 96;
+
+/**
+ * Below this, at the measurement size above, a frame is borderline. There is no
+ * reject threshold for sharpness. That is a decision, not an omission: see
+ * assessCapture.
+ *
+ * CALIBRATED against the first real device, 2026-09-02, then read again against
+ * the measurement rule above on 2026-09-03. The S26 Ultra night frames that were
+ * being refused in a loop measured between 12 and 60 on the old full size face
+ * crop. The same crop resampled to 96 reads higher, because the box average
+ * concentrates the edges a face does have while the denoised skin between them
+ * contributes nothing either way. Those frames now sit above this line and
+ * accept. A frame that is genuinely smeared has no edges left to concentrate and
+ * still lands under it, where it is offered rather than refused.
+ */
 export const SHARPNESS_BORDERLINE_BELOW = 60;
 
 /** A pixel at or above this luminance carries no detail. */
@@ -196,6 +228,81 @@ export function laplacianVariance(image: GrayscaleImage): number {
   }
   const mean = sum / count;
   return sumOfSquares / count - mean * mean;
+}
+
+/**
+ * The same picture with its long edge at longEdge, by box average.
+ *
+ * Never scales up: an image already at or under the target is returned as it is,
+ * because inventing pixels would invent the detail the caller is about to
+ * measure. Each output pixel is the mean of the input pixels its cell covers,
+ * which is the resampling a canvas does at high smoothing quality and the reason
+ * the number this produces tracks what the browser would have produced.
+ *
+ * Pure, so the gate can run this identically on a phone before an upload and on
+ * the server before a credit is spent.
+ */
+export function resampleToLongEdge(
+  image: GrayscaleImage,
+  longEdge: number,
+): GrayscaleImage {
+  assertImage(image);
+  if (longEdge <= 0) {
+    throw new Error("Resample long edge must be positive.");
+  }
+  const largest = Math.max(image.width, image.height);
+  if (largest <= longEdge) {
+    return image;
+  }
+
+  const scale = longEdge / largest;
+  const width = Math.max(1, Math.round(image.width * scale));
+  const height = Math.max(1, Math.round(image.height * scale));
+  const data = new Array<number>(width * height);
+
+  for (let y = 0; y < height; y += 1) {
+    const top = Math.floor((y * image.height) / height);
+    const bottom = Math.max(top + 1, Math.floor(((y + 1) * image.height) / height));
+    for (let x = 0; x < width; x += 1) {
+      const left = Math.floor((x * image.width) / width);
+      const right = Math.max(left + 1, Math.floor(((x + 1) * image.width) / width));
+      let sum = 0;
+      let count = 0;
+      for (let row = top; row < bottom; row += 1) {
+        for (let column = left; column < right; column += 1) {
+          sum += image.data[row * image.width + column] ?? 0;
+          count += 1;
+        }
+      }
+      data[y * width + x] = count === 0 ? 0 : sum / count;
+    }
+  }
+
+  return { data, width, height };
+}
+
+/**
+ * The sharpness of a frame, or of one region of it. The only sharpness
+ * measurement in the app.
+ *
+ * Crop to the region when there is one, so a busy background cannot stand in for
+ * a soft face and a plain wall cannot make a sharp one look soft. Then resample
+ * to SHARPNESS_MEASURE_LONG_EDGE, so the number does not depend on whether the
+ * caller happened to be holding a 1024px capture or a preview sample. Then
+ * measure. Both callers, the live guidance line and the gate, do exactly this.
+ */
+export function sharpnessOf(
+  image: GrayscaleImage,
+  region: Box | null = null,
+): number {
+  assertImage(image);
+  const measured =
+    region !== null && clampBox(region, image) !== null
+      ? cropToBox(image, region)
+      : image;
+  return laplacianVariance(
+    resampleToLongEdge(measured, SHARPNESS_MEASURE_LONG_EDGE),
+  );
 }
 
 export type ExposureStats = {
@@ -478,6 +585,20 @@ export type CaptureAssessmentInput = {
  * bright window behind the person cannot mark the frame as blown and a busy
  * background cannot mask a soft face. With no face box, the whole frame is
  * measured and the verdict is a reject anyway.
+ *
+ * What can reach "reject", and nothing else can:
+ *
+ * - no_face and multiple_faces, per docs/01 section D. Without exactly one face
+ *   there is no reading to be had, and picking a face out of a group is not a
+ *   decision this screen makes.
+ * - too_dark and over_exposed at the extremes: crushed or blown past the reject
+ *   fractions, or a mean luminance outside the reject bounds. Nothing can be
+ *   read off a black or a white frame, so sending one spends a credit on a
+ *   refusal.
+ * - too_far below FACE_COVERAGE_BORDERLINE_MIN, where the engine's own
+ *   error_src_face_too_small is waiting.
+ *
+ * Sharpness is deliberately not on that list at any value.
  */
 export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment {
   const { image, faceCount, faceBox } = input;
@@ -498,7 +619,13 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
       : image;
 
   const exposure = exposureStats(measured);
-  const sharpness = laplacianVariance(measured);
+  /*
+   * The face box rather than the cropped copy, because sharpnessOf does its own
+   * cropping and then its own resampling, and the resampling is the whole point:
+   * it is what makes this number the same number the live guidance line got off
+   * a preview sample of the same face.
+   */
+  const sharpness = sharpnessOf(image, faceBox);
   const coverage =
     faceBox !== null ? faceCoverageCheck(faceBox, image) : null;
 
@@ -533,9 +660,18 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
     });
   }
 
-  if (sharpness < SHARPNESS_REJECT_BELOW) {
-    failures.push({ reason: "blurry", severity: "reject" });
-  } else if (sharpness < SHARPNESS_BORDERLINE_BELOW) {
+  /*
+   * Borderline at every value, never a reject. Softness is the one thing on this
+   * screen we are worse at judging than the engine that is about to read the
+   * photo: its input gate is free, it is authoritative, and it answers in a
+   * couple of seconds. A frame we call soft and it would have read is a person
+   * sent back to the camera for nothing, which is exactly the loop the S26 Ultra
+   * was stuck in on 2026-09-03. So a soft frame is always offered: the words say
+   * it is soft, Retake is still the primary answer, and "Use it anyway" is there
+   * underneath it. Only face detection (docs/01 section D) and the exposure
+   * extremes, which cost a credit for a reading nothing can come of, refuse.
+   */
+  if (sharpness < SHARPNESS_BORDERLINE_BELOW) {
     failures.push({ reason: "blurry", severity: "borderline" });
   }
 
