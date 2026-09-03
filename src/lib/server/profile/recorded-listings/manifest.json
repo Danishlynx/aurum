@@ -1,5 +1,5 @@
 {
-  "recordedOn": "2026-09-02T08:54:15.675Z",
+  "recordedOn": "2026-09-03T10:40:28.675Z",
   "synthetic": false,
   "note": "Recorded once against the live engine by scripts/record-serpapi.ts. search_parameters, the serpapi account fields, and everything in search_metadata except id and status were stripped before writing, per evals/fixtures/listings/README.md.",
   "gl": "in",
