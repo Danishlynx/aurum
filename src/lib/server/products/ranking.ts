@@ -42,6 +42,64 @@ export function sanitizeProductQuery(raw: string): string | null {
 }
 
 /**
+ * Where a product query stops describing the product and starts describing the
+ * person it is for. A synthesis query reads "niacinamide serum for pigmentation
+ * combination", and everything from "for" onwards is the reason we chose it, not
+ * something a shop puts in a product title.
+ */
+const TAIL_MARKERS: ReadonlySet<string> = new Set([
+  "for",
+  "prone",
+  "suitable",
+  "that",
+  "to",
+  "with",
+]);
+
+/** How many words a broadened query keeps when there is no marker to cut at. */
+const BROAD_QUERY_WORDS = 3;
+
+/**
+ * The same query, widened to the product itself, or null when it is already as
+ * wide as it goes.
+ *
+ * Why it exists: a strict query is the right thing to ask first, and on the
+ * Indian market it is often the reason nothing comes back at all. "niacinamide
+ * serum for pigmentation combination" is a sentence about a person; Amazon.in,
+ * Nykaa, and Myntra list "niacinamide serum". The caller searches the strict
+ * query, and only if that ends with no listing does it spend a second search on
+ * this one, so the precise answer is always preferred and the broad one is the
+ * difference between a real product and the empty row.
+ *
+ * The rule is two cuts, in order:
+ *
+ * 1. drop the tail from the first marker word, which is where the concern and
+ *    the skin type live
+ * 2. if that changed nothing, keep the first three words, which is the length a
+ *    shop's own title tends to be
+ *
+ * Nothing here names a store, a market, or a brand: the market is gl and hl, and
+ * this only shortens the words we were already going to send.
+ */
+export function broadenProductQuery(query: string): string | null {
+  const words = query.trim().split(/\s+/u).filter((word) => word.length > 0);
+  if (words.length === 0) {
+    return null;
+  }
+
+  const marker = words.findIndex((word) =>
+    TAIL_MARKERS.has(word.toLowerCase()),
+  );
+  const head = marker > 0 ? words.slice(0, marker) : words;
+  const broad = head.slice(0, BROAD_QUERY_WORDS);
+
+  if (broad.length === 0 || broad.length === words.length) {
+    return null;
+  }
+  return broad.join(" ");
+}
+
+/**
  * Words that carry no product meaning. Kept short on purpose: a longer list
  * starts throwing away real signal ("skin", "dry", "oil" all matter here).
  */

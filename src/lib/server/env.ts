@@ -180,6 +180,27 @@ export function isJudgeCodeConfigured(): boolean {
 /** Renders per judge session, docs/07-payments-and-judge-mode.md, "Caps". */
 export const JUDGE_RENDERS_ALLOWED = 6;
 
+/**
+ * SerpApi searches one judge session may spend, over its whole life.
+ *
+ * This is a separate allowance from JUDGE_CREDITS_CAP on purpose. A Perfect Corp
+ * unit and a SerpApi search are two different currencies bought from two
+ * different companies, and JUDGE_CREDITS_CAP is sized in Perfect Corp units
+ * (docs/04-integrations.md: "three full sessions with 20 percent headroom", where
+ * one capture set alone is 58 units). Counting searches into that same number
+ * meant the analyses spent the budget first and the report then had nothing left
+ * to ground with, which is the "No listing found near you yet" every step showed.
+ *
+ * The floor the number has to clear, for one session that grounds everything:
+ * the routine is up to 7 steps, the makeup shades add a handful, the looks gaps
+ * add up to 3 per look, the nearby store lookup takes 1, and a step whose strict
+ * query found nothing retries once with a broader one. 40 covers that with room,
+ * and the daily cap below still holds the real quota discipline.
+ */
+export function judgeSearchesAllowed(): number {
+  return count("JUDGE_SERPAPI_SEARCHES", 40);
+}
+
 // ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
@@ -198,10 +219,20 @@ export interface DailyCaps {
   readonly serpapiSearches: number;
 }
 
+/**
+ * The SerpApi default is 120 rather than 30 because a daily cap is spent per
+ * owner, and one owner grounding a whole report (routine, shades, looks gaps,
+ * one nearby store lookup, one broader retry where the strict query found
+ * nothing) can reach 30 on the first pass. 30 stopped a single session halfway.
+ *
+ * It is still a cap, and it is still the env value that wins where one is set:
+ * the discipline against the real SerpApi monthly quota lives in the deployed
+ * environment, and every search is logged.
+ */
 export function dailyCaps(): DailyCaps {
   return {
     perfectcorpUnits: integer("DAILY_CAP_PERFECTCORP_UNITS", 40),
-    serpapiSearches: integer("DAILY_CAP_SERPAPI_SEARCHES", 30),
+    serpapiSearches: integer("DAILY_CAP_SERPAPI_SEARCHES", 120),
   };
 }
 

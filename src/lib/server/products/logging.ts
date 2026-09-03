@@ -21,8 +21,15 @@ export type GroundingReason =
   | "provider_calls_disabled"
   /** The person's daily SerpApi cap is used up. */
   | "daily_cap"
-  /** A judge session's credit cap is used up, or the session has expired. */
+  /** A judge session has spent its whole search allowance. */
   | "session_cap"
+  /**
+   * The judge session behind the owner id is gone or expired, so there is no
+   * cap to check against. Split out from session_cap because the two read the
+   * same in a log line and need opposite fixes: one is a number to raise, the
+   * other is a session to mint again.
+   */
+  | "session_expired"
   /** The ledger itself could not be reached, so no call was made. */
   | "ledger_unavailable"
   /** The cache could not be read or written. The run continues without it. */
@@ -58,6 +65,15 @@ export interface GroundingRunFields {
   readonly withoutListing: number;
   readonly searches: number;
   readonly localLookup: boolean;
+  /**
+   * Distinct queries whose listing came from the broader retry rather than from
+   * the query the synthesis call wrote. This is how a run records which query
+   * produced the listing: neither query's text is ever logged, because a product
+   * query describes a person's skin.
+   */
+  readonly broadened: number;
+  /** Searches spent on those retries, part of the searches total. */
+  readonly broadenedSearches: number;
 }
 
 export function logGroundingRun(fields: GroundingRunFields): void {

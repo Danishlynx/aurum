@@ -154,7 +154,8 @@ Rules
 - The app only shows a product if a listing came back with a URL. No listing, no product; show the type and the "No listing found near you yet" copy.
 - Prices are displayed as returned, with the currency from the result. Never converted, never estimated.
 - Rank listings by relevance to the query and then price ascending within a tight relevance band; show one per routine step, three for shop the gap.
-- Respect the quota: the daily cap per person is enforced in the ledger. Judge sessions share a separate cap.
+- A query that ends with no listing at all is asked once more, broader: the tail that describes the person is dropped, so "niacinamide serum for pigmentation combination" is retried as "niacinamide serum". The strict query is always asked first and always preferred; the broader one costs a second search only where the first found nothing, and the run log records how many steps were answered that way. No store, market, or brand is ever named in the retry: the market is gl and hl.
+- Respect the quota: the daily cap per owner per day is DAILY_CAP_SERPAPI_SEARCHES (code default 120, set it from the plan quota that is actually left). A judge session additionally has its own search allowance, JUDGE_SERPAPI_SEARCHES (default 40), which is separate from JUDGE_CREDITS_CAP because that cap is denominated in Perfect Corp units. Every search is logged.
 
 ## Claude API
 
