@@ -17,6 +17,7 @@ import {
   parseFaceAttributesResult,
   parseHairTypeResult,
   parseSkinAnalysisResult,
+  readFaceShape,
   readSkinAnalysis,
   SD_SKIN_CONCERN_KEYS,
   SKIN_TYPE_ZONE_T,
@@ -89,7 +90,16 @@ export function requiresMorePhotos(kind: AnalysisKind): boolean {
   return kind === "hair_type";
 }
 
-function bodyFor(kind: AnalysisKind, fileId: string): Record<string, unknown> {
+/**
+ * The request body one analysis kind sends, from the endpoint table's own field
+ * names. Pure and exported so evals/golden/render-bodies.test.ts can assert the
+ * shape without a network call, which is how the face shape body would have been
+ * caught: it spent two days sending a field this endpoint does not have.
+ */
+export function analysisTaskBody(
+  kind: AnalysisKind,
+  fileId: string,
+): Record<string, unknown> {
   const endpoint = getEndpoint(ENDPOINT_FOR_ANALYSIS[kind]);
   const fileField = endpoint.sourceFileFields[0] ?? "src_file_id";
 
@@ -104,8 +114,23 @@ function bodyFor(kind: AnalysisKind, fileId: string): Record<string, unknown> {
       return { [fileField]: fileId };
     case "attributes":
       return { [fileField]: fileId, face_angle_strictness_level: "high" };
+    /*
+     * "features", not "dst_actions". The skin analyzer spells its selection
+     * dst_actions and this call was sending the same word, which the server
+     * answers with a 400 "features is required but wasn't included in your
+     * request." So face shape never ran, on any capture, whatever the balance
+     * was: /hair has been showing "your face shape was not read from this photo"
+     * because the request was malformed, not because the photo was.
+     * face_angle_strictness_level is the provider's own default of "high",
+     * repeated here so this call and the tone call agree about which frames they
+     * accept rather than one of them relying on an unstated default.
+     */
     case "face_shape":
-      return { [fileField]: fileId, dst_actions: [...FACE_ATTRIBUTES_REQUESTED] };
+      return {
+        [fileField]: fileId,
+        features: [...FACE_ATTRIBUTES_REQUESTED],
+        face_angle_strictness_level: "high",
+      };
     case "hair_type":
       return { [fileField]: [fileId] };
   }
@@ -135,7 +160,7 @@ export async function startTask(args: {
   const plan = planFor(args.kind);
   return createTask({
     endpointKey: plan.endpointKey,
-    body: bodyFor(args.kind, args.fileId),
+    body: analysisTaskBody(args.kind, args.fileId),
     itemCount: plan.itemCount,
   });
 }
@@ -387,11 +412,15 @@ export function normalize(
     }
     case "face_shape": {
       const result = parseFaceAttributesResult(snapshot);
-      const attributeShape = result.attributes?.faceShape;
-      const faceShape =
-        result.faceShape ??
-        result.face_shape ??
-        (typeof attributeShape === "string" ? attributeShape : null);
+      /*
+       * results.faceshape, all lower case. Confirmed live on 2026-09-03 and
+       * recorded in evals/fixtures/perfectcorp/face-attr-status.json. The
+       * provider's own word is stored as it arrived ("Oval", "InvTriangle") and
+       * mapped to one of our rows by normalizeFaceShape in
+       * src/lib/shared/hair-rules.ts, so the summary keeps what the engine said
+       * and the screen keeps our vocabulary.
+       */
+      const faceShape = readFaceShape(result);
       return {
         raw: toJson(result),
         summary: toJson({ faceShape }) ?? {},

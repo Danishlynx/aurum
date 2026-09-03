@@ -79,7 +79,9 @@ import {
   downloadResultAssets,
   uploadImage,
   unitsForCall,
+  verifiedEndpointKeys,
 } from "@/lib/server/providers/perfectcorp";
+import { PERFECTCORP_ENDPOINT_KEYS } from "@/lib/server/providers/perfectcorp/endpoints";
 import { serpApiSearch } from "@/lib/server/providers/serpapi/client";
 import {
   MAKEUP_INTENSITY,
@@ -428,15 +430,25 @@ describe("golden-run plan arithmetic", () => {
 
   it("names the endpoints that are not confirmed against the live docs", () => {
     /*
-     * "attr" is the face attributes path, which nothing has called yet. "tone"
-     * used to be on this list and came off it: the golden run created a task at
-     * /s2s/v2.0/task/skin-tone-analysis, it succeeded and measured 20 units, and
-     * a path a real task ran on is not an inference any more.
+     * Nothing left to name. "tone" came off this list on 2026-09-02 and "attr"
+     * on 2026-09-03, both the same way: a real task ran on the path, so the path
+     * is not an inference any more. Every step this script can run is confirmed.
+     *
+     * The mechanism is still live and still worth having, which is the second
+     * assertion: the registry holds rows nobody has read (fitzpatrick, hairType,
+     * and most of the accessories), and the client refuses those before a task
+     * exists. If one of them is ever wired into a golden step while still
+     * unverified, this test names it rather than the run discovering it.
      */
-    const plan = buildPlan(optionsFor({ steps: ["attr", "tone", "makeup"] }));
-    expect(plan.unverifiedSteps).toContain("attr");
-    expect(plan.unverifiedSteps).not.toContain("tone");
-    expect(plan.unverifiedSteps).not.toContain("makeup");
+    const plan = buildPlan(optionsFor({ steps: GOLDEN_STEP_KEYS }));
+    expect(plan.unverifiedSteps).toEqual([]);
+
+    const unverified = PERFECTCORP_ENDPOINT_KEYS.filter(
+      (key) => !verifiedEndpointKeys().includes(key),
+    );
+    expect(unverified).toContain("fitzpatrick");
+    expect(unverified).toContain("hairType");
+    expect(unverified).not.toContain("faceAttributes");
   });
 
   it("prices the renders at the documented 1 and 2 units", () => {

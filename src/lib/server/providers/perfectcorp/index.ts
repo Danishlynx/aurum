@@ -60,6 +60,7 @@ export {
   SKIN_TYPE_ZONE_U,
   SKIN_TYPE_ZONE_WHOLE,
   normalizeTaskState,
+  readFaceShape,
   readSkinAnalysis,
   skinAnalysisResultSchema,
   skinTypeZoneFor,
@@ -68,6 +69,7 @@ export {
   taskStatusResponseSchema,
 } from "./schemas";
 export type {
+  FaceAttributesResult,
   NormalizedTaskState,
   SkinAnalysisReading,
   SkinAnalysisResult,
@@ -406,10 +408,17 @@ function bodyForCaptureAnalysis(
         src_file_id: input.fileId,
         face_angle_strictness_level: input.faceAngleStrictness ?? "high",
       };
+    /*
+     * "features" is this endpoint's own word for the selection. Confirmed live
+     * on 2026-09-03: dst_actions, which is the skin analyzer's word and what
+     * this line used to send, answers 400 "features is required but wasn't
+     * included in your request." See endpoints.ts, faceAttributes.
+     */
     case "faceAttributes":
       return {
         src_file_id: input.fileId,
-        dst_actions: [...input.faceAttributes],
+        features: [...input.faceAttributes],
+        face_angle_strictness_level: input.faceAngleStrictness ?? "high",
       };
     case "hairType":
       return { src_file_ids: [...(input.hairTypeFileIds ?? [])] };

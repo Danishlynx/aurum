@@ -1,0 +1,24 @@
+{
+  "status": 200,
+  "data": {
+    "error": null,
+    "results": {
+      "nose": {},
+      "agegender": {},
+      "eyelid": {},
+      "eyebrow": {},
+      "color": {},
+      "face_quality": {
+        "has_face": true,
+        "area": "good",
+        "frontal": "good",
+        "lighting": "good",
+        "faceangle": "good"
+      },
+      "cheekbone": {},
+      "faceshape": "InvTriangle",
+      "facialratio": {}
+    },
+    "task_status": "success"
+  }
+}

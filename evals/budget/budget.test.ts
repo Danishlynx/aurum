@@ -302,9 +302,20 @@ describe("eval:budget", () => {
 
     expect(byKind.get("fitzpatrick")?.units).toBe(10);
     expect(byKind.get("attributes")?.units).toBe(20);
-    // Face shape is the only attribute asked for, which is the 1 to 5 tier.
+    /*
+     * Face shape is the only feature asked for, which is the 1 to 5 tier. The
+     * 10 was published before and measured on 2026-09-03: one live task took
+     * the balance from 408 to 398, so the tier table and the till agree and this
+     * line stopped being a quotation. Nothing in the arithmetic below moved,
+     * which is the useful half of the result: the capture set was already priced
+     * at what it really costs.
+     */
     expect(byKind.get("face_shape")?.itemCount).toBe(1);
     expect(byKind.get("face_shape")?.units).toBe(10);
+    expect(hasUnknownCost("faceAttributes", 1)).toBe(false);
+    expect(PERFECTCORP_ENDPOINTS.faceAttributes.verification.state).toBe(
+      "confirmed",
+    );
     expect(byKind.get("hair_type")?.units).toBe(2);
 
     /*
@@ -383,8 +394,8 @@ describe("eval:budget", () => {
    *
    *   skin analysis                      measured 2026-09-02   = 16 units
    *   fitzpatrick                                              = 10 units
-   *   facial color tones                                       = 20 units
-   *   face attributes, one attribute                           = 10 units
+   *   facial color tones                 measured 2026-09-02   = 20 units
+   *   face attributes, one feature       measured 2026-09-03   = 10 units
    *   hair type                                                =  2 units
    *                                                             -------
    *   capture set                                              = 58 units
@@ -400,8 +411,12 @@ describe("eval:budget", () => {
    *   short by                                                 = 111 units
    *
    * The gap grew by 54 units the moment skin analysis was priced honestly, which
-   * is the point of pricing it. For scale: the account holds 40 units, so one
-   * capture set of 58 does not fit on it at all.
+   * is the point of pricing it. Three of the five rows are now measured against
+   * the credit balance rather than read off a page, and all three came in at the
+   * figure the table already held, so the totals below have not moved since they
+   * were written. For scale: the account held 408 units on 2026-09-03, so a
+   * capture set of 58 fits seven times over, which it did not when this comment
+   * was first written against a 40 unit trial.
    *
    * The cap is not raised here. It is the human's provider spend, and
    * docs/04-integrations.md leaves setting it to them once the remaining TBD row
