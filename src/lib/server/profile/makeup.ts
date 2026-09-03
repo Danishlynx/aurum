@@ -18,6 +18,7 @@ import {
   demoProfileIsReadOnly,
   planDemoRead,
 } from "../judge/demo";
+import type { GroundingLocale } from "../locale";
 import { groundRoutineSteps } from "../products";
 import { findRenderByHash } from "../renders/db";
 import { canonicalMakeupParams, paramsHash } from "../renders/params";
@@ -66,6 +67,12 @@ export interface MakeupViewOptions {
   /** True for ?ground=1. False costs no SerpApi search at all. */
   readonly ground?: boolean;
   readonly selection?: ShadeSelection;
+  /**
+   * The market to shop in, resolved from the request by the screen or the route
+   * (src/lib/server/locale.ts). Omitted, it is the configured default, which is
+   * what a script or a test gets.
+   */
+  readonly locale?: GroundingLocale | null;
 }
 
 /**
@@ -102,6 +109,7 @@ export async function groundSelectedShades(args: {
   readonly session: AppSession;
   readonly categories: readonly MakeupCategoryView[];
   readonly selection: ShadeSelection;
+  readonly locale?: GroundingLocale | null;
 }): Promise<(ReportListing | null)[]> {
   const queries = args.categories.map((row) => ({
     productQuery:
@@ -111,7 +119,7 @@ export async function groundSelectedShades(args: {
     return [];
   }
 
-  const context = await readGroundingContext(args.session);
+  const context = await readGroundingContext(args.session, args.locale);
   try {
     return [
       ...(await groundRoutineSteps(queries, {
@@ -292,6 +300,7 @@ export async function buildMakeupView(
           session,
           categories,
           selection: options.selection ?? {},
+          locale: options.locale,
         })
       : Promise.resolve(null),
     findOpeningRender({

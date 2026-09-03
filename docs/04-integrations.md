@@ -153,6 +153,7 @@ Query construction
 
 - Product queries are built from the recommendation, never free text from the person: "<ingredient or product type> for <concern> <skin type>" for skincare; "<shade family> <category>" for makeup; "<color name> <garment type> <formality>" for gaps in a look.
 - Location comes from the profile's approximate location (city level) with gl and hl set from the person's locale. Default gl is the human's country; make it a config value.
+- The person's locale is resolved per request in src/lib/server/locale.ts: gl from the x-vercel-ip-country header Vercel sets at the edge (lowercased, two letters or it does not count), hl from the first primary subtag of Accept-Language (two letters, otherwise "en"). With no country header (local dev, a script, a test) the config values SERPAPI_DEFAULT_GL and SERPAPI_DEFAULT_HL answer instead. Nothing is stored: the market is resolved on every request, and the product cache key already separates one country from another, so a judge in Portland is never served the market the demo profile was recorded in. The resolved gl is logged once per grounding run, as a country code and nothing else: no IP address, no coordinates, no city.
 - Every query is hashed and cached per docs/03-architecture.md.
 
 Rules

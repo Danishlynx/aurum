@@ -59,6 +59,14 @@ export function logGrounding(fields: GroundingLogFields): void {
 }
 
 export interface GroundingRunFields {
+  /**
+   * The market the run searched in, as a two letter country code. It is here so
+   * a report full of the wrong country's shops can be diagnosed from the logs
+   * without guessing. A country is not a location: no IP address, no
+   * coordinates, and no city ever reaches a log line
+   * (docs/06-safety-privacy.md).
+   */
+  readonly gl: string;
   readonly steps: number;
   readonly fromCache: number;
   readonly fromSearch: number;

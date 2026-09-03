@@ -1,8 +1,10 @@
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { FirstRunInvitation } from "@/components/app-shell/FirstRunInvitation";
 import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { MakeupScreen } from "@/components/makeup/MakeupScreen";
+import { resolveGroundingLocale } from "@/lib/server/locale";
 import { buildMakeupView } from "@/lib/server/profile/makeup";
 import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
 import { getSession, type AppSession } from "@/lib/server/session";
@@ -47,7 +49,15 @@ export default async function MakeupPage() {
    * (docs/03-architecture.md, "Caching"). Choosing a different shade re grounds
    * from the browser through the same route.
    */
-  const view = await buildMakeupView(session, { ground: true });
+  const view = await buildMakeupView(session, {
+    ground: true,
+    // The shade a row opens on is shopped for in the viewer's own country, read
+    // from this request (src/lib/server/locale.ts). Re grounding after a tap
+    // goes through GET /api/profile/makeup, which resolves the same locale from
+    // the same headers, so the second card comes from the same market as the
+    // first.
+    locale: resolveGroundingLocale(await headers()),
+  });
   if (view === null) {
     // No profile yet: there is no palette, so there are no shades to recommend.
     // The screen says what it is waiting on instead of redirecting to the camera

@@ -20,6 +20,7 @@ import type {
 import { getCapture, getProfile } from "../db";
 import { BUCKETS, createSignedRead } from "../db/storage";
 import { demoFixtureNote, planDemoRead } from "../judge/demo";
+import { resolveGroundingLocale, type GroundingLocale } from "../locale";
 import { groundRoutineSteps } from "../products";
 import type { AppSession } from "../session";
 import { getAestheticProfile, readStoredConcerns, type AestheticProfile } from "./db";
@@ -158,26 +159,31 @@ export interface GroundingContext {
   readonly location: { city: string; lat: number; lng: number } | null;
   readonly gl: string;
   readonly hl: string;
+  /** Whether gl and hl came from the request or from the configured defaults. */
+  readonly localeSource: GroundingLocale["source"];
 }
 
 /**
- * Where to look for products. City level only, and only when the person allowed
- * location (docs/06-safety-privacy.md). A judge session has no profiles row and
- * therefore no location.
+ * Where to look for products: which market, and whether the person allowed a
+ * city level location (docs/06-safety-privacy.md). A judge session has no
+ * profiles row and therefore no location.
  *
- * gl and hl mirror the defaults in src/lib/server/providers/serpapi/client.ts.
- * They are read here rather than through readSerpApiConfig because that throws
- * without a key, and the report has to render without one.
+ * The market is the caller's to supply, because only the caller holds the
+ * request. A page or a route resolves it once with resolveGroundingLocale and
+ * passes it down; anything with no request behind it (a script, a test) passes
+ * nothing and gets the configured defaults, which is what this did before the
+ * locale existed.
  */
 export async function readGroundingContext(
   session: AppSession,
+  locale?: GroundingLocale | null,
 ): Promise<GroundingContext> {
-  const gl = process.env.SERPAPI_DEFAULT_GL;
-  const hl = process.env.SERPAPI_DEFAULT_HL;
+  const resolved = locale ?? resolveGroundingLocale(null);
   const context: GroundingContext = {
     location: null,
-    gl: typeof gl === "string" && gl.length > 0 ? gl : "in",
-    hl: typeof hl === "string" && hl.length > 0 ? hl : "en",
+    gl: resolved.gl,
+    hl: resolved.hl,
+    localeSource: resolved.source,
   };
 
   if (session.kind !== "user") {
@@ -214,9 +220,14 @@ function toStepView(
  * Returns null when there is no profile yet, which is the "nothing to show"
  * case: the caller sends the person to capture rather than rendering an empty
  * report.
+ *
+ * The locale is the request's, resolved by the screen from its own headers, so
+ * a judge in the United States is shown American shops. Omitted, it is the
+ * configured default.
  */
 export async function buildReportView(
   session: AppSession,
+  locale?: GroundingLocale | null,
 ): Promise<ReportView | null> {
   const plan = await planDemoRead(session);
   if (plan.source === "fixture") {
@@ -259,7 +270,7 @@ export async function buildReportView(
   const routine = buildDeterministicRoutine(facts);
   const steps = [...routine.morning, ...routine.night];
 
-  const context = await readGroundingContext(session);
+  const context = await readGroundingContext(session, locale);
   let listings: (ReportListing | null)[] = steps.map(() => null);
   if (steps.length > 0) {
     try {

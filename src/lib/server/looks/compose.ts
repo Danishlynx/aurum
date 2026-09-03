@@ -18,6 +18,7 @@ import type { GarmentView } from "@/lib/shared/wardrobe-view";
 import { BUCKETS, createSignedRead } from "../db/storage";
 import type { Insert, JobStatus, Look, Render } from "../db/types";
 import { demoFixtureNote, planDemoRead } from "../judge/demo";
+import type { GroundingLocale } from "../locale";
 import { paletteForProfile } from "../profile/color";
 import { getAestheticProfile } from "../profile/db";
 import { demoFixtureLooksView } from "../profile/demo-fixture-looks";
@@ -224,6 +225,7 @@ async function groundAllGaps(args: {
   readonly occasion: Occasion;
   readonly palette: Palette | null;
   readonly candidates: readonly Candidate[];
+  readonly locale?: GroundingLocale | null;
 }): Promise<Map<string, LookGap>> {
   const types: string[] = [];
   for (const candidate of args.candidates) {
@@ -238,6 +240,7 @@ async function groundAllGaps(args: {
     occasion: args.occasion,
     palette: args.palette,
     gapTypes: types,
+    locale: args.locale,
   });
   return new Map(gaps.map((gap) => [gap.type, gap] as const));
 }
@@ -319,10 +322,15 @@ async function persistComposition(args: {
  * Always returns a view. A person with no profile, no palette, or no garments
  * still gets a screen: docs/01 section K has a state for every one of those, and
  * none of them is an error.
+ *
+ * The locale is the request's, resolved by GET /api/looks from its own headers,
+ * so the pieces a look is missing are shopped for in the viewer's own country.
+ * Omitted, it is the configured default.
  */
 export async function buildLooksView(
   session: AppSession,
   occasion: Occasion,
+  locale?: GroundingLocale | null,
 ): Promise<LooksView> {
   const plan = await planDemoRead(session);
   if (plan.source === "fixture") {
@@ -359,8 +367,9 @@ export async function buildLooksView(
           garmentsById,
           captureId,
           renderOwnerId: plan.ownerId,
+          locale,
         })
-      : await composeFromShop({ session, occasion, palette });
+      : await composeFromShop({ session, occasion, palette, locale });
 
   const rows = await readLooksRows(plan.ownerId, occasion);
   /*
@@ -455,6 +464,7 @@ async function composeFromWardrobe(args: {
   readonly captureId: string | null;
   /** Owner of the stored renders, which is not the caller on a demo read. */
   readonly renderOwnerId: string;
+  readonly locale?: GroundingLocale | null;
 }): Promise<ComposedLook[]> {
   const ranked = await rankLooks({
     session: args.session,
@@ -469,6 +479,7 @@ async function composeFromWardrobe(args: {
     occasion: args.occasion,
     palette: args.palette,
     candidates: args.candidates,
+    locale: args.locale,
   });
 
   const byId = new Map(
@@ -544,11 +555,13 @@ async function composeFromShop(args: {
   readonly session: AppSession;
   readonly occasion: Occasion;
   readonly palette: Palette | null;
+  readonly locale?: GroundingLocale | null;
 }): Promise<ComposedLook[]> {
   const listingLook = await composeFromListings({
     session: args.session,
     occasion: args.occasion,
     palette: args.palette,
+    locale: args.locale,
   });
   if (listingLook === null) {
     return [];

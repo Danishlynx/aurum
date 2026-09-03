@@ -14,6 +14,7 @@ import {
 import type { Palette } from "@/lib/shared/palette";
 import type { ReportListing } from "@/lib/shared/report-view";
 
+import type { GroundingLocale } from "../locale";
 import { groundProductQueries } from "../products";
 import { readGroundingContext } from "../profile/report-view";
 import { buildProductQuery, type LocalCategory } from "../providers/serpapi";
@@ -111,6 +112,12 @@ export interface GroundGapsInput {
   readonly palette: Palette | null;
   /** The garment type words the rules engine reported as missing. */
   readonly gapTypes: readonly string[];
+  /**
+   * The market to shop the gap in, resolved from the request by the route
+   * (src/lib/server/locale.ts). A judge in Berlin is shown German shops, not the
+   * founder's. Omitted, it is the configured default.
+   */
+  readonly locale?: GroundingLocale | null;
 }
 
 /**
@@ -143,6 +150,7 @@ export async function groundGaps(
     session: input.session,
     queries,
     limit: GAP_LISTING_COUNT,
+    locale: input.locale,
   });
 
   return gaps.map((gap, index) => ({
@@ -155,6 +163,8 @@ export interface ComposeFromListingsInput {
   readonly session: AppSession;
   readonly occasion: Occasion;
   readonly palette: Palette | null;
+  /** The market every piece is searched in. See GroundGapsInput.locale. */
+  readonly locale?: GroundingLocale | null;
 }
 
 export interface ListingLook {
@@ -199,6 +209,7 @@ export async function composeFromListings(
     session: input.session,
     queries,
     limit: 1,
+    locale: input.locale,
   });
 
   const items: LookItem[] = [];
@@ -229,10 +240,11 @@ async function groundQueries(args: {
   readonly session: AppSession;
   readonly queries: readonly (string | null)[];
   readonly limit: number;
+  readonly locale?: GroundingLocale | null;
 }): Promise<ReportListing[][]> {
   const steps = args.queries.map((query) => ({ productQuery: query ?? "" }));
   try {
-    const context = await readGroundingContext(args.session);
+    const context = await readGroundingContext(args.session, args.locale);
     return await groundProductQueries(
       steps,
       {
