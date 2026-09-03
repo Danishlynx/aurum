@@ -98,7 +98,7 @@ import {
   FACE_COVERAGE_MIN,
   MEAN_LUMINANCE_REJECT_ABOVE,
   MEAN_LUMINANCE_REJECT_BELOW,
-  SHARPNESS_REJECT_BELOW,
+  SHARPNESS_BORDERLINE_BELOW,
 } from "@/lib/shared/quality";
 
 /* ------------------------------------------------------------------ */
@@ -744,9 +744,9 @@ export function describeQualityGate(header: ImageHeader): string[] {
     "The sharpness and exposure gate is advisory here and has not run: it reads pixels,",
     "Node has no image decoder, and no dependency is being added for one call.",
     "The gate that does run is the size and format check above, against the provider constraints.",
-    `For the eye: the app rejects a face below sharpness ${String(SHARPNESS_REJECT_BELOW)},`,
-    `mean luminance outside ${String(MEAN_LUMINANCE_REJECT_BELOW)} to ${String(MEAN_LUMINANCE_REJECT_ABOVE)},`,
-    `or a face filling less than ${String(Math.round(FACE_COVERAGE_MIN * 100))} percent of the frame height.`,
+    `For the eye: the app offers, rather than refuses, a face below sharpness ${String(SHARPNESS_BORDERLINE_BELOW)}.`,
+    `It refuses a mean luminance outside ${String(MEAN_LUMINANCE_REJECT_BELOW)} to ${String(MEAN_LUMINANCE_REJECT_ABOVE)},`,
+    `and a face filling far less than ${String(Math.round(FACE_COVERAGE_MIN * 100))} percent of the frame height.`,
   ];
 }
 

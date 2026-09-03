@@ -272,6 +272,110 @@ test.describe("the camera itself", () => {
       expect(allowed.has(color)).toBe(true);
     }
   });
+
+  /**
+   * The borderline frame, at 390px, which is the state this screen is judged on.
+   *
+   * On 2026-09-03 a founder on a Samsung S26 Ultra was told "Good. Tap to
+   * capture." and then, on that same frame, "A little blurry. Hold still and tap
+   * again." Softness no longer refuses a frame (src/lib/shared/quality.ts), so
+   * the words are the same and the way through is on the screen underneath them.
+   * This proves the way through is there, is the documented copy, and is where a
+   * thumb is already looking: directly under Retake, the same full width, the
+   * same 52px, both above the fold of a phone.
+   *
+   * The fake capture device is not a face, so the frame that produces this state
+   * comes in through "Upload instead", which runs the identical gate on the
+   * identical canvas. It is drawn in the page rather than carried as a fixture,
+   * so no photograph of a person enters this repository
+   * (docs/06-safety-privacy.md).
+   */
+  test("offers use it anyway under retake for a borderline frame", async ({
+    page,
+  }) => {
+    await page.route("**/api/captures", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "e2e" }),
+      }),
+    );
+
+    await page.goto("/capture");
+    await expect(
+      page.getByRole("button", { name: copy.capture.shutterLabel }),
+    ).toBeVisible();
+
+    /*
+     * A frame the gate reads as one face, well lit, well framed, and completely
+     * soft. The face region is flat skin chroma; the ground behind it is a
+     * colour with the same luminance and a chroma outside the skin range, so the
+     * grayscale the gate measures is flat everywhere (sharpness zero, the limit
+     * motion blur converges to) while the skin heuristic still finds exactly one
+     * region filling 72 percent of the frame height.
+     */
+    const dataUrl = await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 600;
+      canvas.height = 800;
+      const context = canvas.getContext("2d");
+      if (context === null) {
+        throw new Error("no canvas context");
+      }
+      context.fillStyle = "rgb(120, 175, 150)";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = "rgb(205, 150, 120)";
+      const faceHeight = Math.round(canvas.height * 0.72);
+      const faceWidth = Math.round(faceHeight * 0.68);
+      context.fillRect(
+        Math.round((canvas.width - faceWidth) / 2),
+        Math.round((canvas.height - faceHeight) / 2),
+        faceWidth,
+        faceHeight,
+      );
+      return canvas.toDataURL("image/png");
+    });
+
+    await page
+      .locator('main input[type="file"]')
+      .setInputFiles({
+        name: "soft.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(dataUrl.split(",")[1] ?? "", "base64"),
+      });
+
+    // The words, from src/lib/shared/copy.ts and nowhere else.
+    await expect(page.getByText(copy.capture.rejection.blurry)).toBeVisible();
+
+    const retake = page.getByRole("button", { name: copy.capture.retakeAction });
+    const useAnyway = page.getByRole("button", {
+      name: copy.capture.useAnywayAction,
+    });
+    await expect(retake).toBeVisible();
+    await expect(useAnyway).toBeVisible();
+
+    const retakeBox = await retake.boundingBox();
+    const useAnywayBox = await useAnyway.boundingBox();
+    if (retakeBox === null || useAnywayBox === null) {
+      throw new Error("Both answers to a borderline frame must be on screen.");
+    }
+
+    // docs/02-design-system.md, Components: height 52, full width on mobile.
+    expect(Math.round(retakeBox.height)).toBe(52);
+    expect(Math.round(useAnywayBox.height)).toBe(52);
+    expect(Math.round(useAnywayBox.width)).toBe(Math.round(retakeBox.width));
+    expect(retakeBox.width).toBeGreaterThan(300);
+
+    // Directly under it, aligned with it, and not below the fold of the phone.
+    expect(Math.round(useAnywayBox.x)).toBe(Math.round(retakeBox.x));
+    const gap = useAnywayBox.y - (retakeBox.y + retakeBox.height);
+    expect(gap).toBeGreaterThan(0);
+    expect(gap).toBeLessThanOrEqual(16);
+    const viewport = page.viewportSize();
+    expect(useAnywayBox.y + useAnywayBox.height).toBeLessThanOrEqual(
+      viewport?.height ?? 0,
+    );
+  });
 });
 
 /**

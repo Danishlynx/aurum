@@ -111,6 +111,10 @@ Quality gate after capture (runs client side first, then server side):
 - Sharpness above threshold (Laplacian variance)
 - Exposure within range (no blown highlights on the forehead, no crushed shadows)
 
+Sharpness is measured at one fixed size, on the face, by one function that both the live guidance line and the gate call. Laplacian variance depends on the resolution it is read at, so measuring the preview at one size and the capture at another and comparing both to one threshold is not a comparison: on 2026-09-03 it told a person "Good. Tap to capture." and then called that same frame blurry, every shot.
+
+Failing the sharpness check is borderline and never a refusal. The engine reads its own input gate for free and is the authority on whether a frame is sharp enough, so a soft frame is offered with "Use it anyway" rather than refused. Only face detection (no face, more than one face) and the exposure extremes, which spend a credit on a reading nothing can come of, refuse a frame outright.
+
 Copy for a rejected frame (choose the one matching the failure):
 
 - "Too dark to read your skin. Turn toward the light and try again."
