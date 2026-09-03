@@ -12,6 +12,11 @@ import {
   forgetCapturePreview,
   readCapturePreview,
 } from "@/lib/client/capture-handoff";
+import {
+  canReframeCapture,
+  forgetCaptureSource,
+  resubmitReframedCapture,
+} from "@/lib/client/capture-source";
 import { copy } from "@/lib/shared/copy";
 
 /**
@@ -38,6 +43,19 @@ import { copy } from "@/lib/shared/copy";
  * get STRAGGLER_POLLS_AFTER_CORE more polls to land and then the reveal routes
  * without them, which is the same outcome docs/01 section E gives a job that
  * fails: the step is skipped and the report says what is missing.
+ *
+ * One thing happens before a refusal is shown: a capture every core reading of
+ * which was refused over its framing is sent back cropped tighter, up to twice,
+ * and this screen follows it. See the poll below. It costs nothing (a refused
+ * task is charged nothing) and it is the difference between a person being told
+ * their photo was no good and a person getting their reading.
+ *
+ * The status line still says what is running now and nothing else. Since the
+ * tone reading now goes first and the rest follow it
+ * (src/lib/shared/fan-out.ts), a run that used to open on "Reading your skin"
+ * can open on "Reading your tone". Both are true when they show, which is the
+ * rule docs/01 section E actually sets: the sequence is driven by job
+ * completion, and nothing here fakes progress.
  */
 
 const POLL_INTERVAL_MS = 1500;
@@ -71,6 +89,16 @@ export function AnalyzingScreen() {
       router.replace("/capture");
       return;
     }
+    /*
+     * A new capture id on the same screen is the self healing retry below: the
+     * reframed photo was accepted and this screen is now watching its readings.
+     * Everything counted per capture starts again, or the poll would still be
+     * finished and the refusal of the last attempt would still be on screen.
+     */
+    finishedRef.current = false;
+    failuresRef.current = 0;
+    stragglerPollsRef.current = 0;
+    setProblem(null);
     setPreview(readCapturePreview(captureId));
   }, [captureId, router]);
 
@@ -124,9 +152,39 @@ export function AnalyzingScreen() {
     finishedRef.current = true;
     if (state.coreSucceeded) {
       forgetCapturePreview();
+      forgetCaptureSource();
       router.replace("/report");
       return;
     }
+
+    /*
+     * The reading stopped, and every core reading of it was refused for
+     * something a tighter crop of the same photo could fix: a face too small in
+     * the picture, or a face the engine could not find. That is the framing
+     * failure the founder's phone hit twice on 2026-09-03, and it is not the
+     * person's fault: the browser has no face detector, so the frame we composed
+     * around their face was composed around lit skin.
+     *
+     * A refused task is charged nothing, so trying again is free. The photo is
+     * still in memory (src/lib/client/capture-source.ts), so it goes back
+     * cropped tighter and this screen follows the new capture, without the
+     * person being shown a refusal for a photo that has not run out of chances.
+     * One status line is all they see.
+     *
+     * Everything else falls straight through to the refusal below, and so does
+     * the last attempt.
+     */
+    if (state.reframeable && canReframeCapture(captureId)) {
+      setStatus("reframing");
+      const outcome = await resubmitReframedCapture(captureId);
+      if (outcome.ok) {
+        router.replace(
+          `/analyzing?capture=${encodeURIComponent(outcome.captureId)}`,
+        );
+        return;
+      }
+    }
+
     /*
      * The reading stopped. The server already turned the provider's refusal into
      * a sentence that says what to do about it (a turned head, a frame with no
@@ -134,6 +192,7 @@ export function AnalyzingScreen() {
      * for a core job that failed without saying why, which is what a timeout
      * looks like from here.
      */
+    forgetCaptureSource();
     setProblem(state.problem ?? copy.errors.providerTimeout);
   }, [captureId, router]);
 

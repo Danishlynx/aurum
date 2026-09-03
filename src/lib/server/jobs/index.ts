@@ -1,11 +1,19 @@
 import "server-only";
 
+import { z } from "zod";
+
 import {
+  ANALYSIS_FAILURE_REASONS,
   analysisFailureReasonFor,
   isRetakeFailure,
   type AnalysisFailureReason,
 } from "@/lib/shared/analysis-failure";
 import { analysisFailureCopy, copy } from "@/lib/shared/copy";
+import {
+  fanOutOrder,
+  LEADER_ANALYSIS_KIND,
+  reachedChargedSuccess,
+} from "@/lib/shared/fan-out";
 
 import {
   ensureAnalysis,
@@ -32,6 +40,7 @@ import { messages } from "../http/messages";
 import { HttpError } from "../http/responses";
 import { maybeBuildProfile } from "../profile";
 import { readProfileFacts } from "../profile/facts";
+import { releaseJudgeAnalysis } from "../judge";
 import { isProviderError } from "../providers/errors";
 import { PERFECTCORP_TASK_TIMEOUT_MS } from "../providers/perfectcorp";
 import type { AppSession } from "../session";
@@ -59,23 +68,44 @@ import {
  *          returns the running job
  * timeout  a job running longer than 120 seconds fails with the timeout copy
  *
+ * The order the analyses are started in, and why it is not all at once.
+ *
+ * The five readings do not agree about what a readable selfie is. The facial
+ * color tones analysis (kind "attributes", 20 units) is the strictest about
+ * pose; the skin analysis (16 units) is the laxest. On 2026-09-03 that cost the
+ * founder 16 units for nothing: the skin reading succeeded, the tone reading
+ * and the face shape reading were both refused with error_face_angle_downward,
+ * and a profile needs skin and a tone reading together, so the capture bought
+ * a charge and no profile.
+ *
+ * So the strictest reading goes first and alone. The rest are written as pending
+ * jobs, hold no reservation, and are started by the poll the moment the tone
+ * reading succeeds (advanceFanOut below). A pose the engine will not read now
+ * costs nothing at all. The rule itself is in src/lib/shared/fan-out.ts, where
+ * it can be tested without a database.
+ *
  * What a refused reading costs a judge, decided here so it is decided once.
  *
  * docs/07-payments-and-judge-mode.md: "Each capture that reaches the analyze
- * step decrements analyses_used." A capture whose tasks were created and then
- * refused by the engine (a turned head, no face) reached that step, so the
- * count moves and stays moved, and a retake is a new capture and a new count.
- * Two things make that honest rather than punitive. Retaking the same photo
- * costs nothing, because the capture is keyed by content hash and a capture
- * that already has jobs is never charged or counted again. And the reveal now
- * says which frame problem stopped the reading, so the next photo is a better
- * one rather than another guess.
+ * step decrements analyses_used." That was written for a fan out where reaching
+ * the analyze step meant readings were run and charged. With the tone reading in
+ * front, a capture can reach it, be refused on the pose, and leave the account
+ * exactly as it found it: a failed task is charged nothing, and nothing else was
+ * ever started. Taking one of a judge's three analyses for that would be taking
+ * it for a photo that produced nothing, so it goes back
+ * (releaseAnalysisWhenNothingWasBought below, reachedChargedSuccess in
+ * src/lib/shared/fan-out.ts).
  *
- * Giving the analysis back from the poll was considered and not done: a poll is
- * repeatable, so without a per capture marker column a refresh loop on a failed
- * capture would walk analyses_used back to zero and break the cap that
- * docs/07 exists to enforce. The one case that can be given back safely is
- * settled in the analyze route, which runs once: see the note there.
+ * That is safe from the poll, which a refresh can repeat, because it is done at
+ * the transition and not from the view. Exactly one poll ever writes the leader
+ * job's failure: claimForPolling is a compare and set, and every later poll sees
+ * a terminal job and skips it. The rule the old note here was protecting against
+ * was a decision read off "every job failed", which is true on every poll after
+ * the first and would have walked analyses_used to zero.
+ *
+ * A capture that did buy a reading still counts, and a retake is a new capture
+ * and a new count. Retaking the same photo costs nothing either way, because the
+ * capture is keyed by content hash.
  */
 
 /** docs/03-architecture.md: attempts are capped at 2. */
@@ -95,6 +125,18 @@ export interface JobView {
   readonly status: JobStatus;
   readonly attempts: number;
   readonly error: string | null;
+  /**
+   * Why a failed reading failed, as a class rather than a sentence. Null unless
+   * the engine refused the task and named a code.
+   *
+   * The screen needs the class as well as the words: two classes can honestly
+   * share one line of copy (a frame the engine would not read and a provider
+   * that broke both say "could not read this photo"), and only one of them is
+   * worth sending a tighter crop for. The sentence is for the person, this is
+   * for the retry (src/components/analyzing/reveal.ts). It is our own vocabulary
+   * throughout: the provider's code is classified here and never leaves.
+   */
+  readonly reason: AnalysisFailureReason | null;
   readonly updatedAt: string;
 }
 
@@ -118,7 +160,11 @@ function isTerminal(status: JobStatus): boolean {
   return TERMINAL.includes(status);
 }
 
-function viewOf(job: JobRecord, kind: AnalysisKind | null): JobView {
+function viewOf(
+  job: JobRecord,
+  kind: AnalysisKind | null,
+  reason: AnalysisFailureReason | null,
+): JobView {
   return {
     id: job.id,
     subjectType: job.subject_type,
@@ -127,8 +173,47 @@ function viewOf(job: JobRecord, kind: AnalysisKind | null): JobView {
     status: job.status,
     attempts: job.attempts,
     error: job.error,
+    reason,
     updatedAt: job.updated_at,
   };
+}
+
+/**
+ * The refusal note kept on a failed analysis.
+ *
+ * analyses.raw is documented as the validated provider response, kept for
+ * debugging a reading we could not parse (migration 0002). A refused task has no
+ * response to keep, so the column holds this instead: the class we put the
+ * refusal in, and the engine's own code beside it so a live run can be read back
+ * afterwards. Both are identifiers. Neither is shown to anybody, and the code is
+ * never treated as an instruction.
+ *
+ * It is written where the code is known (failJob) and read back with zod like
+ * any other stored shape, so a row written by an older build simply has no
+ * class rather than breaking a poll.
+ */
+const refusalNoteSchema = z.object({
+  refusal: z.object({
+    reason: z.enum(ANALYSIS_FAILURE_REASONS),
+    code: z.string().nullable().optional(),
+  }),
+});
+
+export interface AnalysisRefusal {
+  readonly reason: AnalysisFailureReason;
+  readonly code: string | null;
+}
+
+function refusalNote(refusal: AnalysisRefusal) {
+  return { refusal: { reason: refusal.reason, code: refusal.code } };
+}
+
+function refusalReasonOf(analysis: Analysis): AnalysisFailureReason | null {
+  if (analysis.status !== "failed") {
+    return null;
+  }
+  const parsed = refusalNoteSchema.safeParse(analysis.raw);
+  return parsed.success ? parsed.data.refusal.reason : null;
 }
 
 /**
@@ -349,7 +434,78 @@ export async function createAnalysisJobs(
     return readCaptureJobs(ownerId, captureId, "live");
   }
 
-  if (input.capture.storage_path === null) {
+  const fileId = await providerFileFor({
+    capture: input.capture,
+    onProviderCall: input.onProviderCall,
+  });
+
+  /*
+   * The order, and the whole of the tone first change on this side.
+   *
+   * The leader is started now. The followers are written as pending jobs that
+   * hold no reservation and point at no task, and the poll starts them the
+   * moment the leader succeeds (advanceFanOut). They are written rather than
+   * left absent because a capture whose only job has just succeeded reads as
+   * complete, and the reveal would route off a screen with one reading on it.
+   */
+  const order = fanOutOrder(runnable);
+  if (order.leader !== null) {
+    for (const kind of order.followers) {
+      const analysis = byKind.get(kind);
+      if (analysis === undefined) {
+        continue;
+      }
+      await writeJob({
+        ownerId,
+        subjectId: analysis.id,
+        status: "pending",
+        providerTaskId: null,
+        attempts: 0,
+        error: null,
+      });
+    }
+  }
+
+  const failures = await startKinds({
+    session: input.session,
+    kinds: order.leader === null ? order.followers : [order.leader],
+    byKind,
+    fileId,
+    onProviderCall: input.onProviderCall,
+    onCredits: input.onCredits,
+  });
+
+  /*
+   * The leader never started. Nothing is waiting for, so the followers are
+   * closed with the same sentence rather than left pending until they time out.
+   */
+  const leaderFailure =
+    order.leader === null ? undefined : failures.get(order.leader);
+  if (leaderFailure !== undefined) {
+    await cancelWaitingKinds({
+      ownerId,
+      byKind,
+      kinds: order.followers,
+      message: leaderFailure,
+    });
+  }
+
+  return readCaptureJobs(ownerId, captureId, "live");
+}
+
+/**
+ * Uploads the selfie to the provider and returns the file id every task for this
+ * capture reads (docs/04-integrations.md, "Upload once, fan out tasks").
+ *
+ * Read before anything is reserved, so a capture whose upload never landed costs
+ * nothing and gets the upload copy rather than a 500.
+ */
+async function providerFileFor(args: {
+  readonly capture: Capture;
+  readonly onProviderCall?: (count: number) => void;
+}): Promise<string> {
+  const storagePath = args.capture.storage_path;
+  if (storagePath === null) {
     throw new HttpError({
       status: 409,
       message: messages.captureMissingOriginal,
@@ -358,11 +514,9 @@ export async function createAnalysisJobs(
     });
   }
 
-  // The object is read before anything is reserved, so a capture whose upload
-  // never landed costs nothing and gets the upload copy rather than a 500.
   let object;
   try {
-    object = await downloadObject(BUCKETS.captures, input.capture.storage_path);
+    object = await downloadObject(BUCKETS.captures, storagePath);
   } catch {
     throw new HttpError({
       status: 409,
@@ -375,20 +529,40 @@ export async function createAnalysisJobs(
   const fileId = await uploadCapture({
     bytes: object.bytes,
     contentType: object.contentType,
-    captureId,
+    captureId: args.capture.id,
   });
-  input.onProviderCall?.(1);
+  args.onProviderCall?.(1);
+  return fileId;
+}
 
-  // Reservations are sequential because each one reads the running total.
+/**
+ * Reserves and starts one provider task per kind, and returns the kinds that
+ * ended failed with the sentence each of them carries.
+ *
+ * Reservations are sequential because each one reads the running total. Task
+ * creation is parallel, and a single kind that will not start refunds only its
+ * own units.
+ */
+async function startKinds(args: {
+  readonly session: AppSession;
+  readonly kinds: readonly AnalysisKind[];
+  readonly byKind: ReadonlyMap<AnalysisKind, Analysis>;
+  readonly fileId: string;
+  readonly onProviderCall?: (count: number) => void;
+  readonly onCredits?: (units: number) => void;
+}): Promise<Map<AnalysisKind, string>> {
+  const ownerId = args.session.id;
+  const failures = new Map<AnalysisKind, string>();
+
   const started: StartedAnalysis[] = [];
-  for (const kind of runnable) {
-    const analysis = byKind.get(kind);
+  for (const kind of args.kinds) {
+    const analysis = args.byKind.get(kind);
     if (analysis === undefined) {
       continue;
     }
     const plan = planFor(kind);
     const outcome = await reserve({
-      session: input.session,
+      session: args.session,
       provider: "perfectcorp",
       units: plan.units,
       subjectId: analysis.id,
@@ -413,10 +587,11 @@ export async function createAnalysisJobs(
         attempts: MAX_ATTEMPTS,
         error: message,
       });
+      failures.set(kind, message);
       continue;
     }
 
-    input.onCredits?.(outcome.reservation.units);
+    args.onCredits?.(outcome.reservation.units);
     started.push({
       analysis,
       kind,
@@ -429,8 +604,8 @@ export async function createAnalysisJobs(
       const previous = await findJobForSubject(ownerId, entry.analysis.id);
       const attempts = (previous?.attempts ?? 0) + 1;
       try {
-        const task = await startTask({ kind: entry.kind, fileId });
-        input.onProviderCall?.(1);
+        const task = await startTask({ kind: entry.kind, fileId: args.fileId });
+        args.onProviderCall?.(1);
         await updateAnalysis(entry.analysis.id, {
           status: "running",
           provider_task_id: task.taskId,
@@ -446,7 +621,7 @@ export async function createAnalysisJobs(
           error: null,
         });
       } catch (thrown) {
-        await refundFor(input.session, entry.analysis.id);
+        await refundFor(args.session, entry.analysis.id);
         const message = messageForFailure(thrown);
         await updateAnalysis(entry.analysis.id, {
           status: "failed",
@@ -461,11 +636,54 @@ export async function createAnalysisJobs(
           attempts,
           error: message,
         });
+        failures.set(entry.kind, message);
       }
     }),
   );
 
-  return readCaptureJobs(ownerId, captureId, "live");
+  return failures;
+}
+
+/**
+ * Closes the kinds that were waiting on the leader, with the leader's own
+ * sentence and its refusal class.
+ *
+ * Only jobs that are still waiting are touched: one that has a provider task or
+ * has already finished is left exactly as it is, so this can be called from the
+ * poll without racing the reading it would be closing. Nothing is refunded
+ * because nothing waiting ever reserved.
+ */
+async function cancelWaitingKinds(args: {
+  readonly ownerId: string;
+  readonly byKind: ReadonlyMap<AnalysisKind, Analysis>;
+  readonly kinds: readonly AnalysisKind[];
+  readonly message: string;
+  readonly refusal?: AnalysisRefusal;
+}): Promise<void> {
+  for (const kind of args.kinds) {
+    const analysis = args.byKind.get(kind);
+    if (analysis === undefined) {
+      continue;
+    }
+    const job = await findJobForSubject(args.ownerId, analysis.id);
+    if (job === null || job.provider_task_id !== null || isTerminal(job.status)) {
+      continue;
+    }
+    await updateAnalysis(analysis.id, {
+      status: "failed",
+      error: args.message,
+      credits_used: 0,
+      ...(args.refusal === undefined ? {} : { raw: refusalNote(args.refusal) }),
+    });
+    await writeJob({
+      ownerId: args.ownerId,
+      subjectId: analysis.id,
+      status: "failed",
+      providerTaskId: null,
+      attempts: MAX_ATTEMPTS,
+      error: args.message,
+    });
+  }
 }
 
 async function refundFor(session: AppSession, subjectId: string): Promise<void> {
@@ -542,9 +760,16 @@ export async function readCaptureJobs(
   const kindById = new Map(
     analyses.map((analysis) => [analysis.id, analysis.kind]),
   );
+  const reasonById = new Map(
+    analyses.map((analysis) => [analysis.id, refusalReasonOf(analysis)]),
+  );
 
   const views = jobs.map((job) =>
-    viewOf(job, kindById.get(job.subject_id ?? "") ?? null),
+    viewOf(
+      job,
+      kindById.get(job.subject_id ?? "") ?? null,
+      reasonById.get(job.subject_id ?? "") ?? null,
+    ),
   );
 
   return {
@@ -596,12 +821,15 @@ async function failJob(args: {
   readonly analysisId: string;
   readonly message: string;
   readonly attempts?: number;
+  /** Set when the engine refused the task and named a code. */
+  readonly refusal?: AnalysisRefusal;
 }): Promise<void> {
   await refundFor(args.session, args.analysisId);
   await updateAnalysis(args.analysisId, {
     status: "failed",
     error: args.message,
     credits_used: 0,
+    ...(args.refusal === undefined ? {} : { raw: refusalNote(args.refusal) }),
   });
   await updateJob(args.job.id, {
     status: "failed",
@@ -723,6 +951,16 @@ export async function pollCaptureJobs(
   // uploads. The next poll picks up the next one.
   let restartsLeft = 1;
 
+  /**
+   * Whether the reading the rest of the fan out waits on is in. Read from the
+   * rows and set again below if it lands during this very pass, so the followers
+   * start on the same poll rather than a second and a half later.
+   */
+  let leaderSucceeded = analyses.some(
+    (analysis) =>
+      analysis.kind === LEADER_ANALYSIS_KIND && analysis.status === "succeeded",
+  );
+
   for (const job of jobs) {
     if (isTerminal(job.status)) {
       continue;
@@ -787,6 +1025,9 @@ export async function pollCaptureJobs(
           captureId,
           normalized,
         });
+        if (analysis.kind === LEADER_ANALYSIS_KIND) {
+          leaderSucceeded = true;
+        }
         continue;
       }
 
@@ -803,16 +1044,54 @@ export async function pollCaptureJobs(
           providerCode: snapshot.errorCode,
           reason,
         });
+        const message = messageForTaskFailure(snapshot.errorCode);
+        const refusal: AnalysisRefusal = {
+          reason,
+          code: snapshot.errorCode,
+        };
         await failJob({
           session: input.session,
           job,
           analysisId: analysis.id,
-          message: messageForTaskFailure(snapshot.errorCode),
+          message,
           // A refused frame is not a transient failure: sending the same photo
           // again buys the same refusal. Retaking is the way out, so the job is
           // closed at the attempt cap rather than left open for a retry.
           attempts: isRetakeFailure(reason) ? MAX_ATTEMPTS : job.attempts,
+          refusal,
         });
+
+        /*
+         * The reading everything else was waiting on has been refused, so there
+         * is nothing left to wait for: the capture cannot build a profile
+         * without a tone reading. The kinds still pending are closed with this
+         * same sentence and this same class, which is what puts the pose line on
+         * the reveal and what tells the client whether a tighter crop of the
+         * same photo is worth sending.
+         *
+         * Then the judge's analysis goes back, if this capture bought nothing.
+         * Both of these run exactly once for a capture: this branch is inside
+         * the poll that claimed the job and wrote its failure, and every later
+         * poll sees a terminal job and skips it.
+         */
+        if (analysis.kind === LEADER_ANALYSIS_KIND) {
+          await cancelWaitingKinds({
+            ownerId,
+            byKind: new Map(
+              analyses.map((entry) => [entry.kind, entry] as const),
+            ),
+            kinds: analyses
+              .map((entry) => entry.kind)
+              .filter((kind) => kind !== LEADER_ANALYSIS_KIND),
+            message,
+            refusal,
+          });
+          await releaseAnalysisWhenNothingWasBought({
+            session: input.session,
+            ownerId,
+            captureId,
+          });
+        }
       }
       // Still running: last_polled_at was already stamped by the claim.
     } catch (thrown) {
@@ -838,6 +1117,21 @@ export async function pollCaptureJobs(
         attempts: job.attempts + 1,
       });
     }
+  }
+
+  /*
+   * The tone reading is in, so the rest of the fan out is worth paying for. It
+   * happens inside this poll, before the view is read, so the client never sees
+   * a capture whose only job has succeeded and reads as complete.
+   */
+  if (leaderSucceeded) {
+    await advanceFanOut({
+      session: input.session,
+      capture: input.capture,
+      analyses,
+      jobs,
+      onProviderCall: input.onProviderCall,
+    });
   }
 
   const view = await readCaptureJobs(ownerId, captureId, "live");
@@ -871,6 +1165,123 @@ export async function pollCaptureJobs(
    */
 
   return view;
+}
+
+/**
+ * Starts the readings that were waiting on the tone reading.
+ *
+ * A waiting kind is one whose job is still pending and points at no provider
+ * task, which is exactly what createAnalysisJobs wrote for it. Each one is
+ * claimed with the same compare and set the provider poll uses, so two polls
+ * arriving together start one task rather than two.
+ *
+ * The selfie is uploaded to the provider again here, because the file id is not
+ * stored between requests (the same reason restartJob below re uploads). That is
+ * one more upload call per capture and no more units: an upload is not a task.
+ *
+ * Nothing in here may throw the poll. A failure leaves the jobs pending, the
+ * next poll tries again, and a run of storage failures ends in the ordinary job
+ * lifetime timeout, which is an honest answer rather than a stuck screen.
+ */
+async function advanceFanOut(args: {
+  readonly session: AppSession;
+  readonly capture: Capture;
+  readonly analyses: readonly Analysis[];
+  readonly jobs: readonly JobRecord[];
+  readonly onProviderCall?: (count: number) => void;
+}): Promise<void> {
+  const jobBySubject = new Map(
+    args.jobs.map((job) => [job.subject_id ?? "", job]),
+  );
+
+  const waiting: AnalysisKind[] = [];
+  for (const analysis of args.analyses) {
+    if (analysis.kind === LEADER_ANALYSIS_KIND) {
+      continue;
+    }
+    if (analysis.status === "succeeded" || requiresMorePhotos(analysis.kind)) {
+      continue;
+    }
+    const job = jobBySubject.get(analysis.id);
+    if (
+      job === undefined ||
+      job.status !== "pending" ||
+      job.provider_task_id !== null
+    ) {
+      continue;
+    }
+    if (!(await claimForPolling(job))) {
+      continue;
+    }
+    waiting.push(analysis.kind);
+  }
+
+  if (waiting.length === 0) {
+    return;
+  }
+
+  try {
+    const fileId = await providerFileFor({
+      capture: args.capture,
+      onProviderCall: args.onProviderCall,
+    });
+    await startKinds({
+      session: args.session,
+      kinds: waiting,
+      byKind: new Map(
+        args.analyses.map((analysis) => [analysis.kind, analysis] as const),
+      ),
+      fileId,
+      onProviderCall: args.onProviderCall,
+    });
+  } catch (thrown) {
+    console.warn(
+      JSON.stringify({
+        event: "aurum.fan_out_stalled",
+        captureId: args.capture.id,
+        kinds: waiting,
+        reason: thrown instanceof Error ? thrown.name : "unknown",
+      }),
+    );
+  }
+}
+
+/**
+ * Gives a judge session its analysis back when the capture bought nothing.
+ *
+ * See the note at the top of this file for why this is safe from a poll: it runs
+ * at the transition that writes the leader's failure, which happens exactly
+ * once, and never from a view that every later poll would recompute the same
+ * way. The test for "bought nothing" is a pure function
+ * (reachedChargedSuccess), so the rule can be read and tested without a
+ * database.
+ */
+async function releaseAnalysisWhenNothingWasBought(args: {
+  readonly session: AppSession;
+  readonly ownerId: string;
+  readonly captureId: string;
+}): Promise<void> {
+  if (args.session.kind !== "judge") {
+    return;
+  }
+  const analyses = await listAnalyses(args.ownerId, args.captureId);
+  const bought = reachedChargedSuccess(
+    analyses.map((analysis) => ({
+      status: analysis.status,
+      creditsUsed: analysis.credits_used,
+    })),
+  );
+  if (bought) {
+    return;
+  }
+  console.warn(
+    JSON.stringify({
+      event: "aurum.analysis_returned",
+      captureId: args.captureId,
+      sessionKind: "judge",
+    }),
+  );
+  await releaseJudgeAnalysis(args.session.id);
 }
 
 /**
