@@ -115,8 +115,19 @@ export const copy = {
   welcome: {
     title: "Before your photo",
     section1Heading: "What we do with it",
+    /*
+     * docs/01-user-flow.md section C writes this line as "Your selfie is sent to
+     * Perfect Corp to read your skin, tone, face shape, and hair. We keep the
+     * results. By default we delete the photo itself as soon as the reading is
+     * done." The last sentence stopped being true on 2026-09-03, when the
+     * founder moved the default deletion to the end of the session so that every
+     * try on has a face to render on (docs/06-safety-privacy.md, "Retention").
+     * Consent copy has to describe what the app actually does, so the sentence
+     * says the new rule and only that sentence changed. Listed in
+     * COPY_NOT_IN_FLOW_DOC until the wording lands in docs/01.
+     */
     section1Body:
-      "Your selfie is sent to Perfect Corp to read your skin, tone, face shape, and hair. We keep the results. By default we delete the photo itself as soon as the reading is done.",
+      "Your selfie is sent to Perfect Corp to read your skin, tone, face shape, and hair. We keep the results. By default we delete the photo itself when your session ends.",
     section2Heading: "What we never do",
     // Contains "diagnose" as an explicit negation. See SAFETY_COPY_EXEMPTIONS
     // in src/lib/shared/lexicon.ts.
@@ -140,7 +151,7 @@ export const copy = {
    */
   privacy: {
     points: [
-      "Your photo is deleted from storage as soon as every reading for it is done, unless you ask us to keep it.",
+      "Your photo is deleted from storage when your session ends, unless you ask us to keep it.",
       "We keep what the readings produced: your scores, your masks, your palette, and the words on your report.",
       "Photos sit in a private bucket. Every read and write uses a short lived signed link created on the server.",
       "Location and device data are stripped from the photo on your phone, before anything is uploaded.",
@@ -878,6 +889,9 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "firstRun.hair",
   "firstRun.looks",
   "firstRun.profile",
+  // Quoted from docs/01 section C except for its last sentence, which now states
+  // the retention rule the app actually follows. See the comment at the string.
+  "welcome.section1Body",
   "capture.rejection.over_exposed",
   "capture.rejection.no_face",
   "capture.cameraUnavailable",

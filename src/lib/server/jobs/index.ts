@@ -13,17 +13,11 @@ import {
   insertJob,
   listAnalyses,
   listJobsForSubjects,
-  markCaptureOriginalDeleted,
   updateAnalysis,
   updateJob,
 } from "../db";
 import { serviceClient, unwrapNullable } from "../db/service";
-import {
-  BUCKETS,
-  createSignedRead,
-  downloadObject,
-  removeObjects,
-} from "../db/storage";
+import { BUCKETS, createSignedRead, downloadObject } from "../db/storage";
 import type {
   Analysis,
   AnalysisKind,
@@ -231,6 +225,12 @@ async function writeJob(args: {
       attempts: args.attempts,
       error: args.error,
       last_polled_at: null,
+      // A row put back to running points at a new task, so its lifetime starts
+      // again. Without this the reused row keeps the first attempt's timestamp
+      // and a later retry is failed as a timeout before it is ever polled.
+      ...(args.status === "running"
+        ? { created_at: new Date().toISOString() }
+        : {}),
     });
     if (updated !== null) {
       return updated;
@@ -694,7 +694,6 @@ async function succeedJob(args: {
 export interface PollInput {
   readonly session: AppSession;
   readonly capture: Capture;
-  readonly keepOriginals: boolean;
   readonly onProviderCall?: (count: number) => void;
 }
 
@@ -861,12 +860,15 @@ export async function pollCaptureJobs(
     );
   }
 
-  if (view.complete) {
-    await finishCapture({
-      capture: input.capture,
-      keepOriginals: input.keepOriginals,
-    });
-  }
+  /*
+   * Nothing is deleted here. Retention moved to the end of the session on
+   * 2026-09-03: every try on (makeup, hairstyle, hair colour, cloth) renders on
+   * the original selfie, so deleting it the moment the readings finished left a
+   * live person with a reading and no try on, and /makeup and /hair could only
+   * say the preview was unavailable. The original now lives as long as the
+   * session that made it and is removed by the scheduled purges
+   * (supabase/migrations/0014, docs/06-safety-privacy.md, "Retention").
+   */
 
   return view;
 }
@@ -912,6 +914,8 @@ async function restartJob(args: {
       attempts: args.job.attempts + 1,
       error: null,
       last_polled_at: null,
+      // The lifetime is measured from here, not from the attempt that failed.
+      created_at: new Date().toISOString(),
     });
     return true;
   } catch {
@@ -920,17 +924,19 @@ async function restartJob(args: {
 }
 
 /**
- * Retention, docs/03-architecture.md step 7: once every job for a capture is
- * terminal the original object is deleted, unless the person opted in to keeping
- * it. Derived data (scores, masks) stays, because that is the product.
+ * Retention, and where it happens now.
+ *
+ * docs/03-architecture.md step 7 had this module delete the original object as
+ * soon as every job for the capture was terminal. The founder's decision of
+ * 2026-09-03 moves that deletion to the end of the session: the original is the
+ * source image of every try on, so an in flow deletion left the person with a
+ * reading they could not try anything on. The rule is now enforced entirely by
+ * the scheduled purges, which is where a retention rule that must run even when
+ * a request never comes back belongs:
+ *
+ *   supabase/migrations/0014_session_scoped_originals.sql, purge_stale_originals
+ *   supabase/migrations/0007_scheduled_purges.sql, purge_expired_judge_data
+ *
+ * Nothing in the request path deletes an original any more, except the person
+ * asking for it themselves (src/lib/server/profile/delete.ts).
  */
-async function finishCapture(args: {
-  readonly capture: Capture;
-  readonly keepOriginals: boolean;
-}): Promise<void> {
-  if (args.keepOriginals || args.capture.storage_path === null) {
-    return;
-  }
-  await removeObjects(BUCKETS.captures, [args.capture.storage_path]);
-  await markCaptureOriginalDeleted(args.capture.id);
-}

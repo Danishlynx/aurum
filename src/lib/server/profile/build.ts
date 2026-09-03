@@ -39,11 +39,11 @@ import type { Undertone } from "./undertone";
  * read. The columns are written because they are in the data model and because
  * /profile and the stylist layer read the season.
  *
- * Retention is not this file's job. src/lib/server/jobs/index.ts already deletes
- * the original object in finishCapture once every job for the capture is
- * terminal and keep_originals is false (docs/03-architecture.md step 7). This
- * file must not delete anything, or the same object would be removed twice and
- * a failure in one path would be hidden by the other.
+ * Retention is not this file's job. Since 2026-09-03 no request path deletes an
+ * original at all: the selfie is kept for the life of the session and removed by
+ * the scheduled purges (supabase/migrations/0014,
+ * docs/06-safety-privacy.md, "Retention"), because every try on renders on it.
+ * This file must not delete anything.
  *
  * WHAT IS NOT STORED, and it is deliberate: the routine and the going well
  * sentence. aesthetic_profiles has columns for the reading and for

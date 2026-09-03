@@ -130,7 +130,7 @@ export type CaptureCreateRequest = z.infer<typeof captureCreateRequestSchema>;
  * back to the column default read the same. Bump both together, and only when a
  * string under copy.welcome or copy.privacy changes.
  */
-export const CONSENT_VERSION = "v1";
+export const CONSENT_VERSION = "v2";
 
 /**
  * POST from /welcome. Both boxes are required, so both are literal true rather

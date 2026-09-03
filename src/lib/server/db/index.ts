@@ -339,6 +339,16 @@ export async function updateJob(
     readonly attempts?: number;
     readonly last_polled_at?: string | null;
     readonly error?: string | null;
+    /**
+     * Set only when a row is put back to running for a NEW provider task.
+     *
+     * The job lifetime is measured from created_at (src/lib/server/jobs), and a
+     * reused row keeps the timestamp of its first attempt, so without this a
+     * retry made more than two minutes later is failed as a timeout before its
+     * first poll ever reads the provider. Found live: the second makeup try on
+     * of a session was marked timed out against a task that ran fine.
+     */
+    readonly created_at?: string;
   },
 ): Promise<JobRecord | null> {
   const result = await serviceClient()

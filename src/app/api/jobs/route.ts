@@ -11,7 +11,6 @@ import {
   readCaptureJobs,
   type CaptureJobsView,
 } from "@/lib/server/jobs";
-import { getConsent } from "@/lib/server/session";
 
 /**
  * GET /api/jobs?capture=<id>
@@ -53,11 +52,15 @@ export async function GET(request: NextRequest): Promise<Response> {
 
     let view: CaptureJobsView;
     if (providerCallsEnabled()) {
-      const consent = await getConsent(session);
+      /*
+       * The poll no longer decides retention. The original selfie is kept for
+       * the life of the session and removed by the scheduled purges
+       * (supabase/migrations/0014, docs/06-safety-privacy.md), because every try
+       * on renders on it. So this route reads no consent row for it any more.
+       */
       view = await pollCaptureJobs({
         session,
         capture,
-        keepOriginals: consent.keepOriginals,
         onProviderCall: (count) => {
           route.metrics.countProviderCall(count);
         },

@@ -5,6 +5,7 @@ import {
   mapProviderConcern,
   presenceScoreFor,
 } from "@/lib/shared/concerns";
+import { storedImageType } from "@/lib/shared/image-type";
 
 import { BUCKETS, maskPath, uploadObject } from "../db/storage";
 import type { AnalysisKind, Json } from "../db/types";
@@ -486,7 +487,14 @@ export async function persistMasks(args: {
     if (entry === null) {
       continue;
     }
-    const extension = entry.asset.contentType.includes("jpeg") ? "jpg" : "png";
+    /*
+     * The type is decided here rather than taken from the header the result URL
+     * came with. A provider asset served as "binary/octet-stream" is refused by
+     * the bucket (migration 0006 allows three image types), and the catch below
+     * would drop the mask without a word. src/lib/shared/image-type.ts reads the
+     * URL when the header says nothing we can store.
+     */
+    const image = storedImageType(entry.asset.contentType, entry.mask.url);
     try {
       const stored = await uploadObject({
         bucket: BUCKETS.masks,
@@ -494,10 +502,10 @@ export async function persistMasks(args: {
           args.ownerId,
           args.captureId,
           entry.mask.key,
-          extension,
+          image.extension,
         ),
         bytes: entry.asset.bytes,
-        contentType: entry.asset.contentType,
+        contentType: image.contentType,
       });
       paths.push(stored);
     } catch {

@@ -17,7 +17,7 @@ Caps
 - Each capture that reaches the analyze step decrements analyses_used. When analyses_used equals analyses_allowed, the capture screen is disabled with the flow doc copy and reads serve the demo profile.
 - Every Perfect Corp call during a judge session reserves units against credits_cap. Exceeding the cap returns 429 and the app falls back to cache or demo, so a judge is never stranded on a broken screen.
 - SerpApi searches have their own per session allowance, JUDGE_SERPAPI_SEARCHES (default 40), counted from the session's own ledger rows rather than from credits_cap. A unit and a search are different currencies bought from different companies, and credits_cap is sized in units: while they shared one counter, a session that had finished its analyses could not buy a single search, and every routine step on the report read "No listing found near you yet". Claude calls are recorded and not capped, as they always were on the daily cap.
-- Renders are limited to 6 per judge session.
+- Renders are limited to 12 per judge session. Raised from 6 on 2026-09-03: one demo session spends a render on each of the four makeup rows, a hairstyle, a hair color, and a garment, and a judge who hits the cap mid screen sees the same empty hero as a judge with no photo. The credit cap is still the hard ceiling on spend.
 - Rate limits from docs/06-safety-privacy.md apply.
 
 Demo profile

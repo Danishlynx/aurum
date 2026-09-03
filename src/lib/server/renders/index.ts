@@ -8,6 +8,7 @@ import type {
   SimulatableConcernKey,
 } from "@/lib/shared/color-view";
 import { copy } from "@/lib/shared/copy";
+import { storedImageType } from "@/lib/shared/image-type";
 
 import {
   countRenders,
@@ -92,9 +93,9 @@ import { simulationConcernsFor, simulationTaskBody } from "./simulation";
  * docs/03-architecture.md is the machinery: renders are cached by
  * (user_id, kind, params_hash), they are sequential per person, and every
  * provider call reserves credits first.
- * docs/07-payments-and-judge-mode.md caps a judge session at six of them, and
- * that cap counts every kind together: four hairstyles and two hair colours is a
- * whole judge session's worth of renders (docs/09, Layer 3 definition of done).
+ * docs/07-payments-and-judge-mode.md caps a judge session at twelve of them
+ * (raised from six on 2026-09-03), and that cap counts every kind together: four
+ * makeup rows, a hairstyle, a hair colour, and a garment is one demo session.
  *
  * The rule that shapes every path in this file: a try on cannot be faked. With
  * no key, with the kill switch off, with the original photo already deleted, or
@@ -102,6 +103,13 @@ import { simulationConcernsFor, simulationTaskBody } from "./simulation";
  * unedited selfie with "Preview unavailable for this shade."
  * (docs/01 section H, "Try on failed"). There is no stand in image anywhere in
  * this module.
+ *
+ * "The original photo already deleted" is now a rare case rather than the
+ * ordinary one. Retention used to remove it as soon as the readings finished,
+ * which made this whole module unreachable for a live person; since 2026-09-03
+ * the original lives as long as the session (docs/06-safety-privacy.md,
+ * "Retention", and supabase/migrations/0014), so a person who just finished an
+ * analysis has a face to try things on.
  *
  * The job half follows the analysis jobs exactly and reuses their helpers: the
  * same compare and set poll claim, the same lifetime, the same failure to
@@ -489,8 +497,9 @@ export async function createRender(
 
   const capture = await getCapture(ownerId, profile.capture_id);
   if (capture === null || capture.storage_path === null) {
-    // Retention deleted the original, which is the default
-    // (docs/03-architecture.md step 7). There is no face to render on.
+    // The session that made this capture has ended and the scheduled purge took
+    // the original with it (docs/06-safety-privacy.md, "Retention"). There is no
+    // face to render on, so the person takes a new photo.
     return { ok: false, reason: "no_capture_image" };
   }
 
@@ -717,12 +726,16 @@ export async function createRender(
             provider_task_id: task.taskId,
             attempts,
           })
-        : ((await updateJob(previous.id, {
+        : // The row is reused, so its lifetime has to start again with the task
+          // it now points at. Without the created_at, a second try on later in
+          // the same session is failed as a timeout on its first poll.
+          ((await updateJob(previous.id, {
             status: "running",
             provider_task_id: task.taskId,
             attempts,
             error: null,
             last_polled_at: null,
+            created_at: new Date().toISOString(),
           })) ?? previous);
 
     console.log(
@@ -954,12 +967,22 @@ async function succeedRender(args: {
   let storagePath: string;
   try {
     const [asset] = await downloadResultAssets([url]);
-    const extension = asset.contentType.includes("png") ? "png" : "jpg";
+    /*
+     * The type is decided here, not taken from the provider's own header. The
+     * live makeup try on serves its finished render from S3 as
+     * "binary/octet-stream", which the renders bucket refuses (migration 0006
+     * allows three image types), so the upload failed with "mime type
+     * binary/octet-stream is not supported" on a task that had already run and
+     * already been charged, and the screen said the preview was unavailable
+     * while the picture sat in the response. src/lib/shared/image-type.ts reads
+     * the URL when the header says nothing we can store.
+     */
+    const image = storedImageType(asset.contentType, url);
     storagePath = await uploadObject({
       bucket: BUCKETS.renders,
-      storagePath: renderPath(args.session.id, args.render.id, extension),
+      storagePath: renderPath(args.session.id, args.render.id, image.extension),
       bytes: asset.bytes,
-      contentType: asset.contentType,
+      contentType: image.contentType,
     });
   } catch (thrown) {
     const message = messageForFailure(thrown);
@@ -1109,8 +1132,8 @@ export async function readProjection(args: {
     }
 
     // Nothing stored, so the row is only worth drawing if a request would work.
-    // The original photo is the last gate: retention deletes it by default, and
-    // there is no face to project without it.
+    // The original photo is the last gate: it lives for the length of the
+    // session and there is no face to project without it.
     const capture = await getCapture(args.session.id, profile.capture_id);
     const canRender =
       capture !== null &&
