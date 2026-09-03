@@ -164,6 +164,24 @@ export const copy = {
     /** Live guidance, one line at a time, never stacked. */
     guidance: {
       light: "Face the light. A window works best.",
+      /**
+       * In house, and the fifth line of a list docs/01 section D writes four of:
+       *
+       *   - "Face the light. A window works best."
+       *   - "Move closer until your face fills the oval."
+       *   - "Hold still."
+       *   - "Good. Tap to capture." (frame turns solid gold)
+       *
+       * That list is the precedent this is written to: one thing to do, said in
+       * the words a person would use for it. It exists because the doc's four
+       * cover everything the frame can be wrong about except the one the engine
+       * actually refused the founder's photo for on 2026-09-03, a phone held
+       * below the face (error_face_angle_downward). The gate cannot measure a
+       * face angle, but the live preview can see a face that has slid into the
+       * bottom of the frame, which is what a lens pointing down at somebody
+       * looks like. See guidanceKey in src/lib/client/guidance.ts.
+       */
+      eyeLevel: "Hold the phone at eye level and look into the lens.",
       closer: "Move closer until your face fills the oval.",
       hold: "Hold still.",
       ready: "Good. Tap to capture.",
@@ -201,13 +219,22 @@ export const copy = {
     /**
      * In house. docs/01 section D gates a frame on the face being "roughly
      * frontal" but writes no line for it, because the client side gate cannot
-     * measure the angle. Perfect Corp can, and refuses the reading when the head
-     * is turned: error_face_angle_rightward and error_face_not_forward_facing,
-     * both read live on 2026-09-02. Written to the pattern of the rejection
-     * lines above, which is what happened and then what to do.
+     * measure the angle. Perfect Corp can, and refuses the reading whenever the
+     * lens is not square to the face: error_face_angle_rightward and
+     * error_face_not_forward_facing were read live on 2026-09-02, and
+     * error_face_angle_downward on 2026-09-03. One line answers all of them,
+     * because the engine names a direction and a person cannot act on
+     * "rightward" without being told whose right it is.
+     *
+     * It names the fix instead, and names the two halves of it in the order they
+     * are done: the phone moves first, then the eyes. The downward refusal is
+     * the common one and it is a phone held at chest height, so a line that only
+     * said "look straight at the camera" would send somebody to do the one thing
+     * that cannot fix it. The live guidance line above says the same thing on
+     * the camera screen, before the photo is taken.
      */
     facingAway:
-      "Your face is turned away from the camera. Look straight at it and try again.",
+      "Hold the phone at eye level and look straight into the lens, then try again.",
     retakeAction: "Retake",
     /** Secondary, shown for borderline frames only, never for a face failure. */
     useAnywayAction: "Use it anyway",
@@ -219,6 +246,19 @@ export const copy = {
     readingTone: "Reading your tone",
     readingFaceShapeAndHair: "Reading your face shape and hair",
     buildingProfile: "Building your profile",
+    /**
+     * In house. docs/01 section E writes the four lines above for a reading that
+     * is going well and a dead end for one that is not. This is the state
+     * between them: the engine refused the framing, a refused task is charged
+     * nothing, and the client is sending the same photo back cropped tighter
+     * (src/lib/shared/reframe.ts) before the person is shown any refusal at all.
+     *
+     * Said in the same shape as the four above, a verb and what it is working
+     * on, because from the person's side it is the same wait and not a new
+     * screen. It never claims a result, and after the last attempt the honest
+     * refusal is what shows.
+     */
+    reframing: "Framing your face and trying again",
   },
 
   /** F. Skin report (/report) */
@@ -892,11 +932,13 @@ export const COPY_NOT_IN_FLOW_DOC = [
   // Quoted from docs/01 section C except for its last sentence, which now states
   // the retention rule the app actually follows. See the comment at the string.
   "welcome.section1Body",
+  "capture.guidance.eyeLevel",
   "capture.rejection.over_exposed",
   "capture.rejection.no_face",
   "capture.cameraUnavailable",
   "capture.shutterLabel",
   "capture.facingAway",
+  "analyzing.reframing",
   "judge.exploreDemoAction",
   "productCard.distanceTemplate",
   "report.maskTogglesLabel",

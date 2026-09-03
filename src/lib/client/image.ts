@@ -17,6 +17,28 @@ import type { Box, GrayscaleImage } from "@/lib/shared/quality";
 export const CAPTURE_LONG_EDGE = 1024;
 
 /**
+ * The copy of the photo kept in memory in case the engine refuses the framing
+ * (src/lib/client/capture-source.ts).
+ *
+ * Larger than the upload on purpose. A retry crops a little over half the height
+ * out of this and sends that, so a source kept at the upload's own 1024 would
+ * hand the second attempt a 563px frame: below the 480px short side the skin
+ * analysis requires (imageConstraints in
+ * src/lib/server/providers/perfectcorp/endpoints.ts) once the 3 by 4 crop is
+ * taken, and soft after being scaled back up. Twice the long edge leaves both
+ * attempts at full size. fitWithin never scales up, so a smaller photo is kept
+ * at its own size rather than inflated.
+ */
+export const CAPTURE_SOURCE_LONG_EDGE = 2048;
+
+/**
+ * The smallest short side the strictest analysis will read, from the endpoint
+ * table: skinAnalysis asks for 480px. A crop is scaled up to meet it rather than
+ * being sent to a certain refusal.
+ */
+export const CAPTURE_MIN_SHORT_EDGE = 480;
+
+/**
  * The still shown behind the reveal on /analyzing. Smaller than the upload
  * because it travels through sessionStorage as a data URL.
  */
@@ -34,6 +56,23 @@ export function fitWithin(size: Size, longEdge: number): Size {
     return { width: Math.round(size.width), height: Math.round(size.height) };
   }
   const scale = longEdge / largest;
+  return {
+    width: Math.max(1, Math.round(size.width * scale)),
+    height: Math.max(1, Math.round(size.height * scale)),
+  };
+}
+
+/**
+ * The same size, scaled up if needed so its short side reaches minShortEdge.
+ * Returns the size untouched when it already does, or when no floor was asked
+ * for, so this is inert everywhere but the retry crop.
+ */
+export function atLeastShortEdge(size: Size, minShortEdge: number): Size {
+  const shortest = Math.min(size.width, size.height);
+  if (minShortEdge <= 0 || shortest <= 0 || shortest >= minShortEdge) {
+    return size;
+  }
+  const scale = minShortEdge / shortest;
   return {
     width: Math.max(1, Math.round(size.width * scale)),
     height: Math.max(1, Math.round(size.height * scale)),
@@ -75,17 +114,25 @@ export function drawToCanvas(
  * 1024px long edge instead of at the fraction of it the crop would have been.
  * fitWithin never scales up, so a small crop stays its own size rather than
  * being stretched into a soft frame the sharpness check would then refuse.
+ *
+ * minShortEdge is the one exception to that, and it defaults to off. The retry
+ * crop (src/lib/shared/reframe.ts) is cut from a frame that may itself be small,
+ * and a crop under the engine's own 480px short side is refused before it is
+ * read at all. Scaling that crop up buys nothing in detail but it is the
+ * difference between a reading and a refusal, so the caller that needs it asks
+ * for it and nothing else is changed.
  */
 export function drawCropToCanvas(
   source: CanvasImageSource,
   region: Box,
   longEdge: number,
+  minShortEdge = 0,
 ): HTMLCanvasElement {
   const regionWidth = Math.max(1, Math.round(region.width));
   const regionHeight = Math.max(1, Math.round(region.height));
-  const target = fitWithin(
-    { width: regionWidth, height: regionHeight },
-    longEdge,
+  const target = atLeastShortEdge(
+    fitWithin({ width: regionWidth, height: regionHeight }, longEdge),
+    minShortEdge,
   );
   const canvas = document.createElement("canvas");
   canvas.width = target.width;

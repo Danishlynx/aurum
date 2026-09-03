@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ANALYSIS_FAILURE_REASONS,
   analysisFailureReasonFor,
+  isReframeableFailure,
   isRetakeFailure,
   type AnalysisFailureReason,
 } from "./analysis-failure";
@@ -24,12 +25,36 @@ const LIVE_CODES = {
   notForward: "error_face_not_forward_facing",
   noFace: "error_no_face",
   faceTooSmall: "error_src_face_too_small",
+  /** Read on 2026-09-03, off a phone held below the face. */
+  angleDownward: "error_face_angle_downward",
 } as const;
+
+/**
+ * Every spelling of the same refusal: the lens is not square to the face. The
+ * engine names a direction, and one line of copy answers all of them, because a
+ * person cannot act on "rightward" without being told whose right it is.
+ */
+const FACE_ANGLE_CODES = [
+  "error_face_angle_downward",
+  "error_face_angle_upward",
+  "error_face_angle_leftward",
+  "error_face_angle_rightward",
+  "error_face_not_forward_facing",
+] as const;
 
 describe("analysisFailureReasonFor, against the codes the API really sent", () => {
   it("reads a turned head as an angle problem", () => {
     expect(analysisFailureReasonFor(LIVE_CODES.angleRightward)).toBe("face_angle");
     expect(analysisFailureReasonFor(LIVE_CODES.notForward)).toBe("face_angle");
+  });
+
+  it("reads a tilted head the same way, whichever way it is tilted", () => {
+    // error_face_angle_downward is the one the founder's phone produced on
+    // 2026-09-03, held at chest height. The other directions are the same
+    // refusal said another way.
+    for (const code of FACE_ANGLE_CODES) {
+      expect(analysisFailureReasonFor(code)).toBe("face_angle");
+    }
   });
 
   it("reads an empty frame as a missing face", () => {
@@ -77,6 +102,29 @@ describe("analysisFailureReasonFor, against the codes the API really sent", () =
     expect(isRetakeFailure("no_face")).toBe(true);
     expect(isRetakeFailure("frame")).toBe(true);
     expect(isRetakeFailure("provider")).toBe(false);
+  });
+
+  it("sends the same photo back only for what a tighter crop could fix", () => {
+    // A face too small in the picture, or one the engine could not find at all.
+    expect(isReframeableFailure("frame")).toBe(true);
+    expect(isReframeableFailure("no_face")).toBe(true);
+    // No crop squares a face to the lens, and neither one is the provider's
+    // fault. Sending either back again would waste the person's time.
+    expect(isReframeableFailure("face_angle")).toBe(false);
+    expect(isReframeableFailure("provider")).toBe(false);
+  });
+
+  it("puts the two framing codes the live run produced on the retry path", () => {
+    for (const code of [
+      LIVE_CODES.faceTooSmall,
+      "error_src_face_position_too_small",
+      LIVE_CODES.noFace,
+    ]) {
+      expect(isReframeableFailure(analysisFailureReasonFor(code))).toBe(true);
+    }
+    for (const code of [...FACE_ANGLE_CODES, "InternalError"]) {
+      expect(isReframeableFailure(analysisFailureReasonFor(code))).toBe(false);
+    }
   });
 });
 

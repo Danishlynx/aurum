@@ -28,7 +28,21 @@
  * a refusal was never the right answer to it: the face in that photo was fine,
  * it was just small in the picture. The upload path now composes the frame
  * around the face before anything is sent (autoCropBoxFor in
- * src/lib/shared/quality.ts). This line stays for the photo no crop can save.
+ * src/lib/shared/quality.ts), and when the engine refuses it anyway the client
+ * reframes the same photo and sends it back (src/lib/shared/reframe.ts). This
+ * line stays for the photo no crop can save.
+ *
+ * A fifth was read on 2026-09-03, off a phone held below the face:
+ *
+ *     error_face_angle_downward
+ *
+ * It is one of a family. The engine names the direction the head is off by, and
+ * every spelling of it (downward, upward, leftward, rightward, and the
+ * directionless error_face_not_forward_facing) is one instruction to the person:
+ * the lens is not square to the face. They all land on "face_angle" through the
+ * markers below, and that reason has one line of copy which names the fix rather
+ * than the direction, because nobody can act on "rightward" without being told
+ * whose right it is.
  *
  * Nothing here treats the provider's text as an instruction or shows it to
  * anyone. The code is matched against the markers below and thrown away; the
@@ -125,4 +139,25 @@ export function analysisFailureReasonFor(
  */
 export function isRetakeFailure(reason: AnalysisFailureReason): boolean {
   return reason !== "provider";
+}
+
+/**
+ * True when a tighter crop of the same photo is worth sending.
+ *
+ * The two reasons that qualify are the ones a frame can be wrong about rather
+ * than a person: a face too small in the picture ("frame", which is where
+ * error_src_face_too_small and error_src_face_position_too_small land) and a
+ * face the engine could not find at all ("no_face"), which on a wide phone
+ * gallery photo is often the same problem one step further along.
+ *
+ * A turned or tilted head is not here. No crop makes a face square to the lens,
+ * and sending the same pose back would waste the person's time telling them
+ * nothing. Nor is "provider": that is not the photo.
+ *
+ * Used only to decide whether to re submit (src/lib/client/capture-source.ts).
+ * It never decides a refund: a failed task is charged nothing whatever the
+ * reason, so its reservation always goes back.
+ */
+export function isReframeableFailure(reason: AnalysisFailureReason): boolean {
+  return reason === "frame" || reason === "no_face";
 }

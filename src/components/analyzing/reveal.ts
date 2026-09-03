@@ -10,6 +10,7 @@
  */
 
 import type { ClientJob } from "@/lib/client/api";
+import { isReframeableFailure } from "@/lib/shared/analysis-failure";
 import type { copy } from "@/lib/shared/copy";
 import { TERMINAL_JOB_STATUSES } from "@/lib/shared/schemas";
 
@@ -38,6 +39,41 @@ function succeeded(jobs: readonly ClientJob[], kind: string): boolean {
  * without a tone reading there is no palette. docs/03-architecture.md step 6.
  */
 const CORE_KINDS = ["skin", "fitzpatrick", "attributes"] as const;
+
+/**
+ * True when every core reading of this capture was refused for something a
+ * tighter crop of the same photo could fix.
+ *
+ * This is the whole condition for the self healing retry
+ * (src/lib/client/capture-source.ts). It is deliberately unanimous and
+ * deliberately narrow:
+ *
+ * - every core job that exists has to have failed. One still running is not a
+ *   dead end yet, and one that succeeded means there is a reading to keep, so
+ *   sending a different photo would throw it away.
+ * - every one of them has to name a class a crop can answer: a face too small
+ *   in the picture, or a face the engine could not find (isReframeableFailure).
+ *   A turned head, a timeout, or a provider that broke are all left alone,
+ *   because re sending the same pose or the same request buys the same answer.
+ * - a failure with no class at all counts against it. This build's server sends
+ *   one with every refusal; an older one does not, and guessing on its behalf
+ *   would re upload a photo on no evidence.
+ */
+export function refusedForFraming(jobs: readonly ClientJob[]): boolean {
+  const core = jobs.filter(
+    (job) => job.kind !== null && (CORE_KINDS as readonly string[]).includes(job.kind),
+  );
+  if (core.length === 0) {
+    return false;
+  }
+  return core.every(
+    (job) =>
+      job.status === "failed" &&
+      job.reason !== null &&
+      job.reason !== undefined &&
+      isReframeableFailure(job.reason),
+  );
+}
 
 /**
  * The sentence the server put on the first core job that failed.
@@ -109,6 +145,12 @@ export type RevealState = {
    * running is not yet a dead end.
    */
   readonly problem: string | null;
+  /**
+   * Every core reading was refused for something a tighter crop could fix, so
+   * the screen sends the same photo back before it shows anybody a refusal.
+   * Read only once settled, like problem.
+   */
+  readonly reframeable: boolean;
 };
 
 /**
@@ -123,5 +165,6 @@ export function revealStateFor(jobs: readonly ClientJob[]): RevealState {
     settled: jobs.length > 0 && jobs.every(isTerminal),
     coreSucceeded,
     problem: coreSucceeded ? null : coreFailureMessage(jobs),
+    reframeable: !coreSucceeded && refusedForFraming(jobs),
   };
 }

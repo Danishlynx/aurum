@@ -13,6 +13,7 @@
 
 import { z } from "zod";
 
+import { ANALYSIS_FAILURE_REASONS } from "@/lib/shared/analysis-failure";
 import {
   analysisKindSchema,
   CONSENT_VERSION,
@@ -228,6 +229,18 @@ export const clientJobSchema = z.object({
   kind: analysisKindSchema.nullable().catch(null),
   status: jobStatusSchema,
   error: z.string().nullable().optional(),
+  /**
+   * Why a failed reading failed, as a class rather than a sentence: the engine's
+   * own code decides it on the server (src/lib/shared/analysis-failure.ts) and
+   * the class is what tells the reveal whether a tighter crop of the same photo
+   * is worth sending. The sentence in `error` cannot answer that, because two
+   * classes can honestly share one line of copy.
+   *
+   * Absent on every job that has not failed, and read as null when it carries a
+   * class this build does not know, so an older or newer server cannot strand
+   * the screen.
+   */
+  reason: z.enum(ANALYSIS_FAILURE_REASONS).nullable().optional().catch(null),
 });
 
 export type ClientJob = z.infer<typeof clientJobSchema>;

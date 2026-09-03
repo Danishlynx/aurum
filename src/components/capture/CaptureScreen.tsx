@@ -14,6 +14,10 @@ import {
   uploadCaptureImage,
 } from "@/lib/client/api";
 import { rememberCapturePreview } from "@/lib/client/capture-handoff";
+import {
+  bindCaptureSource,
+  rememberCaptureSource,
+} from "@/lib/client/capture-source";
 import { decrementJudgeRemaining } from "@/lib/client/judge-session";
 import {
   estimateFaceForCapture,
@@ -26,6 +30,7 @@ import type { GuidanceKey } from "@/lib/client/guidance";
 import {
   CAPTURE_JPEG_QUALITY,
   CAPTURE_LONG_EDGE,
+  CAPTURE_SOURCE_LONG_EDGE,
   PREVIEW_JPEG_QUALITY,
   PREVIEW_LONG_EDGE,
   decodeImageFile,
@@ -196,6 +201,19 @@ function snapshotOf(video: HTMLVideoElement): HTMLCanvasElement {
 async function frameForUpload(
   decoded: DecodedImage,
 ): Promise<HTMLCanvasElement> {
+  /*
+   * The photo itself, kept in memory before anything is cropped out of it.
+   *
+   * Both paths reach this function with their source still open, which is why
+   * the frame is taken here and in one place. The framing below can be wrong,
+   * because on a browser with no face detector it is composed around lit skin
+   * rather than around a face, and when the engine says so the reveal sends this
+   * frame back cropped tighter (src/lib/client/capture-source.ts). It never
+   * leaves the tab and it is dropped as soon as a reading lands.
+   */
+  rememberCaptureSource(
+    drawToCanvas(decoded.source, decoded.size, CAPTURE_SOURCE_LONG_EDGE),
+  );
   const whole = drawToCanvas(decoded.source, decoded.size, CAPTURE_LONG_EDGE);
   const { estimate } = await measure(whole);
   if (estimate.faceCount !== 1) {
@@ -345,6 +363,12 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
           estimate.faceBox === null
             ? null
             : estimate.faceBox.height / image.height,
+        // Where the middle of the face sits down the frame, which is what says
+        // the phone is being held below the person's eyes. See guidance.ts.
+        faceCenterY:
+          estimate.faceBox === null
+            ? null
+            : (estimate.faceBox.y + estimate.faceBox.height / 2) / image.height,
         motion: motionBetween(previousSampleRef.current, gray.data),
       }),
     );
@@ -429,6 +453,9 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         // A cache hit spends no credit, so only a new capture counts down.
         decrementJudgeRemaining();
       }
+
+      // The frame held for the retry belongs to this capture from here on.
+      bindCaptureSource(created.data.captureId);
 
       // Already drawn when the frame froze on the screen. Drawing it a second
       // time here would cost another full size canvas pass at the one moment
