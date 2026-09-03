@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Column } from "@/components/layout/Column";
+import { ButtonLink } from "@/components/ui/Button";
 import { Toast } from "@/components/ui/Toast";
 import {
   CAPTURE_JPEG_QUALITY,
@@ -29,6 +30,7 @@ import {
   ALL_TYPES,
   filterByType,
   showsCorrectHint,
+  showsSuggestAction,
   showsTypeFilter,
   typeFilterOptions,
   type TypeFilter,
@@ -269,6 +271,19 @@ export function WardrobeScreen({ view, readOnly }: WardrobeScreenProps) {
   ];
   const editing = garments.find((garment) => garment.id === editingId) ?? null;
   const isEmpty = garments.length === 0 && uploading === 0;
+  /*
+   * The way onward, and the reason the wardrobe exists: a person photographs
+   * their clothes so that something can tell them what to wear. docs/01
+   * "Screen map" routes /wardrobe from /looks and writes no route back, which on
+   * the live app left the wardrobe a cul de sac: a judge added garments and had
+   * to find their own way to the screen that composes them.
+   *
+   * It takes the screen's one gold fill once there is a typed garment to compose
+   * (docs/02-design-system.md, Button: "One per screen"), and "Add garments"
+   * steps down to secondary. Adding more is still the obvious second thing to
+   * do; it stops being the first.
+   */
+  const suggests = showsSuggestAction(garments);
 
   if (isEmpty) {
     return (
@@ -325,8 +340,17 @@ export function WardrobeScreen({ view, readOnly }: WardrobeScreenProps) {
         </ul>
       </Column>
 
-      <Column>
-        <AddGarments variant="primary" disabled={busy} onFiles={addFiles} />
+      <Column className="flex flex-col gap-4">
+        {suggests ? (
+          <ButtonLink variant="primary" href="/looks">
+            {copy.wardrobe.suggestAction}
+          </ButtonLink>
+        ) : null}
+        <AddGarments
+          variant={suggests ? "secondary" : "primary"}
+          disabled={busy}
+          onFiles={addFiles}
+        />
       </Column>
 
       <GarmentPicker

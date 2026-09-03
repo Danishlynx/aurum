@@ -147,6 +147,28 @@ async function measure(canvas: HTMLCanvasElement): Promise<{
 }
 
 /**
+ * The video frame, as it was at the instant of the tap, at the sensor's own
+ * resolution.
+ *
+ * A video element is a moving picture, and every read of it answers with
+ * whatever frame is on it now. frameForUpload reads its source twice, once to
+ * find the face and once to take the crop, so handing it the live element meant
+ * the crop was taken from a later frame than the one the face was measured in:
+ * a person who moved in the tens of milliseconds between the two got a crop
+ * centered on where their face used to be. One snapshot, read as many times as
+ * needed, is the whole fix.
+ *
+ * Taken at full sensor size rather than at CAPTURE_LONG_EDGE, because the crop
+ * is cut from this canvas and a crop off an already downscaled copy would land
+ * under the 1024 the capture is meant to arrive at. fitWithin never scales up,
+ * so passing the long edge back is a copy at native size.
+ */
+function snapshotOf(video: HTMLVideoElement): HTMLCanvasElement {
+  const size = { width: video.videoWidth, height: video.videoHeight };
+  return drawToCanvas(video, size, Math.max(size.width, size.height));
+}
+
+/**
  * The uploaded photo, composed the way the oval composes a live one.
  *
  * A phone gallery selfie carries the face at 30 to 50 percent of the frame
@@ -208,12 +230,24 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
    * with and the two screens never disagree.
    */
   const previewRef = useRef<string | null>(null);
+  /**
+   * The stream the feed is running on, so retake can ask whether there is still
+   * a camera behind the frozen frame before it puts the person back in front of
+   * one. Null whenever there is not.
+   */
+  const streamRef = useRef<MediaStream | null>(null);
 
   const [phase, setPhase] = useState<Phase>(
     analysesExhausted ? { name: "capped" } : { name: "starting" },
   );
   const [guidance, setGuidance] = useState<GuidanceKey>("light");
   const [still, setStill] = useState<string | null>(null);
+  /**
+   * Bumped to ask for the camera again. It is a dependency of the effect below,
+   * so a bump is a full restart: the old tracks are stopped and getUserMedia is
+   * called afresh. See handleRetake for the one thing that bumps it.
+   */
+  const [cameraAttempt, setCameraAttempt] = useState(0);
 
   // -------------------------------------------------------------------------
   // The camera
@@ -229,6 +263,15 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
 
     let stream: MediaStream | null = null;
     let cancelled = false;
+
+    const release = (): void => {
+      stream?.getTracks().forEach((track) => {
+        track.stop();
+      });
+      if (streamRef.current === stream) {
+        streamRef.current = null;
+      }
+    };
 
     async function start(): Promise<void> {
       const media = navigator.mediaDevices;
@@ -252,16 +295,14 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         setPhase({ name: "camera_unavailable" });
         return;
       }
-      if (cancelled) {
-        stream.getTracks().forEach((track) => {
-          track.stop();
-        });
-        return;
-      }
       const video = videoRef.current;
-      if (video === null) {
+      if (cancelled || video === null) {
+        // Nobody is going to show these frames. A stream left running here is a
+        // camera light on with no camera screen behind it.
+        release();
         return;
       }
+      streamRef.current = stream;
       video.srcObject = stream;
       try {
         await video.play();
@@ -275,11 +316,9 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
 
     return () => {
       cancelled = true;
-      stream?.getTracks().forEach((track) => {
-        track.stop();
-      });
+      release();
     };
-  }, [analysesExhausted]);
+  }, [analysesExhausted, cameraAttempt]);
 
   // -------------------------------------------------------------------------
   // The live guidance line
@@ -457,18 +496,28 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     if (video === null || video.videoWidth === 0) {
       return;
     }
-    // The stage shows a center crop of the sensor, but the sensor frame is
-    // wider than the stage, so a face filling the oval on screen can still be
-    // a small fraction of the raw capture. The provider refused exactly that
-    // live (error_src_face_too_small, 2026-09-03). A video frame is a canvas
-    // image source, so the shutter goes through the same face framing pipeline
-    // the upload path uses, and both paths send what the person believed they
-    // framed.
+    /*
+     * The tap is answered before anything is measured. The snapshot is one
+     * synchronous canvas draw, so the picture on the screen is the picture that
+     * was in front of the camera at the instant of the tap, and the feed does
+     * not carry on moving underneath while the face is found.
+     *
+     * Then the framing. The stage shows a center crop of the sensor, but the
+     * sensor frame is wider than the stage, so a face filling the oval on
+     * screen can still be a small fraction of the raw capture. The provider
+     * refused exactly that live (error_src_face_too_small, 2026-09-03). A
+     * canvas is a canvas image source, so the shutter goes through the same
+     * face framing pipeline the upload path uses, and both paths send what the
+     * person believed they framed. The framed frame replaces the snapshot on
+     * screen, so what the person is looking at while the upload runs is the
+     * frame that is being uploaded, down to the crop.
+     */
+    const snapshot = snapshotOf(video);
+    freeze(snapshot);
     void (async () => {
-      setPhase({ name: "working" });
       const framed = await frameForUpload({
-        source: video,
-        size: { width: video.videoWidth, height: video.videoHeight },
+        source: snapshot,
+        size: { width: snapshot.width, height: snapshot.height },
         release: () => {},
       });
       freeze(framed);
@@ -503,15 +552,44 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     })();
   }
 
+  /**
+   * Whether there is still a running camera behind the frozen frame.
+   *
+   * The feed keeps playing under the still through the whole review, so most
+   * retakes have one and cost nothing. It can be gone anyway: the browser
+   * releases a track when the tab is backgrounded or another app takes the
+   * device, and a track in that state keeps its element and its srcObject and
+   * simply stops producing frames. Checking srcObject alone therefore says
+   * "live" over a black rectangle, which is the retake that looks broken.
+   */
+  function cameraIsLive(): boolean {
+    if (videoRef.current === null) {
+      return false;
+    }
+    const tracks = streamRef.current?.getVideoTracks() ?? [];
+    return tracks.some((track) => track.readyState === "live");
+  }
+
+  /**
+   * Back to the camera, docs/01-user-flow.md section D: "Retake" is the primary
+   * answer to a refused frame, so it has to end with a live camera every time.
+   * With the feed still running it is instant. With the feed gone, and that
+   * includes the browser that refused it the first time, the camera is asked
+   * for again rather than the person being left with a dead frame.
+   */
   function handleRetake(): void {
     pendingRef.current = null;
     previewRef.current = null;
+    // The next motion reading compares against the next frame, not against one
+    // measured before a photo was taken.
+    previousSampleRef.current = null;
     setStill(null);
-    setPhase(
-      videoRef.current?.srcObject === null || videoRef.current === null
-        ? { name: "camera_unavailable" }
-        : { name: "live" },
-    );
+    if (cameraIsLive()) {
+      setPhase({ name: "live" });
+      return;
+    }
+    setPhase({ name: "starting" });
+    setCameraAttempt((attempt) => attempt + 1);
   }
 
   function handleUseAnyway(): void {

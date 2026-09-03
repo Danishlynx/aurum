@@ -163,6 +163,24 @@ export function showsCorrectHint(garments: readonly GarmentView[]): boolean {
   return garments.some((garment) => cardState(garment) === "chips");
 }
 
+/**
+ * True when the screen offers "Suggest what to wear".
+ *
+ * The type is the whole condition, because the type is what the rules engine
+ * places (src/lib/shared/looks.ts, slotOfType): a garment with no type cannot
+ * enter a candidate, so a wardrobe of nothing but unread photos has no outfit in
+ * it and the control would lead to the "nothing fits this occasion" line every
+ * time. One typed garment is enough to ask the question, and the person can
+ * always give a garment its type by tapping the chip.
+ *
+ * This is why the control appears as the classifications land rather than as the
+ * photos do: docs/01-user-flow.md section J fills the chips in "one by one as
+ * results arrive", and this follows them.
+ */
+export function showsSuggestAction(garments: readonly GarmentView[]): boolean {
+  return garments.some((garment) => garment.type !== null);
+}
+
 // ---------------------------------------------------------------------------
 // The correction sheet
 // ---------------------------------------------------------------------------

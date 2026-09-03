@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { FirstRunInvitation } from "@/components/app-shell/FirstRunInvitation";
 import { Column } from "@/components/layout/Column";
-import { buttonClassName } from "@/components/ui/Button";
+import { buttonClassName, ButtonLink } from "@/components/ui/Button";
 import { Toast } from "@/components/ui/Toast";
 import { copy } from "@/lib/shared/copy";
 import {
   DEFAULT_OCCASION,
+  isOccasion,
+  OCCASION_QUERY_PARAM,
   type LooksView,
   type LookView,
   type Occasion,
@@ -120,7 +123,18 @@ export function LooksScreen({
   accessoryOptions = [],
   hasProfile = true,
 }: LooksScreenProps) {
-  const [occasion, setOccasion] = useState<Occasion>(DEFAULT_OCCASION);
+  /*
+   * The chip the screen opens on. It is a chip the person taps for the rest of
+   * the visit, so the query string only decides where it starts: a link into
+   * this screen can name the occasion it is asking about
+   * (OCCASION_QUERY_PARAM, the same name GET /api/looks reads), and anything
+   * else, including nothing, opens on "Everyday".
+   */
+  const searchParams = useSearchParams();
+  const requested = searchParams.get(OCCASION_QUERY_PARAM);
+  const [occasion, setOccasion] = useState<Occasion>(
+    requested !== null && isOccasion(requested) ? requested : DEFAULT_OCCASION,
+  );
   const [view, setView] = useState<LooksView | null>(null);
   const [loading, setLoading] = useState(true);
   const [unavailable, setUnavailable] = useState(false);
@@ -326,6 +340,20 @@ export function LooksScreen({
   }
 
   const looks = view?.looks ?? [];
+  /*
+   * The wardrobe invitation, docs/01-user-flow.md section K states, "No
+   * wardrobe". The doc gives the sentence and leaves the person to find
+   * /wardrobe from the quiet link at the bottom of the screen, which on the live
+   * app meant a judge scrolled past a screen of listings and never learned that
+   * the product composes their own clothes. So the sentence keeps its words and
+   * gains the control it was already asking for.
+   *
+   * It takes the screen's one gold fill while it is up (docs/02-design-system.md,
+   * Button: "One per screen"), and the leading look's save drops to secondary.
+   * With nothing of the person's on the screen, saving an outfit of listings is
+   * not the thing to do next; getting their clothes in is.
+   */
+  const invitesWardrobe = view !== null && view.wardrobeEmpty;
 
   return (
     <div className="flex flex-col gap-8">
@@ -350,12 +378,15 @@ export function LooksScreen({
         />
       </Column>
 
-      {view !== null && view.wardrobeEmpty ? (
-        <Column>
+      {invitesWardrobe ? (
+        <Column className="flex flex-col gap-4">
           {/* docs/01-user-flow.md section K, "No wardrobe", verbatim. */}
           <p className="max-w-[64ch] font-body text-body text-text-muted">
             {copy.looks.noWardrobe}
           </p>
+          <ButtonLink variant="primary" href="/wardrobe">
+            {copy.looks.addYourClothesAction}
+          </ButtonLink>
         </Column>
       ) : null}
 
@@ -382,7 +413,7 @@ export function LooksScreen({
           <LookCard
             look={look}
             hero={heroFor(look, index)}
-            leading={index === 0}
+            leading={index === 0 && !invitesWardrobe}
             saving={saving}
             onSave={(lookId) => {
               void save(lookId);
