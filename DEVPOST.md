@@ -112,7 +112,7 @@ In prose: Next.js (App Router) and TypeScript in strict mode, Tailwind CSS on on
 - Your session includes 3 full analyses. The app keeps working from a saved demo profile after that.
 - Repository: https://github.com/Danishlynx/aurum
 - Tag: `hackathon-submission`
-- Commit sha: TODO-human
+- Commit sha: the commit tagged hackathon-submission, https://github.com/Danishlynx/aurum/releases/tag/hackathon-submission
 
 ## Video
 

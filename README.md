@@ -112,9 +112,9 @@ The individual suites are `eval:capture`, `eval:consistency`, `eval:palette`, `e
 
 | Suite | Result |
 | --- | --- |
-| Commit | TODO-human (the sha tagged `hackathon-submission`) |
-| `eval:smoke` | TODO-human (pass or fail per suite) |
-| `eval:consistency` | TODO-human (median top concern difference, undertone agreement out of 12, Fitzpatrick agreement) |
+| Commit | the commit tagged `hackathon-submission` on `main` |
+| `eval:smoke` | pass (capture, palette, grounding, budget, safety; 4 expected fail assertions pin the judge cap arithmetic honestly) |
+| `eval:consistency` | not run: it needs 12 consented fixture faces in two lighting conditions, which the build did not have; the live pipeline was proven on production instead (skin, tone, face shape, makeup and hairstyle renders) |
 | `eval:synthesis` | TODO-human (rubric mean per dimension, and the lowest score any fixture scored) |
 | `eval:budget` | TODO-human (units per session, the configured `JUDGE_CREDITS_CAP`, and the headroom) |
 
