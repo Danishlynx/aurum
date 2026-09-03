@@ -198,6 +198,7 @@ describe("the reveal through a live capture", () => {
       settled: true,
       coreSucceeded: true,
       problem: null,
+      reframeable: false,
     });
   });
 

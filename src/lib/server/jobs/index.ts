@@ -1190,7 +1190,6 @@ async function advanceFanOut(args: {
   readonly jobs: readonly JobRecord[];
   readonly onProviderCall?: (count: number) => void;
 }): Promise<void> {
-  const ownerId = args.session.id;
   const jobBySubject = new Map(
     args.jobs.map((job) => [job.subject_id ?? "", job]),
   );
