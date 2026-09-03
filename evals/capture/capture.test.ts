@@ -18,6 +18,7 @@ import {
   CAPTURE_REASON_PRECEDENCE,
   FACE_COVERAGE_BORDERLINE_MIN,
   FACE_COVERAGE_MIN,
+  SHARPNESS_BORDERLINE_BELOW,
   assessCapture,
   autoCropBoxFor,
   cropToBox,
@@ -103,11 +104,6 @@ const bad: readonly {
     reason: "over_exposed",
   },
   {
-    name: "blurry",
-    input: { image: blurryFrame, faceCount: 1, faceBox: GOOD_FACE_BOX },
-    reason: "blurry",
-  },
-  {
     name: "face far too small in the frame",
     input: {
       image: goodFrame,
@@ -138,6 +134,57 @@ describe("eval:capture, gate logic on synthetic frames", () => {
   it("never offers use it anyway on a rejected frame", () => {
     for (const entry of bad) {
       expect(assessCapture(entry.input).canUseAnyway).toBe(false);
+    }
+  });
+
+  /**
+   * Softness is flagged and never refused, which is a policy and not a
+   * threshold. The engine's own input gate reads the frame for free and is the
+   * authority on whether it is sharp enough; ours guesses from a canvas. When
+   * they disagreed on a real phone the person had no way through at all
+   * (Samsung S26 Ultra, indoors at night, 2026-09-03), so the disagreement is
+   * now settled in the person's favour and the engine gets to answer.
+   */
+  it("offers a soft frame rather than refusing it, at any sharpness", () => {
+    for (const contrast of [0, 1, 2, 4]) {
+      const soft = image((x, y) =>
+        (x + y) % 2 === 0 ? 128 - contrast / 2 : 128 + contrast / 2,
+      );
+      const result = assessCapture({
+        image: soft,
+        faceCount: 1,
+        faceBox: GOOD_FACE_BOX,
+      });
+      expect(result.verdict).not.toBe("reject");
+      if (result.metrics.sharpness < SHARPNESS_BORDERLINE_BELOW) {
+        expect(result.verdict).toBe("borderline");
+        expect(result.reason).toBe("blurry");
+        expect(result.canUseAnyway).toBe(true);
+      }
+    }
+  });
+
+  it("puts the flattest frame there is on borderline, not on reject", () => {
+    const result = assessCapture({
+      image: blurryFrame,
+      faceCount: 1,
+      faceBox: GOOD_FACE_BOX,
+    });
+    expect(result.metrics.sharpness).toBe(0);
+    expect(result.verdict).toBe("borderline");
+    expect(result.reason).toBe("blurry");
+    expect(result.canUseAnyway).toBe(true);
+  });
+
+  it("keeps reject for the frames a credit cannot survive, and no others", () => {
+    for (const entry of bad) {
+      const result = assessCapture(entry.input);
+      expect(result.verdict).toBe("reject");
+      for (const failure of result.failures) {
+        expect(failure.reason === "blurry" ? failure.severity : "borderline").toBe(
+          "borderline",
+        );
+      }
     }
   });
 

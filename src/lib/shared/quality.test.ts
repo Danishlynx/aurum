@@ -11,7 +11,7 @@ import {
   FACE_COVERAGE_BORDERLINE_MIN,
   FACE_COVERAGE_MIN,
   SHARPNESS_BORDERLINE_BELOW,
-  SHARPNESS_REJECT_BELOW,
+  SHARPNESS_MEASURE_LONG_EDGE,
   assessCapture,
   autoCropBoxFor,
   clampBox,
@@ -19,7 +19,9 @@ import {
   exposureStats,
   faceCoverageCheck,
   laplacianVariance,
+  resampleToLongEdge,
   scaleBox,
+  sharpnessOf,
   type Box,
   type CaptureAssessmentInput,
   type GrayscaleImage,
@@ -81,6 +83,23 @@ function dimSharp(width = 100, height = 100): GrayscaleImage {
   return { data, width, height };
 }
 
+/**
+ * One picture that can be drawn at any size: sixteen vertical bands, always the
+ * same share of the width. Two of these at different resolutions are the same
+ * photograph at two scales, which is the thing the sharpness measurement has to
+ * answer the same way twice.
+ */
+function stripes(width: number, height: number): GrayscaleImage {
+  const period = width / 16;
+  const data = new Array<number>(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      data[y * width + x] = Math.floor(x / period) % 2 === 0 ? 90 : 170;
+    }
+  }
+  return { data, width, height };
+}
+
 const FRAME: { width: number; height: number } = { width: 100, height: 100 };
 
 /** A face box that meets the 60 percent height rule in a 100px tall frame. */
@@ -123,6 +142,98 @@ describe("laplacianVariance", () => {
   it("rejects a zero sized image", () => {
     expect(() => laplacianVariance({ data: [], width: 0, height: 0 })).toThrow(
       /positive/u,
+    );
+  });
+});
+
+describe("resampleToLongEdge", () => {
+  it("leaves an image that is already small enough alone", () => {
+    const image = sharpMidtones(50, 40);
+    expect(resampleToLongEdge(image, 96)).toBe(image);
+    expect(resampleToLongEdge(image, 50)).toBe(image);
+  });
+
+  it("puts the long edge on the target and keeps the shape", () => {
+    const result = resampleToLongEdge(sharpMidtones(400, 300), 96);
+    expect(result.width).toBe(96);
+    expect(result.height).toBe(72);
+    expect(result.data.length).toBe(96 * 72);
+  });
+
+  it("averages the pixels it covers rather than sampling one of them", () => {
+    const image: GrayscaleImage = { data: [0, 255, 255, 0], width: 2, height: 2 };
+    const result = resampleToLongEdge(image, 1);
+    expect(result.width).toBe(1);
+    expect(result.height).toBe(1);
+    expect(result.data[0]).toBeCloseTo(127.5, 5);
+  });
+
+  it("refuses a long edge of nothing", () => {
+    expect(() => resampleToLongEdge(sharpMidtones(), 0)).toThrow(/positive/u);
+  });
+});
+
+describe("sharpnessOf", () => {
+  /**
+   * The bug this measurement exists to stop, stated as a test.
+   *
+   * Laplacian variance is a number about a picture at a resolution: the same
+   * bands measured at two sizes disagree by a factor of several, which is how a
+   * live line measured off a small preview sample could say "Good. Tap to
+   * capture." while the gate measured the 1024px capture and said "A little
+   * blurry." (Samsung S26 Ultra, indoors at night, 2026-09-03).
+   */
+  it("is the same for the same picture at two resolutions, where the raw variance is not", () => {
+    const big = stripes(640, 800);
+    const small = stripes(160, 200);
+
+    const rawRatio = laplacianVariance(small) / laplacianVariance(big);
+    expect(rawRatio).toBeGreaterThan(2);
+
+    const ratio = sharpnessOf(small) / sharpnessOf(big);
+    expect(ratio).toBeGreaterThan(0.75);
+    expect(ratio).toBeLessThan(1.34);
+  });
+
+  it("measures the region it is given, not the frame around it", () => {
+    const width = 200;
+    const height = 200;
+    // A flat frame with a banded patch in the middle, at the face box.
+    const patch = stripes(120, 120);
+    const data = new Array<number>(width * height).fill(128);
+    for (let y = 0; y < 120; y += 1) {
+      for (let x = 0; x < 120; x += 1) {
+        data[(y + 40) * width + (x + 40)] = patch.data[y * 120 + x] ?? 128;
+      }
+    }
+    const image: GrayscaleImage = { data, width, height };
+    const region: Box = { x: 40, y: 40, width: 120, height: 120 };
+
+    expect(sharpnessOf(image, region)).toBeGreaterThan(sharpnessOf(image));
+    expect(sharpnessOf(image, region)).toBeCloseTo(sharpnessOf(patch), 5);
+  });
+
+  it("falls back to the whole frame when the region is off the picture", () => {
+    const image = stripes(200, 200);
+    expect(sharpnessOf(image, { x: 500, y: 500, width: 10, height: 10 })).toBe(
+      sharpnessOf(image),
+    );
+  });
+
+  it("is zero for a frame with nothing in it, at any size", () => {
+    expect(sharpnessOf(flat(128, 640, 640))).toBe(0);
+    expect(sharpnessOf(flat(128, 40, 40))).toBe(0);
+  });
+
+  it("measures at SHARPNESS_MEASURE_LONG_EDGE and nowhere else", () => {
+    // The same answer whether the caller crops first or hands over the region.
+    const image = stripes(600, 600);
+    const region: Box = { x: 100, y: 100, width: 400, height: 400 };
+    expect(sharpnessOf(image, region)).toBeCloseTo(
+      laplacianVariance(
+        resampleToLongEdge(cropToBox(image, region), SHARPNESS_MEASURE_LONG_EDGE),
+      ),
+      10,
     );
   });
 });
@@ -546,15 +657,48 @@ describe("assessCapture", () => {
     ).toBe(true);
   });
 
-  it("rejects a flat, correctly exposed frame as blurry", () => {
+  /**
+   * The policy, and the reason the sharpness reject threshold does not exist:
+   * a frame with no local contrast at all, which is what motion blur converges
+   * to, is still offered. The engine's own input gate is free and authoritative,
+   * so the worst case of being wrong here is a couple of seconds, and the worst
+   * case of the old behaviour was a person on a real phone tapping the shutter
+   * over and over with no way through (2026-09-03).
+   */
+  it("flags a flat, correctly exposed frame as borderline rather than refusing it", () => {
     const result = assessCapture({
       image: flat(128, 100, 100),
       faceCount: 1,
       faceBox: GOOD_FACE_BOX,
     });
-    expect(result.verdict).toBe("reject");
+    expect(result.verdict).toBe("borderline");
     expect(result.reason).toBe("blurry");
-    expect(result.metrics.sharpness).toBeLessThan(SHARPNESS_REJECT_BELOW);
+    expect(result.canUseAnyway).toBe(true);
+    expect(result.metrics.sharpness).toBe(0);
+  });
+
+  it("never refuses a frame for sharpness, at any value", () => {
+    /*
+     * The whole range, from a dead flat frame through the borderline line and
+     * out the other side. Below the line the verdict is borderline and the way
+     * forward is offered; at or above it, sharpness says nothing at all.
+     */
+    for (const step of [0, 1, 2, 4, 8, 16, 32, 64, 128]) {
+      const image = checkerboard(128 - step / 2, 128 + step / 2, 100, 100);
+      const result = assessCapture({
+        image,
+        faceCount: 1,
+        faceBox: GOOD_FACE_BOX,
+      });
+      expect(result.verdict).not.toBe("reject");
+      const flagged = result.failures.some(
+        (failure) => failure.reason === "blurry",
+      );
+      expect(flagged).toBe(result.metrics.sharpness < SHARPNESS_BORDERLINE_BELOW);
+      if (flagged) {
+        expect(result.canUseAnyway).toBe(true);
+      }
+    }
   });
 
   it("rejects a face that is far too small", () => {
@@ -606,12 +750,22 @@ describe("assessCapture", () => {
       },
       // Borderline light: the same pattern, lit like a room at night.
       { image: dimSharp(), faceCount: 1, faceBox: GOOD_FACE_BOX },
-      // Rejects, one per reason that can produce one.
+      /*
+       * Borderline softness, across the range. A flat frame is the limit motion
+       * blur converges to and a low contrast checkerboard is just under the
+       * line; neither is a refusal any more, so both have to carry the offer.
+       */
+      { image: flat(128, 100, 100), faceCount: 1, faceBox: GOOD_FACE_BOX },
+      {
+        image: checkerboard(127, 128, 100, 100),
+        faceCount: 1,
+        faceBox: GOOD_FACE_BOX,
+      },
+      // Rejects, one per reason that can still produce one.
       { image: sharpMidtones(), faceCount: 0, faceBox: null },
       { image: sharpMidtones(), faceCount: 2, faceBox: GOOD_FACE_BOX },
       { image: flat(0, 100, 100), faceCount: 1, faceBox: GOOD_FACE_BOX },
       { image: flat(255, 100, 100), faceCount: 1, faceBox: GOOD_FACE_BOX },
-      { image: flat(128, 100, 100), faceCount: 1, faceBox: GOOD_FACE_BOX },
       {
         image: sharpMidtones(),
         faceCount: 1,
@@ -628,9 +782,20 @@ describe("assessCapture", () => {
       if (result.reason === "no_face" || result.reason === "multiple_faces") {
         expect(result.verdict).toBe("reject");
       }
+      /*
+       * The policy, asserted over the whole matrix rather than over one frame:
+       * softness is flagged, never refused. A reject is only ever reached
+       * through the face checks, the exposure extremes, or a face far too small
+       * to read, which are the three things a credit cannot survive.
+       */
+      for (const failure of result.failures) {
+        if (failure.reason === "blurry") {
+          expect(failure.severity).toBe("borderline");
+        }
+      }
     }
     // The matrix really did produce all three, so the equivalence was tested
-    // rather than trivially satisfied by nine accepts.
+    // rather than trivially satisfied by ten accepts.
     expect([...seen].sort()).toEqual(["accept", "borderline", "reject"]);
   });
 

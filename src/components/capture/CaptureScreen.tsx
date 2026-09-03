@@ -25,7 +25,12 @@ import {
   SKIN_SAMPLE_LONG_EDGE,
 } from "@/lib/client/face";
 import type { FaceEstimate } from "@/lib/client/face";
-import { guidanceKey, meanLuminanceOf, motionBetween } from "@/lib/client/guidance";
+import {
+  GUIDANCE_SAMPLE_LONG_EDGE,
+  guidanceKey,
+  meanLuminanceOf,
+  motionBetween,
+} from "@/lib/client/guidance";
 import type { GuidanceKey } from "@/lib/client/guidance";
 import {
   CAPTURE_JPEG_QUALITY,
@@ -45,7 +50,12 @@ import {
 } from "@/lib/client/image";
 import { captureRejectionCopy, copy } from "@/lib/shared/copy";
 import { backTargetFor } from "@/lib/shared/navigation";
-import { assessCapture, autoCropBoxFor, scaleBox } from "@/lib/shared/quality";
+import {
+  assessCapture,
+  autoCropBoxFor,
+  scaleBox,
+  sharpnessOf,
+} from "@/lib/shared/quality";
 import type { CaptureAssessment, CaptureRejectionReason } from "@/lib/shared/quality";
 
 /**
@@ -347,10 +357,18 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     if (video === null || video.readyState < 2 || video.videoWidth === 0) {
       return;
     }
+    /*
+     * GUIDANCE_SAMPLE_LONG_EDGE, not the smaller skin sample the heuristic is
+     * happy with: the sharpness the line promises has to be measured on a face
+     * big enough to resample down to SHARPNESS_MEASURE_LONG_EDGE, the same way
+     * the gate will resample the 1024px capture. Same function, same size, same
+     * answer. The skin heuristic works off area fractions, so a larger sample
+     * costs it nothing but pixels.
+     */
     const canvas = drawToCanvas(
       video,
       { width: video.videoWidth, height: video.videoHeight },
-      SKIN_SAMPLE_LONG_EDGE,
+      GUIDANCE_SAMPLE_LONG_EDGE,
     );
     const image = readImageData(canvas);
     const gray = toGrayscale(image);
@@ -370,6 +388,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
             ? null
             : (estimate.faceBox.y + estimate.faceBox.height / 2) / image.height,
         motion: motionBetween(previousSampleRef.current, gray.data),
+        sharpness: sharpnessOf(gray, estimate.faceBox),
       }),
     );
     previousSampleRef.current = gray.data;
@@ -776,14 +795,26 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
                 <p role="status" className="font-body text-body text-text">
                   {captureRejectionCopy(phase.reason)}
                 </p>
-                <Button variant="primary" onClick={handleRetake}>
-                  {copy.capture.retakeAction}
-                </Button>
-                {phase.canUseAnyway ? (
-                  <Button variant="secondary" onClick={handleUseAnyway}>
-                    {copy.capture.useAnywayAction}
+                {/*
+                  The two answers to a refused frame, as one stack rather than
+                  two things the column has spaced apart. Retake is the primary
+                  and stays first, and "Use it anyway" sits directly under it at
+                  the same full width and the same 52px, because on a phone a
+                  person who has just been told their frame is soft is looking at
+                  the bottom of the screen for the way forward and there is no
+                  room down there to go hunting. docs/01-user-flow.md section D:
+                  it is shown for borderline frames and for nothing else.
+                */}
+                <div className="flex flex-col gap-3">
+                  <Button variant="primary" onClick={handleRetake}>
+                    {copy.capture.retakeAction}
                   </Button>
-                ) : null}
+                  {phase.canUseAnyway ? (
+                    <Button variant="secondary" onClick={handleUseAnyway}>
+                      {copy.capture.useAnywayAction}
+                    </Button>
+                  ) : null}
+                </div>
               </>
             ) : null}
 
