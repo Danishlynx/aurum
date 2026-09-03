@@ -60,6 +60,34 @@ function token(page: Page, name: string): Promise<string> {
   }, name);
 }
 
+/**
+ * What the feed is actually doing, read off the element rather than off the
+ * screen. A camera that has stopped keeps its element, keeps its srcObject, and
+ * simply stops producing frames, so nothing about a dead feed is visible to a
+ * locator: the track's readyState is the only thing that tells the two apart.
+ */
+function feedState(page: Page): Promise<{
+  readonly paused: boolean;
+  readonly liveTracks: number;
+} | null> {
+  return page.evaluate(() => {
+    const video = document.querySelector("main video");
+    if (!(video instanceof HTMLVideoElement)) {
+      return null;
+    }
+    const stream = video.srcObject;
+    return {
+      paused: video.paused,
+      liveTracks:
+        stream instanceof MediaStream
+          ? stream
+              .getVideoTracks()
+              .filter((track) => track.readyState === "live").length
+          : 0,
+    };
+  });
+}
+
 /** Every border colour actually painted on the screen. */
 function paintedBorders(page: Page): Promise<string[]> {
   return page.evaluate(() =>
@@ -243,5 +271,116 @@ test.describe("the camera itself", () => {
     for (const color of await paintedBorders(page)) {
       expect(allowed.has(color)).toBe(true);
     }
+  });
+});
+
+/**
+ * The retake loop, docs/01-user-flow.md section D: "Retake" is the primary
+ * answer to a refused frame, so the one thing it must never do is hand back a
+ * dead camera. That is the failure this file exists to catch, because it is
+ * invisible: the element is there, the srcObject is there, and the picture is a
+ * black rectangle that a locator is perfectly happy with.
+ *
+ * Both ways into it are covered. Refused by the gate, on this screen, which is
+ * the loop a person walks several times. And refused by the engine, which
+ * happens a screen later and comes back through a navigation.
+ */
+test.describe("the retake loop", () => {
+  /** Nothing may reach the server: this is the one request a frame could start. */
+  async function stubCaptureCreate(page: Page): Promise<void> {
+    await page.route("**/api/captures", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "e2e" }),
+      }),
+    );
+  }
+
+  test("hands back a running camera, and does it twice", async ({ page }) => {
+    await stubCaptureCreate(page);
+    await page.goto("/capture");
+
+    const shutter = page.getByRole("button", {
+      name: copy.capture.shutterLabel,
+    });
+    await expect(shutter).toBeVisible();
+    expect(await feedState(page)).toEqual({ paused: false, liveTracks: 1 });
+
+    // The fake device is not a face, so the gate refuses this frame.
+    await shutter.click();
+    const retake = page.getByRole("button", { name: copy.capture.retakeAction });
+    await expect(retake).toBeVisible();
+    await expect(page.locator("main img")).toHaveCount(1);
+
+    await retake.click();
+
+    // The frozen frame is gone, the controls are back, and there is a live
+    // camera behind them rather than the last frame it produced.
+    await expect(page.locator("main img")).toHaveCount(0);
+    await expect(shutter).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: copy.capture.retakeAction }),
+    ).toHaveCount(0);
+    expect(await feedState(page)).toEqual({ paused: false, liveTracks: 1 });
+
+    // And the loop closes: the second tap behaves exactly like the first.
+    await shutter.click();
+    await expect(
+      page.getByRole("button", { name: copy.capture.retakeAction }),
+    ).toBeVisible();
+    await expect(page.locator("main img")).toHaveCount(1);
+  });
+
+  /**
+   * The other refusal: the gate passed the frame and the engine did not. The
+   * reveal is a different screen, so the way back is a navigation, and the
+   * camera has to be asked for again from nothing.
+   */
+  test("restarts the camera when the reveal sends the person back", async ({
+    page,
+  }) => {
+    await stubCaptureCreate(page);
+    await page.route("**/api/jobs**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          jobs: [
+            {
+              id: "job-skin",
+              kind: "skin",
+              status: "failed",
+              error: copy.capture.rejection.no_face,
+            },
+            {
+              id: "job-tone",
+              kind: "attributes",
+              status: "failed",
+              error: copy.capture.rejection.no_face,
+            },
+          ],
+          complete: true,
+        }),
+      }),
+    );
+
+    await page.goto("/analyzing?capture=e2e-retake");
+    await expect(page.getByText(copy.capture.rejection.no_face)).toBeVisible();
+
+    await page
+      .getByRole("link", { name: copy.report.retakePhotoAction })
+      .click();
+
+    /*
+     * waitForURL rather than an expect on the URL: this is a navigation, and on
+     * a development server it is the navigation that compiles the camera route,
+     * which is slower than an assertion timeout and not slow in the product.
+     */
+    await page.waitForURL(/\/capture$/u);
+    await expect(
+      page.getByRole("button", { name: copy.capture.shutterLabel }),
+    ).toBeVisible();
+    expect(await feedState(page)).toEqual({ paused: false, liveTracks: 1 });
   });
 });

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { copy } from "@/lib/shared/copy";
-import type { LookGap, LookItem, LookView } from "@/lib/shared/looks-view";
+import type {
+  LookGap,
+  LookItem,
+  LooksView,
+  LookView,
+} from "@/lib/shared/looks-view";
 import type { ReportListing } from "@/lib/shared/report-view";
 
 import {
@@ -14,6 +19,7 @@ import {
   heroPresentation,
   itemKey,
   listingItems,
+  showsNothingFitsLine,
   typeLabel,
 } from "./looks-content";
 
@@ -72,6 +78,50 @@ describe("garmentItems and listingItems", () => {
     });
     expect(garmentItems(fromListings)).toEqual([]);
     expect(listingItems(fromListings)).toHaveLength(1);
+  });
+});
+
+describe("showsNothingFitsLine", () => {
+  function view(overrides: Partial<LooksView> = {}): LooksView {
+    return {
+      occasion: "wedding_guest",
+      wardrobeEmpty: false,
+      looks: [look()],
+      ...overrides,
+    };
+  }
+
+  const listingsOnly = look({
+    items: [{ source: "listing", listing: listing(), type: "shirt" }],
+    heroGarmentId: null,
+  });
+
+  it("says nothing when the looks are made of the person's own clothes", () => {
+    expect(showsNothingFitsLine(view())).toBe(false);
+  });
+
+  it("speaks up when a wardrobe is there and none of it is being worn", () => {
+    expect(showsNothingFitsLine(view({ looks: [listingsOnly] }))).toBe(true);
+  });
+
+  it("stays quiet while any look still holds a garment", () => {
+    expect(
+      showsNothingFitsLine(view({ looks: [listingsOnly, look()] })),
+    ).toBe(false);
+  });
+
+  it("leaves the no wardrobe state to its own line and its own control", () => {
+    expect(
+      showsNothingFitsLine(
+        view({ wardrobeEmpty: true, looks: [listingsOnly] }),
+      ),
+    ).toBe(false);
+  });
+
+  it("leaves an occasion with no look at all to the same line, once", () => {
+    // The screen draws copy.looks.noLooksForOccasion for an empty list already,
+    // so this returns false and the sentence is never on the screen twice.
+    expect(showsNothingFitsLine(view({ looks: [] }))).toBe(false);
   });
 });
 

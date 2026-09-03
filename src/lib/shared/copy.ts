@@ -535,6 +535,14 @@ export const copy = {
       "Add what you own. Photos of a shirt, trousers, a jacket, shoes. Flat on a bed or hanging both work.",
     addAction: "Add garments",
     skipLine: "Or skip this. Looks can be built from new pieces near you.",
+    /**
+     * In house. docs/01-user-flow.md "Screen map" has "Wardrobe is reached from
+     * Looks" and section J ends at the grid, so the flow doc gives this screen
+     * no way onward and no words for one. A wardrobe with clothes in it exists
+     * to be worn, so the way onward is the thing the clothes are for: a plain
+     * verb that says exactly what the next screen does with them.
+     */
+    suggestAction: "Suggest what to wear",
     correctChipsHint: "Tap a chip to correct it.",
     classificationFailed: "Could not read this one. Tap to fill in details.",
     /**
@@ -592,6 +600,15 @@ export const copy = {
     /** No wardrobe state, docs/01 section K states. */
     noWardrobe:
       "Built from pieces near you. Add your own garments to mix them in.",
+    /**
+     * In house. The line above tells a person to add their own garments and the
+     * flow doc leaves them to find /wardrobe on their own, which on the live app
+     * meant a quiet link at the bottom of a long screen. This is that
+     * instruction as the control it always was. "Your clothes" and not "your
+     * garments", because a person calls them clothes and the sentence above
+     * already carries the word the rest of the app uses.
+     */
+    addYourClothesAction: "Add your clothes",
     /**
      * In house. The doc's gap line ends "and are near you", which is only true
      * when a nearby store was found. docs/01 section K states: with location not
@@ -893,6 +910,8 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "wardrobe.correctionFailed",
   "wardrobe.readOnly",
   "wardrobe.full",
+  "wardrobe.suggestAction",
+  "looks.addYourClothesAction",
   "looks.shopTheGapOnlineTemplate",
   "looks.occasionsLabel",
   "looks.applyingTemplate",

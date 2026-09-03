@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation";
+import { Suspense } from "react";
 
 import { ScreenTitle } from "@/components/app-shell/ScreenTitle";
 import { LooksScreen } from "@/components/looks/LooksScreen";
+import { LooksBodySkeleton } from "@/components/looks/LooksSkeleton";
 import { demoProfileIsReadOnly } from "@/lib/server/judge/demo";
 import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
 import { hasAestheticProfile } from "@/lib/server/profile/view";
@@ -74,13 +76,23 @@ export default async function LooksPage() {
     <div className="flex flex-col gap-8">
       <ScreenTitle>{copy.nav.looks}</ScreenTitle>
 
-      {/* Read only covers the development switch and a judge session with no
-          analyses left alike (src/lib/server/judge/demo.ts). */}
-      <LooksScreen
-        readOnly={demoProfileIsReadOnly(session)}
-        accessoryOptions={accessoryOptions}
-        hasProfile={hasProfile}
-      />
+      {/*
+        Read only covers the development switch and a judge session with no
+        analyses left alike (src/lib/server/judge/demo.ts).
+
+        The Suspense boundary is what lets the screen read the occasion out of
+        the query string: /wardrobe links in here naming an occasion, and a
+        client component that reads search params needs a boundary above it. The
+        fallback is the same body skeleton the screen shows while it fetches an
+        occasion, so nothing new appears on the way in.
+      */}
+      <Suspense fallback={<LooksBodySkeleton />}>
+        <LooksScreen
+          readOnly={demoProfileIsReadOnly(session)}
+          accessoryOptions={accessoryOptions}
+          hasProfile={hasProfile}
+        />
+      </Suspense>
     </div>
   );
 }

@@ -21,6 +21,7 @@ import {
   laplacianVariance,
   scaleBox,
   type Box,
+  type CaptureAssessmentInput,
   type GrayscaleImage,
 } from "./quality";
 
@@ -59,6 +60,22 @@ function sharpMidtones(width = 100, height = 100): GrayscaleImage {
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       data[y * width + x] = levels[(x * 7 + y * 13) % 3] ?? 120;
+    }
+  }
+  return { data, width, height };
+}
+
+/**
+ * The same pattern, at a mean between MEAN_LUMINANCE_REJECT_BELOW and
+ * MEAN_LUMINANCE_BORDERLINE_BELOW: a frame the gate is uneasy about and still
+ * willing to send, which is the definition of borderline.
+ */
+function dimSharp(width = 100, height = 100): GrayscaleImage {
+  const levels = [30, 45, 60];
+  const data = new Array<number>(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      data[y * width + x] = levels[(x * 7 + y * 13) % 3] ?? 45;
     }
   }
   return { data, width, height };
@@ -563,6 +580,58 @@ describe("assessCapture", () => {
     expect(result.verdict).toBe("borderline");
     expect(result.reason).toBe("too_far");
     expect(result.canUseAnyway).toBe(true);
+  });
+
+  /**
+   * docs/01-user-flow.md section D: "Use it anyway" is "only shown for
+   * borderline frames, never for failed face detection". The screen reads
+   * canUseAnyway and nothing else, so the promise is only kept if the two are
+   * the same fact. This asserts the equivalence over every verdict the gate can
+   * reach rather than over the one borderline case above: a new check that
+   * forgot to set the flag would leave a person with a frame the gate is willing
+   * to send and no way to send it.
+   */
+  it("offers use it anyway on every borderline frame and on no other", () => {
+    const underRule = Math.round(
+      FRAME.height * ((FACE_COVERAGE_MIN + FACE_COVERAGE_BORDERLINE_MIN) / 2),
+    );
+    const cases: CaptureAssessmentInput[] = [
+      // Accept.
+      { image: sharpMidtones(), faceCount: 1, faceBox: GOOD_FACE_BOX },
+      // Borderline framing.
+      {
+        image: sharpMidtones(),
+        faceCount: 1,
+        faceBox: { x: 20, y: 10, width: 60, height: underRule },
+      },
+      // Borderline light: the same pattern, lit like a room at night.
+      { image: dimSharp(), faceCount: 1, faceBox: GOOD_FACE_BOX },
+      // Rejects, one per reason that can produce one.
+      { image: sharpMidtones(), faceCount: 0, faceBox: null },
+      { image: sharpMidtones(), faceCount: 2, faceBox: GOOD_FACE_BOX },
+      { image: flat(0, 100, 100), faceCount: 1, faceBox: GOOD_FACE_BOX },
+      { image: flat(255, 100, 100), faceCount: 1, faceBox: GOOD_FACE_BOX },
+      { image: flat(128, 100, 100), faceCount: 1, faceBox: GOOD_FACE_BOX },
+      {
+        image: sharpMidtones(),
+        faceCount: 1,
+        faceBox: { x: 30, y: 30, width: 20, height: 20 },
+      },
+    ];
+
+    const seen = new Set<string>();
+    for (const input of cases) {
+      const result = assessCapture(input);
+      seen.add(result.verdict);
+      expect(result.canUseAnyway).toBe(result.verdict === "borderline");
+      // And a frame with no face is never borderline, whatever else is wrong.
+      if (result.reason === "no_face" || result.reason === "multiple_faces") {
+        expect(result.verdict).toBe("reject");
+      }
+    }
+    // The matrix really did produce all three, so the equivalence was tested
+    // rather than trivially satisfied by nine accepts.
+    expect([...seen].sort()).toEqual(["accept", "borderline", "reject"]);
   });
 
   it("measures light and sharpness inside the face box, not the background", () => {

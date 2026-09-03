@@ -27,6 +27,7 @@ import {
   hasAnyChip,
   PATTERN_OPTIONS,
   showsCorrectHint,
+  showsSuggestAction,
   showsTypeFilter,
   TYPE_OPTIONS,
   typeFilterLabel,
@@ -204,6 +205,39 @@ describe("showsCorrectHint", () => {
       showsCorrectHint([garment({ classificationStatus: "pending" })]),
     ).toBe(false);
     expect(showsCorrectHint([garment()])).toBe(true);
+  });
+});
+
+describe("showsSuggestAction", () => {
+  it("waits for a garment the rules engine could actually place", () => {
+    expect(showsSuggestAction([])).toBe(false);
+    // Photographed, uploaded, not read yet: there is no outfit in this wardrobe.
+    expect(
+      showsSuggestAction([
+        garment({ type: null, classificationStatus: "pending" }),
+      ]),
+    ).toBe(false);
+    // Read and refused, and the person has not filled the type in either.
+    expect(
+      showsSuggestAction([
+        garment({ type: null, classificationStatus: "failed" }),
+      ]),
+    ).toBe(false);
+  });
+
+  it("appears as soon as one garment has a type", () => {
+    expect(showsSuggestAction([garment()])).toBe(true);
+    expect(
+      showsSuggestAction([
+        garment({ id: "a", type: null, classificationStatus: "failed" }),
+        garment({ id: "b", type: "trousers" }),
+      ]),
+    ).toBe(true);
+  });
+
+  it("names the control from copy.ts, in the lexicon", () => {
+    expect(copy.wardrobe.suggestAction).toBe("Suggest what to wear");
+    expect(isLexiconClean(copy.wardrobe.suggestAction)).toBe(true);
   });
 });
 
