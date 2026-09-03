@@ -41,7 +41,7 @@ Principles
 4. Server fans out the independent analyses as jobs in parallel: skin analysis, Fitzpatrick, face attributes (skin tone, eye and hair color), face shape, hair type. Each job records its provider task id. Credits are reserved in the ledger before the calls and reconciled after.
 5. Client polls GET /api/jobs?capture={id} every 1.5 seconds. Each poll checks pending provider tasks, stores completed results, and returns the set. The reveal screen advances as results arrive.
 6. When the core set is complete (skin plus at least one of Fitzpatrick or attributes), the server builds the aesthetic profile: deterministic fields directly from results, palette from the pure mapping, and the synthesis text from one Claude call with structured output. The profile row is written and the client routes to the report.
-7. If retention is default, the original object in the captures bucket is deleted once every job for that capture is terminal. Masks and renders are kept.
+7. Nothing is deleted at the end of processing. If retention is default, the original object in the captures bucket is deleted when the session ends, by the scheduled purge, because every try on renders on it (founder's decision of 2026-09-03, docs/06-safety-privacy.md, "Retention"). Masks and renders are kept.
 
 ## Data model
 
@@ -170,7 +170,7 @@ All tables have id (uuid), created_at, updated_at. All tables with user_id have 
 
 Storage buckets, all private, all accessed through short lived signed URLs (60 seconds for upload, 10 minutes for read):
 
-- captures: original selfies (deleted after processing unless keep_originals)
+- captures: original selfies (deleted when the session ends unless keep_originals)
 - masks: per concern mask images
 - renders: try on outputs
 - garments: garment photos

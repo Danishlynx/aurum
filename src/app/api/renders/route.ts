@@ -127,8 +127,9 @@ export async function POST(request: NextRequest): Promise<Response> {
       case "no_profile":
         throw notFound(messages.profileNotReady);
       case "no_capture_image":
-        // Retention deleted the original, which is the default. There is no
-        // face to render on, so the person takes a new photo.
+        // The session ended and the scheduled purge took the original with it
+        // (docs/06-safety-privacy.md, "Retention"). There is no face to render
+        // on, so the person takes a new photo.
         throw new HttpError({
           status: 409,
           message: messages.captureMissingOriginal,

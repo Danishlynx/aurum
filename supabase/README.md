@@ -118,7 +118,7 @@ Reads and writes go through short lived signed URLs minted on the server: 60 sec
 
 Two functions, both `security definer`, both callable only by the service role.
 
-- `public.purge_stale_originals()` clears `storage_path` and stamps `deleted_at` on original captures older than 24 hours whose owner has `keep_originals` false and whose analyses are no longer in flight.
+- `public.purge_stale_originals()` clears `storage_path` and stamps `deleted_at` on original captures whose session has ended: a judge capture once its judge session expired, a signed in person's capture one session window (24 hours) after capture when `keep_originals` is false. Captures with analyses still in flight are left alone. Redefined by `0014_session_scoped_originals.sql`, which is also where the retention decision of 2026-09-03 is written down: the original is the source image of every try on, so nothing deletes it at the end of processing any more.
 - `public.purge_expired_judge_data()` deletes every row owned by a judge session that expired more than 7 days ago, including the session row.
 
 Both return the storage object paths they orphaned, as `(capture_id, object_path)` and `(bucket_id, object_path)`. Postgres cannot reach object storage, so the caller must pass each returned path to `storage.from(bucket).remove([...])` in the same run. Ignoring the return value leaves files behind, which is a retention bug.

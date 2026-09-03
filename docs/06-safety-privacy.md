@@ -17,11 +17,13 @@ Purpose limitation
 
 Retention
 
-- Default: the original selfie object is deleted from storage as soon as every analysis for that capture is terminal. Derived data (scores, masks, renders, the reading) is kept because that is the product.
-- Opt in: "Keep my original photo so I can compare later" keeps the original. The toggle is on /welcome and mirrored on /profile.
+- Default: the original selfie object is kept for the lifetime of the session that made it and is deleted when that session ends. Derived data (scores, masks, renders, the reading) is kept because that is the product.
+- Opt in: "Keep my original photo so I can compare later" keeps the original past the session. The toggle is on /welcome and mirrored on /profile.
 - Garment photos are kept while the garment exists; deleting a garment deletes its object.
-- Judge session data is purged 7 days after the session expires.
-- A daily scheduled job enforces all of the above in case an in flow deletion failed.
+- Judge session data is purged 7 days after the session expires. A judge's original selfie goes earlier than that, when the session expires.
+- The scheduled jobs are the only thing that deletes an original: purge_stale_originals daily, and purge_expired_judge_data for everything a judge session owns.
+
+Decision of 2026-09-03, by the founder, on when the default deletion happens. Until this date the original was deleted in flow, as soon as every analysis for the capture was terminal. Every try on in the app (makeup, hairstyle, hair colour, cloth) sends that original as its source image, so the in flow deletion left a real person with a finished reading and no try on: /makeup and /hair could only say "Preview unavailable for this shade." The default is now deletion at the end of the session rather than at the end of processing, which keeps the photo for exactly as long as the person is using the thing it is for and no longer. Nothing else about retention changed: the opt in toggle keeps its meaning, derived data is unaffected, and judge data still goes within 7 days of expiry. Implemented in supabase/migrations/0014_session_scoped_originals.sql, with the in flow deletion removed from src/lib/server/jobs/index.ts and the consent line on /welcome amended to match.
 
 Access
 

@@ -177,8 +177,18 @@ export function isJudgeCodeConfigured(): boolean {
   return judgeCodeHash() !== null;
 }
 
-/** Renders per judge session, docs/07-payments-and-judge-mode.md, "Caps". */
-export const JUDGE_RENDERS_ALLOWED = 6;
+/**
+ * Renders per judge session, docs/07-payments-and-judge-mode.md, "Caps".
+ *
+ * Raised from 6 to 12 on 2026-09-03. Six was set before the try on screens were
+ * finished, and one demo session now walks through more than six pictures on its
+ * own: four makeup rows are one render each, then a hairstyle, then a hair
+ * colour, then a garment. A judge hitting the cap half way through /hair sees
+ * the same empty hero as a judge with no photo, which is the wrong lesson to
+ * teach about the app. The credit cap (JUDGE_CREDITS_CAP) is still the hard
+ * ceiling on spend; this number only stops a runaway loop.
+ */
+export const JUDGE_RENDERS_ALLOWED = 12;
 
 /**
  * SerpApi searches one judge session may spend, over its whole life.
