@@ -12,6 +12,7 @@ import {
   notFound,
   ok,
 } from "@/lib/server/http/responses";
+import { resolveGroundingLocale } from "@/lib/server/locale";
 import {
   buildMakeupView,
   saveMakeupLook,
@@ -99,6 +100,10 @@ export async function GET(request: NextRequest): Promise<Response> {
     const view = await buildMakeupView(session, {
       ground: parsed.data.ground,
       selection,
+      // The market comes from this request, not from the server's own country
+      // (src/lib/server/locale.ts), so tapping a shade in Portland returns a
+      // shop in Portland.
+      locale: resolveGroundingLocale(request.headers),
     });
     if (view === null) {
       throw notFound(messages.profileNotReady);

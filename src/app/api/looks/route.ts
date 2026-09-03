@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 
 import { handleRoute, requireSession } from "@/lib/server/http/handler";
 import { ok } from "@/lib/server/http/responses";
+import { resolveGroundingLocale } from "@/lib/server/locale";
 import { buildLooksView } from "@/lib/server/looks";
 import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
 import type { AppSession } from "@/lib/server/session";
@@ -58,6 +59,14 @@ export async function GET(request: NextRequest): Promise<Response> {
     });
     const occasion = parsed.success ? parsed.data.occasion : DEFAULT_OCCASION;
 
-    return ok<LooksView>(await buildLooksView(session, occasion));
+    // The pieces a look is missing are shopped for in the caller's own country,
+    // read from this request (src/lib/server/locale.ts).
+    return ok<LooksView>(
+      await buildLooksView(
+        session,
+        occasion,
+        resolveGroundingLocale(request.headers),
+      ),
+    );
   });
 }

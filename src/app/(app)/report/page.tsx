@@ -1,3 +1,4 @@
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { FirstRunInvitation } from "@/components/app-shell/FirstRunInvitation";
@@ -10,6 +11,7 @@ import { hasHeroContent } from "@/components/report/report-content";
 import { ReportHero } from "@/components/report/ReportHero";
 import { RoutineGroup } from "@/components/report/RoutineGroup";
 import { ButtonLink } from "@/components/ui/Button";
+import { resolveGroundingLocale } from "@/lib/server/locale";
 import {
   buildReportView,
   isDemoFixtureMode,
@@ -59,7 +61,17 @@ export default async function ReportPage() {
     redirect("/welcome");
   }
 
-  const view = await buildReportView(session);
+  /*
+   * Which country's shops the routine is grounded in, read from this request
+   * (src/lib/server/locale.ts). A judge opening the report in Portland gets
+   * American listings; the founder in India gets Indian ones; a machine with no
+   * country header gets the configured default. The header is Vercel's, so this
+   * is the only place on the screen that needs to know about it.
+   */
+  const view = await buildReportView(
+    session,
+    resolveGroundingLocale(await headers()),
+  );
   if (view === null) {
     /*
      * A session with no profile yet has nothing to report on.

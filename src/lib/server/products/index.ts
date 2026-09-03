@@ -500,6 +500,9 @@ export async function groundProductQueries(
     shoppingSearches + broadenedSearches + (localLookup ? 1 : 0);
   reasons.flush(searches);
   logGroundingRun({
+    // The market this run searched, once, so a wrong country is visible in the
+    // logs. A country code and nothing else: never an IP, never a city.
+    gl: options.gl,
     steps: steps.length,
     fromCache: distinct.length - misses.length,
     fromSearch: shoppingSearches,
