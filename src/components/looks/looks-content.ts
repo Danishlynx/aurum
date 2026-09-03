@@ -17,6 +17,7 @@ import {
   shopTheGapLine,
   type LookGap,
   type LookItem,
+  type LooksView,
   type LookView,
 } from "@/lib/shared/looks-view";
 import { garmentTypeLabel } from "@/lib/shared/wardrobe-view";
@@ -55,6 +56,35 @@ export function listingItems(look: LookView): ListingLookItem[] {
   return look.items.filter(
     (item): item is ListingLookItem => item.source === "listing",
   );
+}
+
+/**
+ * True when the person owns clothes and this occasion is wearing none of them.
+ *
+ * The rules engine composes from the wardrobe when it can and falls back to live
+ * listings when it cannot (src/lib/server/looks/compose.ts, composeFromShop),
+ * and that fallback runs for two different reasons: a wardrobe with nothing in
+ * it, and a wardrobe that has nothing this occasion can use. The first has the
+ * flow doc's own line and the "Add your clothes" control beside it. The second
+ * had nothing at all: a person who had photographed six garments tapped "Formal
+ * evening" and got a stack of product cards with no word about where their own
+ * clothes had gone, which reads as the app ignoring the wardrobe it just asked
+ * them to build.
+ *
+ * The view does not carry a "composed from listings" flag and does not need one:
+ * a look built from the wardrobe has at least one garment item in it, so a
+ * screen of looks with no garment anywhere is that state, read off the same data
+ * the flat lay is drawn from.
+ *
+ * The line is copy.looks.noLooksForOccasion, which already says exactly this and
+ * until now only appeared when there was no look at all. Both are the same fact
+ * told to the person: this occasion is not dressed by what you own.
+ */
+export function showsNothingFitsLine(view: LooksView): boolean {
+  if (view.wardrobeEmpty || view.looks.length === 0) {
+    return false;
+  }
+  return view.looks.every((look) => garmentItems(look).length === 0);
 }
 
 /**

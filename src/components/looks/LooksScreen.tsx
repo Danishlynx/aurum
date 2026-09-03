@@ -23,6 +23,7 @@ import { LookCard } from "./LookCard";
 import {
   applyingLine,
   heroPresentation,
+  showsNothingFitsLine,
   type LookHero,
 } from "./looks-content";
 import {
@@ -354,6 +355,14 @@ export function LooksScreen({
    * not the thing to do next; getting their clothes in is.
    */
   const invitesWardrobe = view !== null && view.wardrobeEmpty;
+  /*
+   * The other reason a look can be made of listings: a wardrobe that has
+   * nothing this occasion can use. It is not the "No wardrobe" state and does
+   * not get that state's invitation, because these clothes are already in;
+   * what it gets is the line that says so and names the two ways out
+   * (see showsNothingFitsLine).
+   */
+  const nothingFits = view !== null && showsNothingFitsLine(view);
 
   return (
     <div className="flex flex-col gap-8">
@@ -400,7 +409,12 @@ export function LooksScreen({
         </Column>
       ) : null}
 
-      {!loading && !unavailable && looks.length === 0 ? (
+      {/*
+        The same sentence for the same fact, whether the rules engine answered
+        with nothing at all or fell back to listings. The two conditions are
+        mutually exclusive by construction, so it is never on the screen twice.
+      */}
+      {!loading && !unavailable && (looks.length === 0 || nothingFits) ? (
         <Column>
           <p className="max-w-[64ch] font-body text-body text-text">
             {copy.looks.noLooksForOccasion}
