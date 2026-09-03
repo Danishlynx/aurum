@@ -29,7 +29,11 @@ import {
   topListing,
   type NormalizedListing,
 } from "./normalize";
-import { rankListings, sanitizeProductQuery } from "./ranking";
+import {
+  broadenProductQuery,
+  rankListings,
+  sanitizeProductQuery,
+} from "./ranking";
 import {
   cachedListingsSchema,
   cachedPlacesSchema,
@@ -55,6 +59,9 @@ import { fetchShoppingBody, MAPS_ENGINE, SHOPPING_ENGINE } from "./search";
  * 2. read product_cache, keyed on engine, query, rounded location, gl, and hl
  * 3. for the misses, reserve a search in the ledger, call SerpApi, normalize,
  *    rank, and write the cache
+ * 3b. for a query that still has no listing, ask once more with a broader
+ *    version of the same query, so an over specific sentence does not end as an
+ *    empty row when the product itself is on sale
  * 4. once per run, if the person allowed location, look up nearby stores and
  *    attach a distance to the listings whose store is actually one of them
  *
@@ -70,6 +77,7 @@ export {
   isBlockedListingUrl,
 } from "./hosts";
 export {
+  broadenProductQuery,
   queryKeyTokens,
   rankListings,
   relevanceScore,
@@ -363,6 +371,78 @@ export async function groundProductQueries(
     }
   }
 
+  // 3b. One broader retry for a query that ended with nothing.
+  //
+  // The strict query is always asked first and always preferred. This pass only
+  // runs where it produced no listing at all, which on the Indian market is
+  // usually because the query was a sentence about a person ("niacinamide serum
+  // for pigmentation combination") rather than the thing a shop lists
+  // ("niacinamide serum"). See broadenProductQuery in ./ranking.ts.
+  //
+  // A cached empty result reaches here too, which is the point: the strict
+  // query's "nothing" is cached, so without this the second report would show
+  // the same empty rows for free rather than trying a better question.
+  const broadened = new Map<string, string>();
+  let broadenedSearches = 0;
+  for (const query of distinct) {
+    if ((listingsByQuery.get(query) ?? []).length > 0) {
+      continue;
+    }
+    const broad = broadenProductQuery(query);
+    if (broad === null || broad === query) {
+      continue;
+    }
+
+    const cached = await readProductCache({
+      parts: shoppingParts(broad, options),
+      schema: cachedListingsSchema,
+      nowMs,
+    });
+    if (cached !== null) {
+      const ranked = rankListings(withoutBlockedHosts(cached.results), broad);
+      if (ranked.length > 0) {
+        listingsByQuery.set(query, ranked);
+        broadened.set(query, broad);
+      }
+      continue;
+    }
+    if (!live) {
+      continue;
+    }
+
+    const budget = await budgetOnce();
+    if (!budget.ok) {
+      reasons.note(budget.reason, 0);
+      break;
+    }
+    const reserved = await budget.reserve();
+    if (!reserved.ok) {
+      reasons.note(reserved.reason, 0);
+      break;
+    }
+    try {
+      const body = await fetchShoppingBody({
+        query: broad,
+        gl: options.gl,
+        hl: options.hl,
+      });
+      broadenedSearches += 1;
+      const outcome = normalizeShoppingResponse(body, broad);
+      await writeProductCache({
+        parts: shoppingParts(broad, options),
+        results: outcome.listings,
+        fetchedAt,
+      });
+      if (outcome.listings.length > 0) {
+        listingsByQuery.set(query, [...outcome.listings]);
+        broadened.set(query, broad);
+      }
+    } catch (thrown) {
+      await budget.refund(reserved.reservation);
+      reasons.note("provider_error", stepsPerQuery(query), errorCodeOf(thrown));
+    }
+  }
+
   // 4. The listings each step shows, then local availability once for the whole
   // run. topListing is the one listing case, which is what a routine step asks
   // for; a gap asks for the first few of the same ranked list.
@@ -416,7 +496,8 @@ export async function groundProductQueries(
     reasons.note("no_listing", withoutListing);
   }
 
-  const searches = shoppingSearches + (localLookup ? 1 : 0);
+  const searches =
+    shoppingSearches + broadenedSearches + (localLookup ? 1 : 0);
   reasons.flush(searches);
   logGroundingRun({
     steps: steps.length,
@@ -425,6 +506,8 @@ export async function groundProductQueries(
     withoutListing,
     searches,
     localLookup,
+    broadened: broadened.size,
+    broadenedSearches,
   });
 
   return results;

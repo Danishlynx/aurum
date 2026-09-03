@@ -2,7 +2,7 @@ import "server-only";
 
 import { serviceClient, unwrap } from "../db/service";
 import type { CreditLedgerEntry, CreditProvider, Insert } from "../db/types";
-import { dailyCaps } from "../env";
+import { dailyCaps, judgeSearchesAllowed } from "../env";
 import { adjustJudgeCredits } from "../judge";
 import type { AppSession } from "../session";
 
@@ -116,6 +116,35 @@ export async function spentTotal(
 }
 
 /**
+ * Which counter a judge session's per session cap is kept in, per provider.
+ *
+ * Units and searches are two currencies, bought from two companies, and they
+ * used to share one counter. credits_cap is sized in Perfect Corp units
+ * (docs/04-integrations.md: one capture set is 58 of them), so a session that had
+ * run its analyses had nothing left to buy a search with, and every routine step
+ * on the report fell back to "No listing found near you yet" while the log said
+ * session_cap after zero searches. They are separate here:
+ *
+ * - perfectcorp: the judge_sessions.credits_used column, which is what
+ *   credits_cap counts and what the judge banner reads.
+ * - serpapi: its own allowance, JUDGE_SERPAPI_SEARCHES, measured from this
+ *   session's own serpapi rows in the ledger. No column, no migration, and
+ *   refunds are already part of the sum.
+ * - anthropic: recorded, never capped, exactly as dailyCapFor already treats it.
+ */
+type JudgeCapKind = "units" | "searches" | "uncapped";
+
+function judgeCapKindFor(provider: CreditProvider): JudgeCapKind {
+  if (provider === "perfectcorp") {
+    return "units";
+  }
+  if (provider === "serpapi") {
+    return "searches";
+  }
+  return "uncapped";
+}
+
+/**
  * Reserves units before a provider call. Returns a typed refusal instead of
  * throwing, because a cap is an expected answer the routes turn into a 429 with
  * the judge copy, not an error.
@@ -143,13 +172,26 @@ export async function reserve(args: {
   }
 
   if (args.session.kind === "judge") {
-    const outcome = await adjustJudgeCredits(args.session.id, units);
-    if (!outcome.ok) {
-      const remaining = Math.max(
-        0,
-        args.session.session.credits_cap - args.session.session.credits_used,
-      );
-      return { ok: false, reason: "session_cap", remaining };
+    const kind = judgeCapKindFor(args.provider);
+    if (kind === "units") {
+      const outcome = await adjustJudgeCredits(args.session.id, units);
+      if (!outcome.ok) {
+        const remaining = Math.max(
+          0,
+          args.session.session.credits_cap - args.session.session.credits_used,
+        );
+        return { ok: false, reason: "session_cap", remaining };
+      }
+    } else if (kind === "searches") {
+      const allowed = judgeSearchesAllowed();
+      const used = await spentTotal(owner, args.provider);
+      if (used + units > allowed) {
+        return {
+          ok: false,
+          reason: "session_cap",
+          remaining: Math.max(0, allowed - used),
+        };
+      }
     }
   }
 
@@ -194,7 +236,12 @@ export async function reconcile(args: {
     return;
   }
 
-  if (args.session.kind === "judge") {
+  // Only the counter reserve() actually moved is moved back, or a serpapi
+  // settlement would hand the session free Perfect Corp units.
+  if (
+    args.session.kind === "judge" &&
+    judgeCapKindFor(args.reservation.provider) === "units"
+  ) {
     await adjustJudgeCredits(args.session.id, delta);
   }
 
@@ -240,7 +287,10 @@ export async function refund(args: {
     return;
   }
 
-  if (args.session.kind === "judge") {
+  if (
+    args.session.kind === "judge" &&
+    judgeCapKindFor(args.reservation.provider) === "units"
+  ) {
     await adjustJudgeCredits(args.session.id, -args.reservation.units);
   }
 
@@ -318,18 +368,41 @@ export interface CapSnapshot {
   readonly sessionCap: number | null;
 }
 
-/** What the health route and the judge banner read. */
+/**
+ * What the health route and the judge banner read.
+ *
+ * The session pair is the counter this provider is actually checked against, so
+ * a serpapi snapshot answers in searches and a perfectcorp one in units. Reading
+ * credits_used for both was the same conflation the reservation had.
+ */
 export async function capSnapshot(
   session: AppSession,
   provider: CreditProvider,
 ): Promise<CapSnapshot> {
   const owner = ownerOf(session);
-  return {
+  const base = {
     provider,
     usedToday: await spentToday(owner, provider),
     dailyCap: dailyCapFor(provider),
-    sessionUsed:
-      session.kind === "judge" ? session.session.credits_used : null,
-    sessionCap: session.kind === "judge" ? session.session.credits_cap : null,
-  };
+  } as const;
+
+  if (session.kind !== "judge") {
+    return { ...base, sessionUsed: null, sessionCap: null };
+  }
+  const kind = judgeCapKindFor(provider);
+  if (kind === "units") {
+    return {
+      ...base,
+      sessionUsed: session.session.credits_used,
+      sessionCap: session.session.credits_cap,
+    };
+  }
+  if (kind === "searches") {
+    return {
+      ...base,
+      sessionUsed: await spentTotal(owner, provider),
+      sessionCap: judgeSearchesAllowed(),
+    };
+  }
+  return { ...base, sessionUsed: null, sessionCap: null };
 }

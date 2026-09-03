@@ -26,6 +26,10 @@ import type { GroundingReason } from "./logging";
  * reservation is always the actual cost and there is nothing to reconcile. A
  * search that failed is refunded, matching the rule that a call which produced
  * nothing must not leave a spend behind.
+ *
+ * A search is a search and a Perfect Corp unit is a unit: for a judge session
+ * the two are counted against separate caps (src/lib/server/credits), so a
+ * finished analysis can no longer leave the report with nothing to ground with.
  */
 
 export interface SearchOwner {
@@ -88,7 +92,9 @@ export async function openSearchBudget(
     return { ok: false, reason: "ledger_unavailable" };
   }
   if (resolved === null) {
-    return { ok: false, reason: "session_cap" };
+    // A judge session that expired or was never there. Reported as itself, not
+    // as a cap: a cap is a number to raise, and this is a cookie to mint again.
+    return { ok: false, reason: "session_expired" };
   }
   const session: AppSession = resolved;
 
