@@ -17,11 +17,18 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { normalize } from "@/lib/server/jobs/analysis";
+import {
+  FACE_ATTRIBUTES_REQUESTED,
+  analysisTaskBody,
+  normalize,
+  planFor,
+} from "@/lib/server/jobs/analysis";
+import { perfectCorpUnits } from "@/lib/server/credits/costs";
 import { isProviderError } from "@/lib/server/providers/errors";
 import {
   normalizeTaskState,
   parseFacialColorTonesResult,
+  readFaceShape,
   readSkinAnalysis,
   skinAnalysisResultSchema,
   skinTypeZoneFor,
@@ -31,13 +38,26 @@ import {
   type TaskSnapshot,
 } from "@/lib/server/providers/perfectcorp";
 import { PERFECTCORP_ENDPOINTS } from "@/lib/server/providers/perfectcorp/endpoints";
-import { facialColorTonesResultSchema } from "@/lib/server/providers/perfectcorp/schemas";
+import {
+  FACE_ATTRIBUTE_NAMES,
+  FACE_SHAPE_VALUES,
+  faceAttributesResultSchema,
+  facialColorTonesResultSchema,
+} from "@/lib/server/providers/perfectcorp/schemas";
 import {
   readAttributesSummary,
+  readFaceShapeSummary,
   readSkinSummary,
 } from "@/lib/server/profile/summaries";
 import { deriveSkinType, skinTypeFromZones } from "@/lib/server/profile/skin-type";
 import { classifyContrast } from "@/lib/shared/palette";
+import {
+  FACE_SHAPE_UNKNOWN_LINE,
+  HAIR_FACE_SHAPES,
+  faceShapeLine,
+  hairStylesFor,
+  normalizeFaceShape,
+} from "@/lib/shared/hair-rules";
 import {
   VERIFIED_SD_SKIN_CONCERN_TYPES,
   isNonConcernOutputType,
@@ -46,7 +66,9 @@ import {
 } from "@/lib/shared/concerns";
 
 import {
+  loadFaceAttrStatus,
   loadSkinAnalysisStatus,
+  readFaceAttrStatusText,
   readSkinAnalysisStatusText,
 } from "../fixtures/perfectcorp";
 import {
@@ -660,5 +682,214 @@ describe("the skin analysis cost", () => {
     expect(PERFECTCORP_ENDPOINTS.skinAnalysis.verification.checkedOn).toBe(
       "2026-09-02",
     );
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* The face attribute analysis                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The third recorded body, and the one that fixes /hair.
+ *
+ * Two separate mistakes were live at once, and only one of them cost a credit:
+ *
+ * 1. The request sent dst_actions, which is the skin analyzer's word for its
+ *    selection. This endpoint calls it features and rejects a body without it,
+ *    so no face shape task ever existed, and every person was told their face
+ *    shape was not read from their photo.
+ * 2. The result schema looked for the shape at results.faceShape,
+ *    results.face_shape, and results.attributes.faceShape. It is at
+ *    results.faceshape. So the first task that did get created would have been
+ *    charged, parsed, and produced a null face shape anyway.
+ *
+ * Everything below runs against evals/fixtures/perfectcorp/face-attr-status.json,
+ * recorded 2026-09-03 for 10 units. No key, no network, no credit.
+ */
+describe("the face attribute analysis body the app sends", () => {
+  const body = analysisTaskBody("face_shape", "file-123");
+
+  it("names the selection features, which is the field this endpoint has", () => {
+    expect(body).toEqual({
+      src_file_id: "file-123",
+      features: ["faceShape"],
+      face_angle_strictness_level: "high",
+    });
+  });
+
+  it("never sends dst_actions, which is what the 400 was", () => {
+    // "features is required but wasn't included in your request." was the whole
+    // bug, and it answered for free every time.
+    expect(body).not.toHaveProperty("dst_actions");
+  });
+
+  it("asks for one feature, which is the cheapest tier", () => {
+    expect(FACE_ATTRIBUTES_REQUESTED).toEqual(["faceShape"]);
+    expect(planFor("face_shape").itemCount).toBe(1);
+    expect(planFor("face_shape").units).toBe(10);
+  });
+
+  it("spells the feature the way the enum does", () => {
+    // The snake case answers "0 is not one of the accepted values.", naming the
+    // index in the array rather than the field.
+    expect(FACE_ATTRIBUTE_NAMES).toContain("faceShape");
+    expect(FACE_ATTRIBUTE_NAMES).not.toContain("face_shape");
+  });
+
+  it("uses the file id field the endpoint table records", () => {
+    expect(PERFECTCORP_ENDPOINTS.faceAttributes.sourceFileFields[0]).toBe(
+      "src_file_id",
+    );
+  });
+});
+
+describe("the recorded face attribute response", () => {
+  it("carries nothing that had to be sanitized out", () => {
+    expect(findLeaks(readFaceAttrStatusText())).toEqual([]);
+  });
+
+  it("comes back in the same envelope as every other task", () => {
+    const parsed = taskStatusResponseSchema.parse(loadFaceAttrStatus());
+    expect(parsed.status).toBe(200);
+    expect(parsed.data.task_status).toBe("success");
+    expect(parsed.data.error).toBeNull();
+    expect(taskFailureCode(parsed.data)).toBeNull();
+    expect(normalizeTaskState(parsed.data.task_status)).toBe("succeeded");
+  });
+
+  it("puts the face shape at results.faceshape, all lower case", () => {
+    const parsed = taskStatusResponseSchema.parse(loadFaceAttrStatus());
+    const result = faceAttributesResultSchema.parse(parsed.data.results);
+    expect(result.faceshape).toBe("InvTriangle");
+    expect(readFaceShape(result)).toBe("InvTriangle");
+  });
+
+  it("reports the quality of the frame it worked from", () => {
+    const parsed = taskStatusResponseSchema.parse(loadFaceAttrStatus());
+    const result = faceAttributesResultSchema.parse(parsed.data.results);
+    expect(result.face_quality?.has_face).toBe(true);
+    expect(result.face_quality?.faceangle).toBe("good");
+  });
+
+  it("keeps a charged result that answered nothing, rather than throwing it away", () => {
+    // The tone endpoint's lesson, applied before it costs anything here: a task
+    // the engine succeeded at is charged whether or not it filled a field.
+    expect(faceAttributesResultSchema.safeParse({}).success).toBe(true);
+    expect(
+      faceAttributesResultSchema.safeParse({ faceshape: null }).success,
+    ).toBe(true);
+    expect(readFaceShape({ faceshape: null })).toBeNull();
+    // "Unknown" is one of the nine values, and it is not a shape.
+    expect(readFaceShape({ faceshape: "Unknown" })).toBeNull();
+    expect(readFaceShape({ faceshape: "  " })).toBeNull();
+  });
+});
+
+describe("normalize over the recorded face attribute body", () => {
+  function faceAttrSnapshot(): TaskSnapshot {
+    const parsed = taskStatusResponseSchema.parse(loadFaceAttrStatus());
+    return {
+      endpointKey: "faceAttributes",
+      taskId: "recorded-response",
+      state: "succeeded",
+      results: parsed.data.results,
+      errorCode: null,
+      pollingIntervalSeconds: null,
+    };
+  }
+
+  const normalized = normalize("face_shape", faceAttrSnapshot());
+
+  it("summarizes the provider's own word, unchanged", () => {
+    expect(normalized.summary).toEqual({ faceShape: "InvTriangle" });
+    expect(normalized.maskUrls).toEqual([]);
+  });
+
+  it("hands the profile layer a face shape it reads back", () => {
+    expect(readFaceShapeSummary(normalized.summary)).toBe("InvTriangle");
+  });
+
+  it("reaches /hair as a shape with its own styles, not the unknown line", () => {
+    /*
+     * The whole point of the ten units. InvTriangle is an inverted triangle: a
+     * wider forehead narrowing to a pointed chin, which is the heart row.
+     */
+    const stored = readFaceShapeSummary(normalized.summary);
+    const shape = normalizeFaceShape(stored);
+    expect(shape).toBe("heart");
+
+    const line = faceShapeLine(shape);
+    expect(line).not.toBe(FACE_SHAPE_UNKNOWN_LINE);
+    expect(line).toContain("Your face shape reads as heart.");
+
+    const styles = hairStylesFor({ faceShape: shape, hairType: null });
+    expect(styles).toHaveLength(4);
+    expect(styles.map((style) => style.id)).toEqual([
+      "chin-length-bob",
+      "side-parted-lob",
+      "soft-layers-collarbone",
+      "curtain-fringe",
+    ]);
+  });
+});
+
+describe("the face shape vocabulary", () => {
+  it("maps every value the engine can answer", () => {
+    const mapped = Object.fromEntries(
+      FACE_SHAPE_VALUES.map((value) => [value, normalizeFaceShape(value)]),
+    );
+    expect(mapped).toEqual({
+      Triangle: "triangle",
+      Diamond: "diamond",
+      Heart: "heart",
+      InvTriangle: "heart",
+      Oblong: "oblong",
+      Oval: "oval",
+      Round: "round",
+      Square: "square",
+      Unknown: null,
+    });
+  });
+
+  it("leaves no row of the rules table unreachable from the API", () => {
+    // Every shape the table writes advice for is a shape a real response can
+    // produce. A row nothing can reach is advice nobody will ever be given.
+    const reachable = new Set(
+      FACE_SHAPE_VALUES.map((value) => normalizeFaceShape(value)).filter(
+        (shape) => shape !== null,
+      ),
+    );
+    expect([...reachable].sort()).toEqual([...HAIR_FACE_SHAPES].sort());
+  });
+
+  it("answers null for a value the provider has not sent before", () => {
+    expect(normalizeFaceShape("Pentagon")).toBeNull();
+    expect(normalizeFaceShape(null)).toBeNull();
+    expect(faceShapeLine(normalizeFaceShape("Pentagon"))).toBe(
+      FACE_SHAPE_UNKNOWN_LINE,
+    );
+  });
+});
+
+describe("the face attribute analysis cost", () => {
+  it("is the 10 units the live task was charged", () => {
+    expect(PERFECTCORP_ENDPOINTS.faceAttributes.unitCost).toEqual({
+      kind: "tiered",
+      countedBy: "attributes requested",
+      tiers: [
+        { upTo: 5, units: 10 },
+        { upTo: 14, units: 20 },
+        { upTo: 28, units: 30 },
+      ],
+    });
+    expect(perfectCorpUnits("faceAttributes", 1)).toBe(10);
+  });
+
+  it("is confirmed, so the client no longer refuses to call it", () => {
+    const verification = PERFECTCORP_ENDPOINTS.faceAttributes.verification;
+    expect(verification.state).toBe("confirmed");
+    expect(verification.checkedOn).toBe("2026-09-03");
+    expect(verification.note).toContain("features");
+    expect(verification.note).toContain("408 to 398");
   });
 });

@@ -512,6 +512,20 @@ export const FACE_SHAPE_VALUES = [
 
 export type FaceShapeValue = (typeof FACE_SHAPE_VALUES)[number];
 
+/**
+ * The values the request's "features" array takes.
+ *
+ * Confirmed twice on 2026-09-03: read from the OpenAPI bundle behind
+ * docs.makeupar.com/reference/ai_face_analyzer, and then driven through the free
+ * oracle, where "faceShape" passed validation and the snake case "face_shape"
+ * answered "0 is not one of the accepted values." (the 0 is the array index), so
+ * the server really does check the spelling at task creation.
+ *
+ * Only the face analysis half is listed. The facial ratio features
+ * (horizontalThird, verticalFifth, faceAspectRatio, and the rest) are real and
+ * are deliberately left out: they would push the call into a more expensive tier
+ * for numbers nothing in this app reads.
+ */
 export const FACE_ATTRIBUTE_NAMES = [
   "faceShape",
   "age",
@@ -529,22 +543,75 @@ export const FACE_ATTRIBUTE_NAMES = [
   "noseWidth",
   "noseLength",
   "cheekbones",
+  "eyeColor",
+  "lipColor",
+  "eyebrowColor",
+  "hairColor",
 ] as const;
 
 export type FaceAttributeName = (typeof FACE_ATTRIBUTE_NAMES)[number];
 
 /**
- * The container that holds the attribute values is not confirmed, so the values
- * are read as a flat map of name to string. The endpoint is marked unverified
- * for exactly this reason.
+ * How this call reports the frame it worked from.
+ *
+ * Every field is a word, not a score ("good" on the one face we have read). It
+ * is kept because it is the only thing that tells a "Unknown" face shape from a
+ * face shape the engine declined to read: an Unknown on a frame whose faceangle
+ * is not good is a retake, and an Unknown on a good frame is a face the model
+ * genuinely could not place.
+ */
+export const faceQualitySchema = z.object({
+  has_face: z.boolean().nullish(),
+  area: z.string().nullish(),
+  frontal: z.string().nullish(),
+  lighting: z.string().nullish(),
+  faceangle: z.string().nullish(),
+});
+
+/**
+ * data.results for a face attribute analysis task.
+ *
+ * Confirmed live on 2026-09-03 against one real task over the golden selfie.
+ * The results object is flat and keyed by feature group, not by the camel case
+ * names the request asks for, and the face shape sits at results.faceshape, all
+ * lower case and with no underscore. The shape this file carried before
+ * (results.attributes.faceShape, results.face_shape, results.faceShape) matched
+ * none of those, so a paid task would have parsed to nothing.
+ *
+ * Everything is nullish for the reason the tone schema records: this task is
+ * charged the moment the engine succeeds, so a field the engine could not fill
+ * must never throw the whole charged result away. A result with no readable
+ * face shape is a null face shape, which /hair already has a line for.
+ *
+ * The other feature groups the API can return (facialratio, cheekbone, eyelid,
+ * eyebrow, lipshape, nose, color, agegender) are not declared: this app asks for
+ * faceShape only, and an undeclared key is dropped rather than rejected.
  */
 export const faceAttributesResultSchema = z.object({
-  attributes: z.record(z.string(), z.union([z.string(), z.number()])).optional(),
-  face_shape: z.string().optional(),
-  faceShape: z.string().optional(),
+  faceshape: z.string().nullish(),
+  face_quality: faceQualitySchema.nullish(),
 });
 
 export type FaceAttributesResult = z.infer<typeof faceAttributesResultSchema>;
+
+/**
+ * The face shape this result carries, or null when it carries none.
+ *
+ * "Unknown" is one of the nine values the engine can answer and it is not a
+ * shape, so it is read as no answer here rather than travelling as the string
+ * "Unknown" into a profile and out to a screen.
+ */
+export function readFaceShape(result: FaceAttributesResult): string | null {
+  const value = result.faceshape;
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.toLowerCase() === "unknown") {
+    return null;
+  }
+  return trimmed;
+}
 
 /* ------------------------------------------------------------------ */
 /* Hair type                                                           */

@@ -153,6 +153,13 @@ const OPENAPI = `${MAKEUPAR}/_bundle/reference`;
 const PROBED_ON = "2026-09-02";
 
 /**
+ * The day the face attribute analyzer was driven through the same oracle and
+ * then run once for real. Its own constant because it is a later date than
+ * everything above it, and a row that says "checked on" should say when.
+ */
+const FACE_ATTR_CHECKED_ON = "2026-09-03";
+
+/**
  * How we authenticate.
  *
  * The API console issues a key and a secret, which looks like a token exchange.
@@ -425,14 +432,33 @@ export const PERFECTCORP_ENDPOINTS: Readonly<
       imagesPerCall: 1,
     },
     verification: {
-      state: "unverified",
-      source: `${MAKEUPAR}/reference/ai_face_analyzer`,
-      checkedOn: CHECKED_ON,
+      state: "confirmed",
+      source: `${OPENAPI}/ai_face_analyzer.json and ${LIVE_API}`,
+      checkedOn: FACE_ATTR_CHECKED_ON,
       note:
-        "Attribute names (faceShape and the rest), the face shape value set, the image limits, " +
-        "and the 10, 20, 30 unit tiers are confirmed. The docs render the task name as " +
-        "task/face-attr-analysis without the /s2s/v2.0 prefix, and the request field that carries " +
-        "the attribute list is not confirmed. Read both from the API playground.",
+        "Request body is { src_file_id or src_file_url, features, face_angle_strictness_level }. " +
+        "The field is features, and that one word is what this row sat unverified over: it is not " +
+        "dst_actions, which is the skin analyzer's word and what this app was sending, so every " +
+        "face shape task was rejected at creation and /hair told every person their face was not " +
+        "read. Driven out for free with an unresolvable src_file_id: { dst_actions: [\"faceShape\"] } " +
+        "and a body with no selection at all both answer \"features is required but wasn't " +
+        "included in your request.\"; { features: [\"faceShape\"] } answers the generic \"One or " +
+        "more parameters in this request are invalid.\" that a right body with a wrong file id " +
+        "gets; the snake case { features: [\"face_shape\"] } answers \"0 is not one of the " +
+        "accepted values.\", naming the array index, so the enum is read and checked; and " +
+        "face_angle_strictness_level is accepted alongside. The balance was 408 units before those " +
+        "five probes and 408 after. Then one real task over a consented selfie, features " +
+        "[\"faceShape\"]: GET /s2s/v2.0/task/face-attr-analysis/<id> answers 200 with " +
+        "{ status, data: { error: null, results: { ... }, task_status: \"success\" } }, the same " +
+        "envelope as the skin analyzer. results is keyed by feature group and not by the camel " +
+        "case names the request asks for: the face shape is at results.faceshape, all lower case " +
+        "and with no underscore, and the groups nobody asked for (nose, agegender, eyelid, " +
+        "eyebrow, color, cheekbone, facialratio) come back as empty objects. face_quality " +
+        "{ has_face, area, frontal, lighting, faceangle } is returned whether or not it is asked " +
+        "for. Value set is Triangle, Diamond, Heart, InvTriangle, Oblong, Oval, Round, Square, " +
+        "Unknown. Cost measured at 10 units for one feature, balance 408 to 398, which is the " +
+        "published 1 to 5 tier. The body is recorded at " +
+        "evals/fixtures/perfectcorp/face-attr-status.json.",
     },
     analysisKind: "face_shape",
   },

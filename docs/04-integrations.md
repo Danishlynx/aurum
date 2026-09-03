@@ -74,7 +74,7 @@ Read from the public reference pages on 2026-09-01. Note that docs.perfectcorp.c
     skin analysis               16                measured live             Still not on the public unit consumption page. Measured on 2026-09-02: one task with all 16 SD concern keys took the balance from 40 to 24. A call asking for fewer concerns has never been priced.
     fitzpatrick                 10                ai_fitzpatrick_skin_type
     facial color tones          20                ai_skin_tone_analysis     This is the API that returns skin, eye, eyebrow, lip, and hair colors.
-    face attributes and ratio   10 / 20 / 30      ai_face_analyzer          10 for 1 to 5 attributes, 20 for 6 to 14, 30 for 15 to 28. This is the API that returns face shape.
+    face attributes and ratio   10 / 20 / 30      measured live             10 for 1 to 5 features, 20 for 6 to 14, 30 for 15 to 28. This is the API that returns face shape. The first tier was measured on 2026-09-03: one task asking for faceShape alone took the balance from 408 to 398, which is the published figure.
     hair type                   2                 ai_hair_type_detection    Takes three photos of the same size (front, right, left), not one selfie.
     makeup try on               1                 makeup_vto                per render
     hairstyle try on            2                 ai_hairstyle              per render, same cost for a template or a reference image
@@ -115,6 +115,12 @@ Answers to the two open questions in "verify first"
 
 - Cloth try on takes one garment_category per call. A multi garment outfit needs one call per garment, so a Look renders as a sequence of renders, not as one call. The accepted values are the full enum, confirmed live on 2026-09-02: full_body, lower_body, upper_body, shoes, auto, outer. A value outside it answers 400 "garment_category is not one of the accepted values."
 - Image input constraints per API are recorded on each entry in src/lib/server/providers/perfectcorp/endpoints.ts. The tightest ones are hairstyle try on (long side 1024px, face width at least 128px) and makeup try on (long side 1920px, face width at least 100px, head tilt within 10 degrees). Skin analysis needs a short side of 480px for SD and 1080px for HD, and a face wider than 60 percent of the frame.
+
+The face attribute request, confirmed on 2026-09-03
+
+The selection field is features, not dst_actions. dst_actions is the skin analyzer's word, this endpoint has no such field, and the app was sending it on every capture, so every face shape task was rejected 400 before it existed and /hair told every person their face shape was not read from their photo. The same free oracle settled it: { dst_actions: ["faceShape"] } and a body with no selection both answer "features is required but wasn't included in your request.", { features: ["faceShape"] } answers the generic "One or more parameters in this request are invalid.", and the snake case { features: ["face_shape"] } answers "0 is not one of the accepted values.", naming the index in the array. Balance 408 before those probes and 408 after. face_angle_strictness_level is accepted alongside and defaults to high.
+
+The result is keyed by feature group rather than by the camel case names the request asks for, and this is the second half of the same bug: the face shape is at data.results.faceshape, all lower case and with no underscore, where the schema was looking for results.faceShape, results.face_shape, and results.attributes.faceShape. So even a task that was created would have been charged and read as no face shape. face_quality { has_face, area, frontal, lighting, faceangle } comes back whether or not it is asked for, and the groups nobody asked for arrive as empty objects. The value set is Triangle, Diamond, Heart, InvTriangle, Oblong, Oval, Round, Square, Unknown; InvTriangle reads the heart rules and Unknown reads as no answer (src/lib/shared/hair-rules.ts). One live task over a consented selfie recorded the body at evals/fixtures/perfectcorp/face-attr-status.json for 10 units.
 
 Render request bodies, confirmed for free on 2026-09-02
 

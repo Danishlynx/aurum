@@ -51,6 +51,47 @@ problems and `skin-type.ts` reads moisture as hydration. The numbers in this
 file are the provider's, untouched: the inversion is tested against them in
 `evals/golden/perfectcorp-envelope.test.ts`.
 
+### face-attr-status.json
+
+`GET /s2s/v2.0/task/face-attr-analysis/<taskId>`, HTTP 200, recorded 2026-09-03
+from one live task over a consented selfie. One feature, `faceShape`, 10 units.
+
+Same envelope as the skin analysis, and a `results` object that answers a
+question two days of reference pages did not:
+
+    { "status": 200,
+      "data": {
+        "error": null,
+        "results": {
+          "face_quality": { "has_face": true, "area": "good", "frontal": "good",
+                            "lighting": "good", "faceangle": "good" },
+          "faceshape": "InvTriangle",
+          "nose": {}, "agegender": {}, "eyelid": {}, "eyebrow": {},
+          "color": {}, "cheekbone": {}, "facialratio": {}
+        },
+        "task_status": "success"
+      } }
+
+Three things this file is kept for:
+
+1. The face shape is at `results.faceshape`, all lower case and with no
+   underscore. It is not `results.faceShape`, not `results.face_shape`, and not
+   under an `attributes` map, which were the three shapes the schema used to
+   guess at. A paid task would have parsed to a null face shape under all three.
+2. `results` is keyed by feature group, and the groups nobody asked for come
+   back as empty objects rather than being left out.
+3. `face_quality` arrives whether or not it is asked for, which is what tells an
+   `Unknown` face shape on a good frame from one on a frame worth retaking.
+
+The request that produced it is the other half of the finding, and it is the
+half that was actually broken: the selection field is `features`, not
+`dst_actions`. See `src/lib/server/providers/perfectcorp/endpoints.ts`,
+`faceAttributes`.
+
+There is nothing in this body to sanitize, which is why it is byte for byte what
+came back: no URL, no signed link, no account identifier. The face shape word is
+the only thing in it that came from a face.
+
 ## Sanitizing, and the rule behind it
 
 The raw recording lives at `evals/fixtures/golden/raw/skin/result.json`, which is
