@@ -107,10 +107,10 @@ In prose: Next.js (App Router) and TypeScript in strict mode, Tailwind CSS on on
 
 ## Try it out
 
-- Live URL: TODO-human
-- Judge access code: TODO-human
+- Live URL: https://aurum-danishlynxs-projects.vercel.app
+- Judge access code: AURUM-FU625S
 - Your session includes 3 full analyses. The app keeps working from a saved demo profile after that.
-- Repository: TODO-human (public GitHub URL)
+- Repository: https://github.com/Danishlynx/aurum
 - Tag: `hackathon-submission`
 - Commit sha: TODO-human
 
