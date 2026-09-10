@@ -181,6 +181,7 @@ async function assess(canvas: HTMLCanvasElement): Promise<CaptureAssessment> {
     faceCount: estimate.faceCount,
     faceBox: estimate.faceBox,
     pose: estimate.pose ?? null,
+    faceEstimateTrusted: estimate.source !== "skin_region",
   });
 }
 
