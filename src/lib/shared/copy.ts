@@ -165,6 +165,21 @@ export const copy = {
     guidance: {
       light: "Face the light. A window works best.",
       /**
+       * In house, and the sixth line of the same list, added 2026-09-07 when the
+       * capture screen gained a detector that can actually measure a head's
+       * angle rather than infer it from where a blob sits in the frame.
+       *
+       * It says one thing, the way the other five do. Yaw and roll are one
+       * instruction to a person even though they are two numbers: a head turned
+       * away from the lens and a phone tilted in the hand both end with the face
+       * not square to the camera, and "look straight at the lens and keep the
+       * phone level" is what fixes either. The direction is deliberately not
+       * named. The engine's own refusals name one (error_face_angle_rightward),
+       * and nobody can act on "rightward" without first working out whose right
+       * it means.
+       */
+      square: "Look straight at the lens and keep the phone level.",
+      /**
        * In house, and the fifth line of a list docs/01 section D writes four of:
        *
        *   - "Face the light. A window works best."
@@ -215,6 +230,18 @@ export const copy = {
         "Too bright to read your skin. Move out of direct light and try again.",
       // In house. docs/01 section D gives no line for a frame with no face.
       no_face: "No face in the frame. Center your face in the oval and try again.",
+      // In house. The engine refuses a face that runs past the edge of the
+      // picture (error_face_position_out_of_boundary), and the fix is the
+      // opposite of "move closer", so it cannot share the too_far line.
+      face_out_of_bounds:
+        "Your face is cut off at the edge. Move back a little and try again.",
+      // In house. The engine asks for a face filling roughly 60 to 80 percent of
+      // the frame, so there is a top to the band as well as a bottom.
+      too_close: "A little too close. Move back so your whole face fits.",
+      // In house. A head turned away from the lens, measured before the photo is
+      // taken rather than after the engine has refused it.
+      facing_away:
+        "Look straight into the lens and hold the phone level, then try again.",
     },
     /**
      * In house. docs/01 section D gates a frame on the face being "roughly
@@ -235,6 +262,14 @@ export const copy = {
      */
     facingAway:
       "Hold the phone at eye level and look straight into the lens, then try again.",
+    /**
+     * The same problem as the too_far line above, said on /analyzing rather than
+     * on the camera screen. It needs its own words because there is no oval on
+     * that screen to fill, and because by the time a person reads this the photo
+     * has already been sent, so the line has to ask for another one.
+     */
+    faceSmallInPhoto:
+      "Your face is small in that photo. Move closer and try again.",
     retakeAction: "Retake",
     /** Secondary, shown for borderline frames only, never for a face failure. */
     useAnywayAction: "Use it anyway",
@@ -1050,6 +1085,22 @@ export function analysisFailureCopy(reason: AnalysisFailureReason): string {
       return copy.capture.facingAway;
     case "no_face":
       return copy.capture.rejection.no_face;
+    /*
+     * These four reuse the capture screen's own words for the same problem. A
+     * person told one thing about a photo on /capture and another about the same
+     * photo on /analyzing learns that neither screen knows what it is talking
+     * about, and the engine and our gate now measure the same things, so there
+     * is no longer any reason for the two to be worded apart.
+     */
+    case "multiple_faces":
+      return copy.capture.rejection.multiple_faces;
+    case "face_too_small":
+      return copy.capture.faceSmallInPhoto;
+    case "lighting":
+      return copy.capture.rejection.too_dark;
+    case "face_out_of_bounds":
+      return copy.capture.rejection.face_out_of_bounds;
+    case "image_size":
     case "frame":
     case "provider":
       return copy.errors.readingRefused;

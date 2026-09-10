@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
+    "@mediapipe/tasks-vision": "^1.0.1",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
     "bcryptjs": "^3.0.3",

@@ -483,7 +483,20 @@ export const facialColorTonesResultSchema = z.object({
 
 export type FacialColorTonesResult = z.infer<typeof facialColorTonesResultSchema>;
 
-/** Face angle checking, from strict to flexible. Default is high. */
+/**
+ * Face angle checking, from strict to flexible. The provider's own default is
+ * "high", which is what this app sent until 2026-09-07.
+ *
+ * The tolerance each level buys, from the ai_face_analyzer OpenAPI bundle
+ * (BasicFaceAttrReqFaceAngleStrictnessLevel), read 2026-09-07. The numbers are
+ * a ceiling on all three axes at once: pitch, yaw, and roll.
+ *
+ *     strict      pitch 4,  yaw 6,   roll 4
+ *     high        pitch 10, yaw 10,  roll 10   (the provider default)
+ *     medium      15 on all three
+ *     low         20 on all three
+ *     flexible    30 on all three
+ */
 export const FACE_ANGLE_STRICTNESS_LEVELS = [
   "strict",
   "high",
@@ -493,6 +506,34 @@ export const FACE_ANGLE_STRICTNESS_LEVELS = [
 ] as const;
 
 export type FaceAngleStrictnessLevel = (typeof FACE_ANGLE_STRICTNESS_LEVELS)[number];
+
+/**
+ * What this app sends when a caller does not choose, and why it is not the
+ * provider's own default.
+ *
+ * "high" is 10 degrees on pitch, yaw and roll together. That is a studio
+ * tolerance, and a person holding a phone at arm's length does not meet it: the
+ * roll budget alone is spent by the ordinary tilt of a hand, before the head has
+ * moved at all. The refusals read off the wire on 2026-09-02 and 2026-09-03
+ * (error_face_angle_rightward, error_face_not_forward_facing,
+ * error_face_angle_downward) were all produced under it, and every one of them
+ * cost the person a retake for a photograph that had a perfectly readable face
+ * in it.
+ *
+ * "flexible" is 30 degrees on the same three axes. It is the loosest level the
+ * provider publishes, and it is the right one for a handheld selfie taken by
+ * somebody who is not being coached by a photographer. The strictness level
+ * changes what the engine refuses, not what it measures: a reading returned
+ * under "flexible" is the same reading, and the provider documents the level as
+ * a gate ("a stricter level ensures more accurate face attribute results")
+ * rather than as a quality setting on the output.
+ *
+ * The client gate in src/lib/shared/quality.ts is what keeps a genuinely unusable
+ * pose from reaching this call at all, and it is now measured in the same degrees
+ * (POSE_YAW_MAX_DEGREES and its neighbours), so the two ends agree instead of one
+ * of them guessing.
+ */
+export const DEFAULT_FACE_ANGLE_STRICTNESS: FaceAngleStrictnessLevel = "flexible";
 
 /* ------------------------------------------------------------------ */
 /* Face attributes and ratios                                          */

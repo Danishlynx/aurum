@@ -101,15 +101,31 @@ Layout: full screen camera. A soft oval frame in antique gold hairline marks whe
 Live guidance (one line at a time, replaced as conditions change, never stacked):
 
 - "Face the light. A window works best."
+- "Look straight at the lens and keep the phone level."
+- "Hold the phone at eye level."
 - "Move closer until your face fills the oval."
 - "Hold still."
 - "Good. Tap to capture." (frame turns solid gold)
 
+Order is precedence, and pose comes before framing: no amount of moving closer fixes a head that is turned away from the lens, and the engine refuses the turned head first.
+
 Quality gate after capture (runs client side first, then server side):
 
-- Face detected, roughly frontal, filling at least 60 percent of the frame height
-- Sharpness above threshold (Laplacian variance)
+- Exactly one face detected, by a real model rather than a colour rule
+- The face filling at least 60 percent of the frame height, and at least 60 percent of the frame's short axis in width, which is the rule the engine itself applies
+- Head within the pose window: yaw and roll inside 15 degrees, pitch from minus 20 to plus 10, matching Perfect Corp's own capture profile
 - Exposure within range (no blown highlights on the forehead, no crushed shadows)
+- Sharpness measured, recorded, and never used to refuse a frame
+
+Amended 2026-09-07, after a wave of good photographs was being refused. Four things were wrong and all four are fixed in place.
+
+The face detector was `window.FaceDetector`, the Shape Detection API, which Safari has never implemented and Chrome has never shipped on by default. In practice it was never present, so every capture was measured by a YCbCr skin colour threshold instead. That fallback drops deep skin under warm light out of its chroma range and answers "no face", it merges a face with any skin coloured wall behind it, it runs down a lit neck and reports a box larger than the face, and it reads a bare arm as a second person. The app now loads MediaPipe's short range face detector, which also reports the six keypoints the pose window is measured from. The colour threshold survives only as a fallback for a device where the model will not load.
+
+Sharpness was a bare Laplacian variance, which is edge energy, which scales with the contrast of the face being measured. A deeply pigmented face in soft light carries less local contrast than a pale one under the same lamp, so the measurement ran low on exactly the skin tones this product exists to serve and told those people their sharp photograph was blurry. It is now divided by the region's own contrast, which makes it a focus measure rather than a contrast measure, and Perfect Corp publishes no blur or sharpness error code at all, so it refuses nothing.
+
+The framing rule was face height against frame height. The engine's rule is face width against the frame's short axis, and a face sitting exactly on our height rule in a 3 by 4 frame lands at about 0.56 of the width where the engine wants more than 0.60. Our gate passed at precisely the value the engine refuses at. Both rules are now checked, and a frame that fails the width one is recomposed around the face rather than refused: the camera path now does what the upload path has done since 2026-09-02.
+
+Pose was not measured at all, and pose is what the engine actually refuses. Every refusal read off the live API has been one: error_face_angle_rightward, error_face_not_forward_facing, error_face_angle_downward. The live line now names it before the shutter, and the app asks the engine for its most permissive angle tolerance ("flexible", 30 degrees) rather than the default it was sending ("high", 10 degrees), which no handheld selfie reliably meets.
 
 Sharpness is measured at one fixed size, on the face, by one function that both the live guidance line and the gate call. Laplacian variance depends on the resolution it is read at, so measuring the preview at one size and the capture at another and comparing both to one threshold is not a comparison: on 2026-09-03 it told a person "Good. Tap to capture." and then called that same frame blurry, every shot.
 

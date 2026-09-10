@@ -25,15 +25,22 @@
 
 import { z } from "zod";
 
+import { detectFaces } from "@/lib/client/landmarks";
+import type { FacePose } from "@/lib/shared/pose";
 import type { Box } from "@/lib/shared/quality";
 
-export type FaceEstimateSource = "detector" | "skin_region";
+export type FaceEstimateSource = "model" | "detector" | "skin_region";
 
 export type FaceEstimate = {
   readonly faceCount: number;
   /** In the pixel coordinates of the frame that was measured. */
   readonly faceBox: Box | null;
   readonly source: FaceEstimateSource;
+  /**
+   * Head position, when the source was one that can solve for it. Null from the
+   * skin region heuristic, which knows nothing about where a face is pointing.
+   */
+  readonly pose?: FacePose | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -287,9 +294,32 @@ export async function estimateFaceForCapture(
   full: ImageData,
   sample: ImageData,
 ): Promise<FaceEstimate> {
-  const detected = await detectWithBrowser(canvas);
+  /*
+   * The real model first, and it is the only source that can report a head
+   * position. src/lib/client/landmarks.ts returns null rather than an empty
+   * result when there is no detector to ask, so "the model looked and saw
+   * nothing" and "nothing looked" stay different answers: the first is a refusal
+   * the person needs to hear, the second is a reason to go on guessing.
+   */
+  const detected = await detectFaces(canvas);
   if (detected !== null) {
-    return detected;
+    if (detected.faces.length === 0) {
+      return { faceCount: 0, faceBox: null, source: "model", pose: null };
+    }
+    const largest = detected.faces.reduce((best, face) =>
+      face.box.height > best.box.height ? face : best,
+    );
+    return {
+      faceCount: detected.faces.length,
+      faceBox: largest.box,
+      source: "model",
+      pose: largest.pose,
+    };
+  }
+
+  const browserDetected = await detectWithBrowser(canvas);
+  if (browserDetected !== null) {
+    return browserDetected;
   }
   return estimateFaceFromFrame(full, sample);
 }

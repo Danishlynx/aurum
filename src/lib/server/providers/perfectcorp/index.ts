@@ -27,6 +27,7 @@ import {
   hairTypeResultSchema,
   normalizeTaskState,
   renderResultSchema,
+  DEFAULT_FACE_ANGLE_STRICTNESS,
   skinAnalysisResultSchema,
   taskCreateResponseSchema,
   taskFailureCode,
@@ -406,7 +407,8 @@ function bodyForCaptureAnalysis(
     case "facialColorTones":
       return {
         src_file_id: input.fileId,
-        face_angle_strictness_level: input.faceAngleStrictness ?? "high",
+        face_angle_strictness_level:
+          input.faceAngleStrictness ?? DEFAULT_FACE_ANGLE_STRICTNESS,
       };
     /*
      * "features" is this endpoint's own word for the selection. Confirmed live
@@ -418,7 +420,8 @@ function bodyForCaptureAnalysis(
       return {
         src_file_id: input.fileId,
         features: [...input.faceAttributes],
-        face_angle_strictness_level: input.faceAngleStrictness ?? "high",
+        face_angle_strictness_level:
+          input.faceAngleStrictness ?? DEFAULT_FACE_ANGLE_STRICTNESS,
       };
     case "hairType":
       return { src_file_ids: [...(input.hairTypeFileIds ?? [])] };
