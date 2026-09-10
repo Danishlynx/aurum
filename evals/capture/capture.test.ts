@@ -49,8 +49,17 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const FIXTURES = resolve(REPO_ROOT, "evals", "fixtures");
 
 const FRAME = { width: 120, height: 120 } as const;
-/** 72 of 120 is 60 percent of the frame height, exactly the rule. */
-const GOOD_FACE_BOX: Box = { x: 30, y: 24, width: 60, height: 72 };
+/**
+ * A face that satisfies both framing rules at once, which since 2026-09-07 is
+ * what "good" means.
+ *
+ * 72 of 120 is 60 percent of the frame height, exactly our own rule. 74 of 120
+ * is 0.617 of the short axis, which clears the engine's own rule that the face
+ * be wider than 60 percent of it (FACE_WIDTH_RATIO_MIN). The old box here was 60
+ * wide, which is 0.5, and so described a frame this suite called good and the
+ * engine would have refused with error_src_face_too_small.
+ */
+const GOOD_FACE_BOX: Box = { x: 23, y: 24, width: 74, height: 72 };
 
 function image(
   pixel: (x: number, y: number) => number,
@@ -323,7 +332,14 @@ describe("eval:capture, auto framing an uploaded photo", () => {
   );
 
   it("leaves a photo that was already framed well enough alone", () => {
-    for (const coverage of [FACE_COVERAGE_MIN, 0.7, 0.9]) {
+    /*
+     * "Well enough" now means both rules, so it starts higher than
+     * FACE_COVERAGE_MIN. In this 3 by 4 frame a face of the 0.72 aspect this
+     * helper draws reaches 0.60 of the short axis at about 0.63 of the frame
+     * height, so a face at exactly our height rule is one the engine would still
+     * have refused and is now composed rather than sent as it came.
+     */
+    for (const coverage of [0.65, 0.7, 0.9]) {
       expect(
         autoCropBoxFor({ faceBox: galleryFace(coverage), frame: GALLERY }),
       ).toBeNull();
@@ -378,7 +394,30 @@ describe("eval:capture, what the engine's own refusal says", () => {
     { code: "error_no_face", line: copy.capture.rejection.no_face },
     // Read off a gallery upload. The auto framing above is what stops it being
     // reached; this holds the line it lands on when the framing cannot help.
-    { code: "error_src_face_too_small", line: copy.errors.readingRefused },
+    // Since 2026-09-07 that line names the problem instead of blaming the
+    // provider for a photograph whose face was simply small in it.
+    { code: "error_src_face_too_small", line: copy.capture.faceSmallInPhoto },
+    // The other spelling of the same refusal, which every endpoint but the skin
+    // analyzer uses.
+    {
+      code: "error_face_position_too_small",
+      line: copy.capture.faceSmallInPhoto,
+    },
+    // Both were reaching the generic provider line until 2026-09-07, and both
+    // are things the person can act on.
+    {
+      code: "error_multiple_people",
+      line: copy.capture.rejection.multiple_faces,
+    },
+    {
+      code: "error_face_position_out_of_boundary",
+      line: copy.capture.rejection.face_out_of_bounds,
+    },
+    { code: "error_lighting_dark", line: copy.capture.rejection.too_dark },
+    {
+      code: "error_insufficient_lighting",
+      line: copy.capture.rejection.too_dark,
+    },
   ] as const;
 
   it("answers each live code with the capture screen's own line", () => {
@@ -416,7 +455,20 @@ describe("eval:capture, what the engine's own refusal says", () => {
 
   it("marks the photo reasons as worth a retake and the provider one as not", () => {
     const retakeable = ANALYSIS_FAILURE_REASONS.filter(isRetakeFailure);
-    expect(retakeable).toEqual(["face_angle", "no_face", "frame"]);
+    expect(retakeable).toEqual([
+      "face_angle",
+      "no_face",
+      "multiple_faces",
+      "face_too_small",
+      "face_out_of_bounds",
+      "lighting",
+      "image_size",
+      "frame",
+    ]);
+    // Exactly one reason is not about the photograph.
+    expect(
+      ANALYSIS_FAILURE_REASONS.filter((reason) => !isRetakeFailure(reason)),
+    ).toEqual(["provider"]);
   });
 
   it("keeps every line free of a dash of either kind", () => {

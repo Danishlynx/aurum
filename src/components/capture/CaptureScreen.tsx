@@ -19,12 +19,13 @@ import {
   rememberCaptureSource,
 } from "@/lib/client/capture-source";
 import { decrementJudgeRemaining } from "@/lib/client/judge-session";
+import { detectFaces } from "@/lib/client/landmarks";
 import {
   estimateFaceForCapture,
   estimateFaceFromSkin,
   SKIN_SAMPLE_LONG_EDGE,
 } from "@/lib/client/face";
-import type { FaceEstimate } from "@/lib/client/face";
+import type { FaceEstimate, FaceEstimateSource } from "@/lib/client/face";
 import {
   GUIDANCE_SAMPLE_LONG_EDGE,
   guidanceKey,
@@ -35,6 +36,7 @@ import type { GuidanceKey } from "@/lib/client/guidance";
 import {
   CAPTURE_JPEG_QUALITY,
   CAPTURE_LONG_EDGE,
+  CAPTURE_MIN_SHORT_EDGE,
   CAPTURE_SOURCE_LONG_EDGE,
   PREVIEW_JPEG_QUALITY,
   PREVIEW_LONG_EDGE,
@@ -208,6 +210,34 @@ function snapshotOf(video: HTMLVideoElement): HTMLCanvasElement {
  * that a photo is good enough. It only gives the gate the best framing the photo
  * contains.
  */
+/**
+ * The same frame, recomposed around the face it contains, or the frame itself
+ * when there is nothing to improve.
+ *
+ * The camera path's counterpart to frameForUpload below. It works off an already
+ * drawn canvas rather than off a decoded file, because the camera has one frame
+ * and it is already in hand, so there is no full resolution original to go back
+ * to. The source canvas is the sensor's own frame at CAPTURE_SOURCE_LONG_EDGE,
+ * which is twice the upload's long edge, so a crop taken from it still arrives
+ * at full size.
+ */
+async function composeAroundFace(
+  canvas: HTMLCanvasElement,
+): Promise<HTMLCanvasElement> {
+  const { estimate } = await measure(canvas);
+  if (estimate.faceCount !== 1 || estimate.faceBox === null) {
+    return canvas;
+  }
+  const crop = autoCropBoxFor({
+    faceBox: estimate.faceBox,
+    frame: { width: canvas.width, height: canvas.height },
+  });
+  if (crop === null) {
+    return canvas;
+  }
+  return drawCropToCanvas(canvas, crop, CAPTURE_LONG_EDGE, CAPTURE_MIN_SHORT_EDGE);
+}
+
 async function frameForUpload(
   decoded: DecodedImage,
 ): Promise<HTMLCanvasElement> {
@@ -247,6 +277,8 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const previousSampleRef = useRef<ArrayLike<number> | null>(null);
+  /** Stops the interval stacking detections it has not waited for. */
+  const sampleInFlightRef = useRef(false);
   const pendingRef = useRef<{
     canvas: HTMLCanvasElement;
     assessment: CaptureAssessment;
@@ -372,26 +404,61 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     );
     const image = readImageData(canvas);
     const gray = toGrayscale(image);
-    const estimate = estimateFaceFromSkin(image);
 
-    setGuidance(
-      guidanceKey({
-        meanLuminance: meanLuminanceOf(gray),
-        faceCoverage:
-          estimate.faceBox === null
-            ? null
-            : estimate.faceBox.height / image.height,
-        // Where the middle of the face sits down the frame, which is what says
-        // the phone is being held below the person's eyes. See guidance.ts.
-        faceCenterY:
-          estimate.faceBox === null
-            ? null
-            : (estimate.faceBox.y + estimate.faceBox.height / 2) / image.height,
-        motion: motionBetween(previousSampleRef.current, gray.data),
-        sharpness: sharpnessOf(gray, estimate.faceBox),
-      }),
-    );
-    previousSampleRef.current = gray.data;
+    /*
+     * The real detector when it is already warm, the colour threshold when it is
+     * not.
+     *
+     * detectFaces resolves immediately once the model is loaded, and the consent
+     * screen starts loading it (warmFaceDetector in ConsentForm), so by the time
+     * anybody reaches this screen it is normally ready. While it is not, this
+     * loop keeps running on the heuristic exactly as it did before rather than
+     * standing still with no line under the oval.
+     *
+     * An in flight guard, because this runs on an interval: a detection that
+     * takes longer than SAMPLE_INTERVAL_MS must not stack up a queue of frames
+     * that are already stale by the time they are answered.
+     */
+    if (sampleInFlightRef.current) {
+      return;
+    }
+    sampleInFlightRef.current = true;
+
+    void detectFaces(canvas)
+      .catch(() => null)
+      .then((detected) => {
+        const model =
+          detected !== null && detected.faces.length > 0
+            ? detected.faces.reduce((best, face) =>
+                face.box.height > best.box.height ? face : best,
+              )
+            : null;
+        const faceBox =
+          model !== null ? model.box : estimateFaceFromSkin(image).faceBox;
+
+        setGuidance(
+          guidanceKey({
+            meanLuminance: meanLuminanceOf(gray),
+            faceCoverage:
+              faceBox === null ? null : faceBox.height / image.height,
+            // Where the middle of the face sits down the frame, which is what
+            // says the phone is being held below the person's eyes. Kept even
+            // with a real pose available, because it still answers for the
+            // frames the detector could not solve a pose for.
+            faceCenterY:
+              faceBox === null
+                ? null
+                : (faceBox.y + faceBox.height / 2) / image.height,
+            motion: motionBetween(previousSampleRef.current, gray.data),
+            sharpness: sharpnessOf(gray, faceBox),
+            pose: model?.pose ?? null,
+          }),
+        );
+        previousSampleRef.current = gray.data;
+      })
+      .finally(() => {
+        sampleInFlightRef.current = false;
+      });
   }, []);
 
   useEffect(() => {
@@ -409,7 +476,18 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
   // -------------------------------------------------------------------------
 
   const upload = useCallback(
-    async (canvas: HTMLCanvasElement, assessment: CaptureAssessment) => {
+    async (
+      canvas: HTMLCanvasElement,
+      assessment: CaptureAssessment,
+      /*
+       * Which estimator measured this frame, recorded alongside the numbers it
+       * produced. Without it a stored quality row cannot be read later: a face
+       * coverage of 0.7 from the real detector and one from the colour threshold
+       * fallback are not the same claim, and the thresholds all of this is
+       * calibrated against have to be set from the first kind only.
+       */
+      faceSource: FaceEstimateSource | null = null,
+    ) => {
       setPhase({ name: "working" });
 
       let blob: Blob;
@@ -430,6 +508,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
           verdict: assessment.verdict,
           reason: assessment.reason,
           ...assessment.metrics,
+          ...(faceSource === null ? {} : { faceSource }),
         },
       });
 
@@ -499,19 +578,40 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     async (canvas: HTMLCanvasElement) => {
       setPhase({ name: "working" });
 
-      const { estimate, full } = await measure(canvas);
+      /*
+       * Composed before it is judged, which the camera path did not do until
+       * 2026-09-07.
+       *
+       * The oval on this screen is drawn at 62 percent of the stage height, and
+       * a person who fills it lands a face that clears our own height rule. It
+       * does not clear the engine's, which is about width against the short axis
+       * of the picture (FACE_WIDTH_RATIO_MIN in src/lib/shared/quality.ts): on
+       * the 3 by 4 frame a front camera usually hands back, filling the oval puts
+       * the face at about 0.56 of the width where the engine wants more than
+       * 0.60. So the frame was tapped, passed, sent, and refused.
+       *
+       * The upload path has composed around the face since the gallery refusal
+       * of 2026-09-02. There was never a reason for the camera path not to, and
+       * the reason it did not is that the oval was assumed to be doing the job.
+       * Recomposing here is free, happens before anything is uploaded, and turns
+       * the oval back into what it always should have been: guidance, not a
+       * guarantee.
+       */
+      const composed = await composeAroundFace(canvas);
+      const { estimate, full } = await measure(composed);
       const assessment = assessCapture({
         image: toGrayscale(full),
         faceCount: estimate.faceCount,
         faceBox: estimate.faceBox,
+        pose: estimate.pose ?? null,
       });
 
       if (assessment.verdict === "accept") {
-        await upload(canvas, assessment);
+        await upload(composed, assessment, estimate.source);
         return;
       }
 
-      pendingRef.current = { canvas, assessment };
+      pendingRef.current = { canvas: composed, assessment };
       setPhase({
         name: "review",
         // Non null for every verdict other than accept.

@@ -134,8 +134,93 @@ describe("guidanceKey", () => {
     }
   });
 
+  /**
+   * The pose lines, added 2026-09-07 with the detector that can measure one.
+   *
+   * Every refusal this product has read off the live API has been about pose,
+   * and until the detector landed the live line had nothing to say about it. A
+   * person was told the frame was good, tapped, waited for an upload and a task,
+   * and was then told the engine would not read their face.
+   */
+  it("says nothing about pose when there is no pose to read", () => {
+    expect(guidanceKey({ ...READY, pose: null })).toBe("ready");
+    expect(guidanceKey(READY)).toBe("ready");
+  });
+
+  it("leaves a head inside the window alone", () => {
+    expect(
+      guidanceKey({
+        ...READY,
+        pose: { yawDegrees: 0, pitchDegrees: 0, rollDegrees: 0 },
+      }),
+    ).toBe("ready");
+  });
+
+  it("asks for a square head when it is turned or the phone is tilted", () => {
+    const turned = guidanceKey({
+      ...READY,
+      pose: { yawDegrees: 40, pitchDegrees: 0, rollDegrees: 0 },
+    });
+    const tilted = guidanceKey({
+      ...READY,
+      pose: { yawDegrees: 0, pitchDegrees: 0, rollDegrees: -40 },
+    });
+    expect(turned).toBe("square");
+    expect(tilted).toBe("square");
+    expect(guidanceLine({ ...READY, pose: { yawDegrees: 40, pitchDegrees: 0, rollDegrees: 0 } })).toBe(
+      copy.capture.guidance.square,
+    );
+  });
+
+  /**
+   * A phone held at chest height is the ordinary grip and it is the one the
+   * engine's pitch budget has least room for. It gets the line about the phone,
+   * not the line about the head, because the phone is what is wrong.
+   */
+  it("asks for the phone when the problem is pitch", () => {
+    expect(
+      guidanceKey({
+        ...READY,
+        pose: { yawDegrees: 0, pitchDegrees: 35, rollDegrees: 0 },
+      }),
+    ).toBe("eyeLevel");
+    expect(
+      guidanceKey({
+        ...READY,
+        pose: { yawDegrees: 0, pitchDegrees: -40, rollDegrees: 0 },
+      }),
+    ).toBe("eyeLevel");
+  });
+
+  it("answers pose before framing, because framing cannot fix a turned head", () => {
+    expect(
+      guidanceKey({
+        ...READY,
+        faceCoverage: 0.2,
+        pose: { yawDegrees: 40, pitchDegrees: 0, rollDegrees: 0 },
+      }),
+    ).toBe("square");
+  });
+
+  it("still asks for light first, because a dark frame measures wrong everywhere", () => {
+    expect(
+      guidanceKey({
+        ...READY,
+        meanLuminance: MEAN_LUMINANCE_BORDERLINE_BELOW - 1,
+        pose: { yawDegrees: 40, pitchDegrees: 0, rollDegrees: 0 },
+      }),
+    ).toBe("light");
+  });
+
   it("has a line for every key it can return", () => {
-    const keys = ["light", "eyeLevel", "closer", "hold", "ready"] as const;
+    const keys = [
+      "light",
+      "square",
+      "eyeLevel",
+      "closer",
+      "hold",
+      "ready",
+    ] as const;
     // Built from character codes on purpose, never typed as a literal glyph:
     // this file lives under src, where the em dash and en dash rule is
     // enforced on the source itself.

@@ -16,10 +16,14 @@
  */
 
 import { copy } from "@/lib/shared/copy";
+import type { FacePose } from "@/lib/shared/pose";
 import {
   FACE_COVERAGE_MIN,
   MEAN_LUMINANCE_BORDERLINE_BELOW,
+  POSE_PITCH_MAX_DEGREES,
+  POSE_PITCH_MIN_DEGREES,
   SHARPNESS_BORDERLINE_BELOW,
+  poseVerdictFor,
 } from "@/lib/shared/quality";
 import type { GrayscaleImage } from "@/lib/shared/quality";
 
@@ -92,12 +96,43 @@ export type LiveFrameStats = {
    * talking a person into taking.
    */
   readonly sharpness: number;
+  /**
+   * The head position, when the preview is being measured by a detector that can
+   * solve for one. Null or absent means the line simply says nothing about pose,
+   * which is what it did before 2026-09-07.
+   */
+  readonly pose?: FacePose | null;
 };
 
 export function guidanceKey(stats: LiveFrameStats): GuidanceKey {
   if (stats.meanLuminance < MEAN_LUMINANCE_BORDERLINE_BELOW) {
     return "light";
   }
+
+  /*
+   * Pose, when there is a real measurement of it, and before every framing line.
+   *
+   * This is the whole reason the detector was added. Every refusal this product
+   * has read off the live API has been a pose refusal, and until now the only
+   * thing the live line could say about pose was inferred from how far down the
+   * frame a skin coloured blob had slid. A person was told "Good. Tap to
+   * capture.", tapped, waited, and was then told the engine would not read their
+   * face. Saying it here costs them a second instead of a round trip.
+   *
+   * Pitch is separated from the other two axes because it has its own
+   * instruction. A head tipped back or dropped forward is almost always a phone
+   * held at the wrong height, which is what the eyeLevel line already asks about,
+   * and it is the axis the engine's own budget is tightest on in the direction a
+   * phone at chest height pushes it.
+   */
+  const pose = stats.pose ?? null;
+  if (pose !== null && poseVerdictFor(pose) !== "ok") {
+    const pitchIsTheProblem =
+      pose.pitchDegrees > POSE_PITCH_MAX_DEGREES ||
+      pose.pitchDegrees < POSE_PITCH_MIN_DEGREES;
+    return pitchIsTheProblem ? "eyeLevel" : "square";
+  }
+
   /*
    * Before "move closer", because a phone lifted to eye level moves the face
    * inside the frame as well as squaring it to the lens, so answering the

@@ -16,8 +16,11 @@
  * spent. Nothing in this file touches the DOM, a canvas, or a provider.
  *
  * Face detection itself is not here. The caller runs a detector and passes the
- * face count and the face box in; this module decides what to do with them.
+ * face count, the face box, and the head position in; this module decides what
+ * to do with them.
  */
+
+import type { FacePose } from "./pose";
 
 /**
  * A single channel image. data holds luminance 0 to 255, row major, length
@@ -78,20 +81,59 @@ export type Frame = {
 export const SHARPNESS_MEASURE_LONG_EDGE = 96;
 
 /**
+ * What the normalized ratio is multiplied by before anybody compares it to a
+ * threshold. Nothing but readability: it puts a typical face somewhere in the
+ * tens rather than at 0.0x, so a logged value can be read at a glance.
+ */
+export const SHARPNESS_SCALE = 100;
+
+/**
  * Below this, at the measurement size above, a frame is borderline. There is no
  * reject threshold for sharpness. That is a decision, not an omission: see
  * assessCapture.
  *
- * CALIBRATED against the first real device, 2026-09-02, then read again against
- * the measurement rule above on 2026-09-03. The S26 Ultra night frames that were
- * being refused in a loop measured between 12 and 60 on the old full size face
- * crop. The same crop resampled to 96 reads higher, because the box average
- * concentrates the edges a face does have while the denoised skin between them
- * contributes nothing either way. Those frames now sit above this line and
- * accept. A frame that is genuinely smeared has no edges left to concentrate and
- * still lands under it, where it is offered rather than refused.
+ * RECALIBRATED 2026-09-07, when the measurement changed underneath it.
+ *
+ * What changed and why. Until this date sharpnessOf returned a bare Laplacian
+ * variance, which is an absolute quantity of edge energy. Edge energy scales
+ * with the contrast of whatever is being measured, so the number a face produced
+ * was as much a reading of that face's contrast as of its focus. Two frames of
+ * the same person at the same focus, one in flat window light and one in raking
+ * light, read far apart. Worse, and this is the part that made it a product
+ * failure rather than a rounding error: a deeply pigmented face in soft light
+ * carries less local luminance contrast than a pale one under the same lamp, so
+ * the measurement ran systematically low on exactly the skin tones this product
+ * exists to serve, and told those people their perfectly sharp photograph was
+ * blurry. docs/00-product.md calls tools that do this the problem the product is
+ * answering, so shipping one inside the capture screen was not a defect we could
+ * leave in place.
+ *
+ * sharpnessOf now divides that edge energy by the region's own intensity
+ * variance. The ratio asks what share of the region's contrast sits at high
+ * frequency, which is what focus actually is, and it is invariant to how much
+ * contrast the face had to begin with. Blur still moves it, and moves it hard,
+ * because defocus attenuates high frequencies far faster than it attenuates the
+ * overall spread.
+ *
+ * What the change is worth, measured on the fixtures these suites already carry.
+ * sharpMidtones (levels 60, 120, 180) and dimSharp (levels 30, 45, 60) are the
+ * same pattern at the same focus, one of them dim and low contrast. Under the
+ * old measurement they read far apart. Under this one they both read 3600.02,
+ * which is the property the gate needed and did not have. A square wave of
+ * period 8 reads 65.7 in focus, 41.8 under a 3 pixel box blur, 33.2 under 4, and
+ * 19.8 under 6.
+ *
+ * The number below is set from those synthetic patterns rather than from
+ * photographs, and it is therefore PROVISIONAL in the strongest sense: it is a
+ * shape, not a measurement. It sits low on purpose. The cost of flagging a frame
+ * that was fine is a person sent back to the camera for nothing, which is the
+ * failure this whole change exists to remove, and the cost of missing a soft
+ * frame is a couple of seconds against a provider gate that is free and reads
+ * focus better than we do. Setting it from real faces is
+ * docs/SUBMISSION-RUNBOOK.md C4, and nothing about it can refuse a frame in the
+ * meantime.
  */
-export const SHARPNESS_BORDERLINE_BELOW = 60;
+export const SHARPNESS_BORDERLINE_BELOW = 20;
 
 /** A pixel at or above this luminance carries no detail. */
 export const BLOWN_LUMINANCE_AT_OR_ABOVE = 250;
@@ -130,6 +172,98 @@ export const FACE_COVERAGE_MIN = 0.6;
  * small face wastes a Perfect Corp credit.
  */
 export const FACE_COVERAGE_BORDERLINE_MIN = 0.52;
+
+// ---------------------------------------------------------------------------
+// The provider's own rule, in the provider's own terms
+// ---------------------------------------------------------------------------
+
+/**
+ * The rule the engine actually applies, which is not the one above.
+ *
+ * Read verbatim off ai_skin_analysis, ai_face_analyzer and ai_skin_tone_analysis
+ * on 2026-09-07, where it appears as a warning block on all three:
+ *
+ *     "The width of the face needs to be greater than 60% of the width of the
+ *      image."
+ *
+ * and refined by the Camera Kit quality configuration on the same page, which
+ * states how the ratio is taken: "Landscape mode: vertical ratio. Portrait mode:
+ * horizontal ratio." So it is the face's width against the image's SHORT axis,
+ * and for the portrait frames this app sends, the short axis is the width.
+ *
+ * Why this is not the same check as FACE_COVERAGE_MIN, and why both now exist.
+ * Ours measured face height against frame height. A face is roughly three
+ * quarters as wide as it is tall, so a face sitting exactly on our 60 percent
+ * height rule inside a 768 by 1024 frame is about 460 pixels wide, which is
+ * 0.599 of the width. Our gate passed at precisely the value the engine refuses
+ * at. Every frame that cleared our rule by a hair failed theirs, and the face box
+ * that decided it came from an estimator that runs down the neck and reports
+ * boxes larger than the face, so the error only ever pointed one way.
+ *
+ * The band, not just the floor. The same page asks for "approximately 60 to 80
+ * percent of image width", and error_face_position_out_of_boundary is waiting
+ * above it for a face that runs off the edge, so this is a window and the gate
+ * checks both sides of it.
+ *
+ * Why nothing here ever refuses a frame, only flags one. A face that is small in
+ * the picture is the one framing failure this codebase can fix without asking
+ * the person for anything: autoCropBoxFor composes the frame around the face,
+ * and it already targets this same ratio (see the width cap in that function).
+ * Refusing a photograph we could simply recompose would be choosing to send
+ * somebody back to the camera in order to avoid a canvas operation. The height
+ * rule above still refuses a face far too small to crop usefully, which is the
+ * case where there is genuinely nothing to compose from.
+ */
+export const FACE_WIDTH_RATIO_MIN = 0.6;
+
+/**
+ * The top of the documented band. Above it the face starts leaving the frame,
+ * and error_face_position_out_of_boundary is what the engine answers with.
+ */
+export const FACE_WIDTH_RATIO_MAX = 0.86;
+
+// ---------------------------------------------------------------------------
+// Head pose
+// ---------------------------------------------------------------------------
+
+/**
+ * The pose window, in the degrees src/lib/shared/pose.ts defines.
+ *
+ * Every one of these is inside what the app now asks the engine for. Since
+ * 2026-09-07 the two endpoints that gate on pose are called with
+ * face_angle_strictness_level "flexible", which is 30 degrees on all three axes
+ * (DEFAULT_FACE_ANGLE_STRICTNESS in
+ * src/lib/server/providers/perfectcorp/schemas.ts). The numbers below are the
+ * Camera Kit RELAXED profile, which is tighter, so a frame this gate accepts is
+ * one the engine has room to take rather than one sitting on its boundary.
+ *
+ * Pitch is asymmetric because the provider's is. RELAXED allows -20 to +10, and
+ * the sign convention in pose.ts makes a lifted chin positive, so the tight half
+ * is the one a phone held below the face pushes into. That is the 2026-09-03
+ * refusal (error_face_angle_downward) written as a number the gate can check
+ * before a unit is spent instead of after.
+ */
+export const POSE_YAW_MAX_DEGREES = 15;
+export const POSE_ROLL_MAX_DEGREES = 15;
+export const POSE_PITCH_MAX_DEGREES = 10;
+export const POSE_PITCH_MIN_DEGREES = -20;
+
+/**
+ * How far past the window a frame can sit and still be offered rather than
+ * refused, and why there is any slack at all.
+ *
+ * Two reasons, both about the estimate rather than the pose. The landmark
+ * estimator in pose.ts is a heuristic with provisional scales on it, and even
+ * the accurate path is solving for a head position off a single photograph. And
+ * the strictness level the engine is called with is looser than this window, so
+ * a frame a little outside it is one the engine may well still read.
+ *
+ * So the window is where the line goes green, the window plus this slack is
+ * where the frame is offered with "Use it anyway", and past that is where the
+ * engine is certain enough to refuse that spending a person's time on it would
+ * be worse than saying so.
+ */
+export const POSE_SLACK_DEGREES = 12;
 
 // ---------------------------------------------------------------------------
 // Pure measurements
@@ -300,9 +434,31 @@ export function sharpnessOf(
     region !== null && clampBox(region, image) !== null
       ? cropToBox(image, region)
       : image;
-  return laplacianVariance(
-    resampleToLongEdge(measured, SHARPNESS_MEASURE_LONG_EDGE),
-  );
+  const resampled = resampleToLongEdge(measured, SHARPNESS_MEASURE_LONG_EDGE);
+  const contrast = intensityVariance(resampled);
+  if (contrast <= 0) {
+    return 0;
+  }
+  return (laplacianVariance(resampled) / contrast) * SHARPNESS_SCALE;
+}
+
+/** Variance of the pixel values themselves. The contrast of the region. */
+export function intensityVariance(image: GrayscaleImage): number {
+  assertImage(image);
+  const { data } = image;
+  const count = data.length;
+  if (count === 0) {
+    return 0;
+  }
+  let sum = 0;
+  let sumOfSquares = 0;
+  for (let index = 0; index < count; index += 1) {
+    const value = data[index] ?? 0;
+    sum += value;
+    sumOfSquares += value * value;
+  }
+  const mean = sum / count;
+  return Math.max(0, sumOfSquares / count - mean * mean);
 }
 
 export type ExposureStats = {
@@ -469,7 +625,27 @@ export function autoCropBoxFor(input: AutoCropInput): Box | null {
   if (faceBox.width <= 0 || faceBox.height <= 0) {
     return null;
   }
-  if (faceCoverageCheck(faceBox, frame).meetsMinimum) {
+  /*
+   * Both rules have to be satisfied before there is nothing to do, and until
+   * 2026-09-07 only the first of them was checked here.
+   *
+   * The height rule is ours and the width rule is the engine's, and they are not
+   * the same statement about a photograph. Take the front camera's usual 3 by 4
+   * frame at 768 by 1024, and a person filling the oval exactly: the face is 635
+   * pixels tall, which clears the 62 percent the oval is drawn to, and about 432
+   * wide, which is 0.56 of the short axis. The engine wants more than 0.60 and
+   * refuses at that number. So the frame passed this function untouched, was sent
+   * whole, and came back error_src_face_too_small, and the only thing offered to
+   * the person was a suggestion that they take it again.
+   *
+   * Checking the width ratio here means the composition step now fires on exactly
+   * the frames the engine would have refused for framing, camera and gallery
+   * alike, and the crop it produces targets AUTO_CROP_FACE_COVERAGE, which clears
+   * FACE_WIDTH_RATIO_MIN with margin rather than landing on it.
+   */
+  const coverage = faceCoverageCheck(faceBox, frame);
+  const widthRatio = faceWidthRatio(faceBox, frame);
+  if (coverage.meetsMinimum && widthRatio >= FACE_WIDTH_RATIO_MIN) {
     return null;
   }
 
@@ -527,7 +703,10 @@ export const CAPTURE_REASON_PRECEDENCE = [
   "multiple_faces",
   "too_dark",
   "over_exposed",
+  "face_out_of_bounds",
   "too_far",
+  "too_close",
+  "facing_away",
   "blurry",
 ] as const;
 
@@ -553,6 +732,13 @@ export type CaptureMetrics = {
   readonly meanLuminance: number;
   /** Null when there is no face box to measure. */
   readonly faceCoverage: number | null;
+  /**
+   * Face width over the frame's short axis, which is the ratio the engine
+   * measures (FACE_WIDTH_RATIO_MIN). Null when there is no face box.
+   */
+  readonly faceWidthRatio: number | null;
+  /** Null when the detector could not solve for a head position. */
+  readonly pose: FacePose | null;
 };
 
 export type CaptureAssessment = {
@@ -575,7 +761,72 @@ export type CaptureAssessmentInput = {
   readonly faceCount: number;
   /** The face box in image pixels, or null when there is no usable face. */
   readonly faceBox: Box | null;
+  /**
+   * The head position, when the detector could solve for one.
+   *
+   * Optional, and absent is not the same as square to the lens: a frame with no
+   * pose is simply not judged on pose, which is what every frame did before
+   * 2026-09-07. A detector that reports one gets the pose checks; one that does
+   * not is no worse off than it was.
+   */
+  readonly pose?: FacePose | null;
 };
+
+/**
+ * Face width over the frame's short axis, which is the ratio the engine gates
+ * on. See FACE_WIDTH_RATIO_MIN for why this is not faceCoverageCheck.
+ */
+export function faceWidthRatio(faceBox: Box, frame: Frame): number {
+  const shortAxis = Math.min(frame.width, frame.height);
+  if (shortAxis <= 0) {
+    throw new Error("Frame width and height must be positive.");
+  }
+  return faceBox.width / shortAxis;
+}
+
+/**
+ * True when any edge of the face box has reached the edge of the frame, which is
+ * what error_face_position_out_of_boundary names.
+ *
+ * A tolerance of one pixel rather than an exact touch: a box that came back from
+ * a detector at the very edge of its own coordinate space is at the edge of the
+ * picture, and rounding should not decide it.
+ */
+export function faceIsClipped(faceBox: Box, frame: Frame): boolean {
+  return (
+    faceBox.x <= 1 ||
+    faceBox.y <= 1 ||
+    faceBox.x + faceBox.width >= frame.width - 1 ||
+    faceBox.y + faceBox.height >= frame.height - 1
+  );
+}
+
+export type PoseVerdict = "ok" | "borderline" | "reject";
+
+/** How far outside the pose window a head sits, in degrees. Zero when inside. */
+export function poseExcessDegrees(pose: FacePose): number {
+  const yaw = Math.max(0, Math.abs(pose.yawDegrees) - POSE_YAW_MAX_DEGREES);
+  const roll = Math.max(0, Math.abs(pose.rollDegrees) - POSE_ROLL_MAX_DEGREES);
+  const pitch = Math.max(
+    0,
+    Math.max(
+      pose.pitchDegrees - POSE_PITCH_MAX_DEGREES,
+      POSE_PITCH_MIN_DEGREES - pose.pitchDegrees,
+    ),
+  );
+  return Math.max(yaw, roll, pitch);
+}
+
+export function poseVerdictFor(pose: FacePose | null | undefined): PoseVerdict {
+  if (pose === null || pose === undefined) {
+    return "ok";
+  }
+  const excess = poseExcessDegrees(pose);
+  if (excess <= 0) {
+    return "ok";
+  }
+  return excess <= POSE_SLACK_DEGREES ? "borderline" : "reject";
+}
 
 /**
  * Runs the whole gate and returns accept, borderline, or reject with the reason
@@ -602,6 +853,7 @@ export type CaptureAssessmentInput = {
  */
 export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment {
   const { image, faceCount, faceBox } = input;
+  const pose = input.pose ?? null;
   assertImage(image);
 
   const failures: CaptureFailure[] = [];
@@ -661,6 +913,41 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
   }
 
   /*
+   * The engine's own framing rule, checked in the engine's own terms. It sits
+   * beside the height rule above rather than replacing it, because they are two
+   * different statements about the same photograph and the person is served by
+   * both: the height rule is what the oval on the camera screen is drawn to, and
+   * this one is what the reading will actually be refused for.
+   */
+  const widthRatio = faceBox !== null ? faceWidthRatio(faceBox, image) : null;
+  if (widthRatio !== null) {
+    if (widthRatio < FACE_WIDTH_RATIO_MIN) {
+      failures.push({ reason: "too_far", severity: "borderline" });
+    } else if (widthRatio > FACE_WIDTH_RATIO_MAX) {
+      failures.push({ reason: "too_close", severity: "borderline" });
+    }
+  }
+
+  /*
+   * A face already touching the edge of the picture is the one framing failure
+   * the reframe path cannot answer, because that path only ever crops tighter.
+   * Saying so here, before the upload, is the difference between one instruction
+   * and two wasted attempts (isReframeableFailure in
+   * src/lib/shared/analysis-failure.ts).
+   */
+  if (faceBox !== null && faceIsClipped(faceBox, image)) {
+    failures.push({ reason: "face_out_of_bounds", severity: "borderline" });
+  }
+
+  const poseVerdict = poseVerdictFor(pose);
+  if (poseVerdict !== "ok") {
+    failures.push({
+      reason: "facing_away",
+      severity: poseVerdict === "reject" ? "reject" : "borderline",
+    });
+  }
+
+  /*
    * Borderline at every value, never a reject. Softness is the one thing on this
    * screen we are worse at judging than the engine that is about to read the
    * photo: its input gate is free, it is authoritative, and it answers in a
@@ -681,6 +968,8 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
     crushedFraction: exposure.crushedFraction,
     meanLuminance: exposure.meanLuminance,
     faceCoverage: coverage === null ? null : coverage.coverage,
+    faceWidthRatio: widthRatio,
+    pose,
   };
 
   const rejection = firstByPrecedence(failures, "reject");

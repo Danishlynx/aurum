@@ -180,6 +180,7 @@ async function assess(canvas: HTMLCanvasElement): Promise<CaptureAssessment> {
     image: toGrayscale(full),
     faceCount: estimate.faceCount,
     faceBox: estimate.faceBox,
+    pose: estimate.pose ?? null,
   });
 }
 
