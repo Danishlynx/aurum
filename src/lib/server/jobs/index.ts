@@ -790,6 +790,60 @@ export async function readCaptureJobs(
  * Exported because the render poll (src/lib/server/renders) is a job poll too
  * and must not have a second copy of this rule.
  */
+/**
+ * Claims the right to START a pending job, exactly once, for all time.
+ *
+ * Not the same thing as claimForPolling below, and the difference is money.
+ *
+ * claimForPolling is a one second throttle: it stamps last_polled_at and lets
+ * the next caller through as soon as a second has passed. That is right for
+ * asking the provider how a task is getting on, which is idempotent and free.
+ * advanceFanOut used it as a start once lock, and it is not one. Starting the
+ * followers means uploading the selfie to the provider and creating two paid
+ * tasks, which takes well over a second on a phone connection, so a second poll
+ * arriving mid upload found the claim already expired, claimed it again, and
+ * started the same readings a second time. Two skin analyses at 16 units, two
+ * face shape readings at 10, neither of them visible to the person.
+ *
+ * A start once guarantee cannot come from a time window, because the window has
+ * to outlast work whose duration nobody controls. It comes from a state
+ * transition that can only happen once. This claims on last_polled_at being
+ * null, which is the state createAnalysisJobs writes a waiting follower in and
+ * which nothing else ever restores, so exactly one caller can win it.
+ *
+ * The claim is released again if the start fails (releasePendingStart), because
+ * a claim held by a caller that gave up would strand the fan out until the job
+ * timed out.
+ */
+async function claimPendingStart(job: JobRecord): Promise<boolean> {
+  if (job.last_polled_at !== null) {
+    return false;
+  }
+  const result = await serviceClient()
+    .from("jobs")
+    .update({ last_polled_at: new Date().toISOString() })
+    .eq("id", job.id)
+    .is("last_polled_at", null)
+    .select("id")
+    .maybeSingle();
+  return unwrapNullable("claim pending job for start", result) !== null;
+}
+
+/** Puts a claimed start back, so a later poll can try again. */
+async function releasePendingStart(job: JobRecord): Promise<void> {
+  try {
+    await serviceClient()
+      .from("jobs")
+      .update({ last_polled_at: null })
+      .eq("id", job.id)
+      .eq("status", "pending")
+      .is("provider_task_id", null);
+  } catch {
+    // A claim that cannot be released is a stalled fan out and nothing worse:
+    // the job stays pending and the ordinary lifetime timeout ends it.
+  }
+}
+
 export async function claimForPolling(job: JobRecord): Promise<boolean> {
   const now = Date.now();
   if (
@@ -947,10 +1001,6 @@ export async function pollCaptureJobs(
     analyses.map((analysis) => analysis.id),
   );
 
-  // One restart per poll keeps a bad minute from turning into a burst of
-  // uploads. The next poll picks up the next one.
-  let restartsLeft = 1;
-
   /**
    * Whether the reading the rest of the fan out waits on is in. Read from the
    * rows and set again below if it lands during this very pass, so the followers
@@ -1096,18 +1146,42 @@ export async function pollCaptureJobs(
       // Still running: last_polled_at was already stamped by the claim.
     } catch (thrown) {
       const transient = isProviderError(thrown) && thrown.isTransient;
-      if (transient && job.attempts < MAX_ATTEMPTS && restartsLeft > 0) {
-        restartsLeft -= 1;
-        const restarted = await restartJob({
-          session: input.session,
-          job,
-          analysis,
-          capture: input.capture,
-          onProviderCall: input.onProviderCall,
-        });
-        if (restarted) {
-          continue;
-        }
+      /*
+       * A transient error here is a failure to READ the task, not a failure of
+       * the task.
+       *
+       * What throws in this block is getTaskSnapshot: a 15 second HTTP timeout,
+       * a dropped connection, a 429, a 5xx. In every one of those the task is
+       * still sitting at the provider with the id this job already holds, doing
+       * the work, and it will be charged for whether or not anybody ever reads
+       * the answer.
+       *
+       * Until 2026-09-10 this branch called restartJob, which uploaded the
+       * selfie again, created a SECOND task, and overwrote provider_task_id with
+       * the new id. The first task was then unreachable: never polled, never
+       * reconciled, and never cancelled, because the provider has no cancel and
+       * this code has one column for one id. So a network blip on a status GET
+       * bought a second copy of a reading nobody would see, at 20 units for the
+       * leader or 16 for the skin analysis, with no reservation written for it
+       * at all, which is why neither the credit ledger nor the daily cap nor the
+       * judge cap could see the spend.
+       *
+       * The right answer to a read that failed is to read again. Leaving the job
+       * running does exactly that on the next poll, one second later, against the
+       * same task. JOB_LIFETIME_MS already bounds how long that can go on, and
+       * the timeout path below is what ends it honestly.
+       */
+      if (transient) {
+        console.warn(
+          JSON.stringify({
+            event: "aurum.task_read_failed",
+            captureId,
+            kind: analysis.kind,
+            attempts: job.attempts,
+            note: "left running, will be polled again against the same task",
+          }),
+        );
+        continue;
       }
       await failJob({
         session: input.session,
@@ -1195,6 +1269,8 @@ async function advanceFanOut(args: {
   );
 
   const waiting: AnalysisKind[] = [];
+  /** The jobs this call won the start claim on, so it can put them back. */
+  const claimed: JobRecord[] = [];
   for (const analysis of args.analyses) {
     if (analysis.kind === LEADER_ANALYSIS_KIND) {
       continue;
@@ -1210,10 +1286,11 @@ async function advanceFanOut(args: {
     ) {
       continue;
     }
-    if (!(await claimForPolling(job))) {
+    if (!(await claimPendingStart(job))) {
       continue;
     }
     waiting.push(analysis.kind);
+    claimed.push(job);
   }
 
   if (waiting.length === 0) {
@@ -1235,6 +1312,15 @@ async function advanceFanOut(args: {
       onProviderCall: args.onProviderCall,
     });
   } catch (thrown) {
+    /*
+     * The start did not happen, so the claims go back. Holding them would leave
+     * these readings pending with nothing able to start them, and the capture
+     * would sit there until the lifetime timeout rather than trying again on the
+     * next poll a second later.
+     */
+    for (const job of claimed) {
+      await releasePendingStart(job);
+    }
     console.warn(
       JSON.stringify({
         event: "aurum.fan_out_stalled",
@@ -1284,55 +1370,29 @@ async function releaseAnalysisWhenNothingWasBought(args: {
   await releaseJudgeAnalysis(args.session.id);
 }
 
-/**
- * The one automatic retry for a transient failure. The provider file id is not
- * stored between requests, so a restart uploads the selfie again before creating
- * the task. Attempts are capped at 2, which bounds that cost.
+/*
+ * restartJob lived here until 2026-09-10 and is deliberately gone.
+ *
+ * It was the automatic retry for a transient failure, and what it retried was
+ * the wrong thing. The only transient failure that reached it came from reading
+ * a task's status, and a status read that times out says nothing about the task:
+ * it is still at the provider, still working, and still going to be charged.
+ * restartJob uploaded the selfie again, created a second task, and overwrote
+ * provider_task_id with the new id, which left the first one unreachable. There
+ * is one column for one id and the provider has no cancel, so the original ran
+ * to completion, was charged, and was never read by anything. No reservation was
+ * ever written for the second task either, so the credit ledger, the daily cap
+ * and the judge cap were all blind to the spend.
+ *
+ * The retry that was wanted is simply the next poll, one second later, against
+ * the same task id. That is what the transient branch does now, and
+ * JOB_LIFETIME_MS still bounds how long a task can go unread before the timeout
+ * path ends it honestly.
+ *
+ * docs/03-architecture.md still describes a retry ("a failed job can be retried
+ * once automatically if the error is transient"), and that description is
+ * satisfied by re polling. What it must not mean is a second purchase.
  */
-async function restartJob(args: {
-  readonly session: AppSession;
-  readonly job: JobRecord;
-  readonly analysis: Analysis;
-  readonly capture: Capture;
-  readonly onProviderCall?: (count: number) => void;
-}): Promise<boolean> {
-  if (args.capture.storage_path === null) {
-    return false;
-  }
-  try {
-    const object = await downloadObject(
-      BUCKETS.captures,
-      args.capture.storage_path,
-    );
-    const fileId = await uploadCapture({
-      bytes: object.bytes,
-      contentType: object.contentType,
-      captureId: args.capture.id,
-    });
-    args.onProviderCall?.(1);
-
-    const task = await startTask({ kind: args.analysis.kind, fileId });
-    args.onProviderCall?.(1);
-
-    await updateAnalysis(args.analysis.id, {
-      status: "running",
-      provider_task_id: task.taskId,
-      error: null,
-    });
-    await updateJob(args.job.id, {
-      status: "running",
-      provider_task_id: task.taskId,
-      attempts: args.job.attempts + 1,
-      error: null,
-      last_polled_at: null,
-      // The lifetime is measured from here, not from the attempt that failed.
-      created_at: new Date().toISOString(),
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Retention, and where it happens now.

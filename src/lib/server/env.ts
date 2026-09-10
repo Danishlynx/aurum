@@ -277,9 +277,41 @@ export interface DailyCaps {
  * the discipline against the real SerpApi monthly quota lives in the deployed
  * environment, and every search is logged.
  */
+/**
+ * One capture set, in Perfect Corp units, at the prices in
+ * src/lib/server/credits/costs.ts: the tone reading leads at 20, then the skin
+ * analysis at 16 and the face shape reading at 10.
+ *
+ * Written down here because the daily cap has to be able to fit one, and until
+ * 2026-09-10 it could not.
+ */
+export const UNITS_PER_CAPTURE_SET = 46;
+
+/**
+ * The Perfect Corp default was 40, which is less than one capture set, and that
+ * is not a conservative setting: it is a cap that guarantees the thing it is
+ * capping can never finish.
+ *
+ * What it did. The fan out starts the 20 unit leader alone and, when it
+ * succeeds, starts the 16 unit skin reading and the 10 unit face shape reading.
+ * Under a 40 unit ceiling the first two fit at 36 and the third is refused by a
+ * cap it can never clear. The person has already been charged 20, and on any
+ * capture where the leader landed and the skin reading did not, they were
+ * charged 20 for nothing at all. The analyze route's own admission check prices
+ * the cheapest kind at 10, so a capture is waved through and then runs into this
+ * halfway.
+ *
+ * 240 is five capture sets and change. It is a real limit, it is per owner per
+ * UTC day, and it is above the number that has to fit rather than below it. The
+ * discipline against the account balance is JUDGE_CREDITS_CAP and the deployed
+ * environment, not a default that breaks the product.
+ */
 export function dailyCaps(): DailyCaps {
   return {
-    perfectcorpUnits: integer("DAILY_CAP_PERFECTCORP_UNITS", 40),
+    perfectcorpUnits: integer(
+      "DAILY_CAP_PERFECTCORP_UNITS",
+      UNITS_PER_CAPTURE_SET * 5,
+    ),
     serpapiSearches: integer("DAILY_CAP_SERPAPI_SEARCHES", 120),
   };
 }
