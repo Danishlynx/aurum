@@ -82,13 +82,51 @@ export const captureRejectionReasonSchema = z.enum(CAPTURE_REASON_PRECEDENCE);
 export const captureQualitySchema = z.object({
   verdict: captureVerdictSchema,
   reason: captureRejectionReasonSchema.nullable(),
-  /** Laplacian variance. Not bounded above; a sharp image can be in the thousands. */
+  /**
+   * Laplacian variance over the face, divided by that region's own intensity
+   * variance and scaled (SHARPNESS_SCALE). Not bounded above. Since 2026-09-07
+   * this is a ratio rather than raw edge energy, so it no longer moves with the
+   * contrast of the face it was measured on: see SHARPNESS_BORDERLINE_BELOW in
+   * src/lib/shared/quality.ts for why that mattered enough to change.
+   */
   sharpness: z.number().nonnegative(),
   blownFraction: z.number().min(0).max(1),
   crushedFraction: z.number().min(0).max(1),
   meanLuminance: z.number().min(0).max(255),
   /** Null when no face box was available. */
   faceCoverage: z.number().min(0).max(1).nullable(),
+  /**
+   * Face width over the frame's short axis, which is the ratio the engine gates
+   * on rather than the height one above it (FACE_WIDTH_RATIO_MIN).
+   *
+   * Optional because a capture row written by a build from before 2026-09-07 does
+   * not carry it, and a stored row has to keep parsing.
+   */
+  faceWidthRatio: z.number().min(0).nullable().optional(),
+  /**
+   * The head position the detector solved for, in degrees, or null when the
+   * frame was measured by something that cannot report one.
+   *
+   * Stored because it is the other half of the only calibration loop this
+   * product has. Every threshold in the capture gate is currently set from
+   * synthetic patterns and one founder's phone; the honest way to set them is
+   * against what the engine actually did with the frames they let through, and
+   * that means keeping the numbers we measured next to the verdict we got back.
+   */
+  pose: z
+    .object({
+      yawDegrees: z.number(),
+      pitchDegrees: z.number(),
+      rollDegrees: z.number(),
+    })
+    .nullable()
+    .optional(),
+  /**
+   * Which estimator produced the box and the pose. "model" is the real detector,
+   * "skin_region" is the colour threshold fallback, and the difference is the
+   * whole point of the 2026-09-07 change, so a stored row says which one it was.
+   */
+  faceSource: z.enum(["model", "detector", "skin_region"]).optional(),
 });
 
 export type CaptureQuality = z.infer<typeof captureQualitySchema>;

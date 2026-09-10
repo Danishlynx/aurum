@@ -10,14 +10,18 @@ import {
   CRUSHED_LUMINANCE_AT_OR_BELOW,
   FACE_COVERAGE_BORDERLINE_MIN,
   FACE_COVERAGE_MIN,
+  FACE_WIDTH_RATIO_MIN,
   SHARPNESS_BORDERLINE_BELOW,
   SHARPNESS_MEASURE_LONG_EDGE,
+  SHARPNESS_SCALE,
   assessCapture,
   autoCropBoxFor,
   clampBox,
   cropToBox,
   exposureStats,
   faceCoverageCheck,
+  faceWidthRatio,
+  intensityVariance,
   laplacianVariance,
   resampleToLongEdge,
   scaleBox,
@@ -98,6 +102,28 @@ function stripes(width: number, height: number): GrayscaleImage {
     }
   }
   return { data, width, height };
+}
+
+/** A separable box blur, standing in for defocus. */
+function boxBlur(image: GrayscaleImage, radius: number): GrayscaleImage {
+  const { width, height, data } = image;
+  const out = new Array<number>(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let sum = 0;
+      let count = 0;
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          const sy = Math.min(height - 1, Math.max(0, y + dy));
+          const sx = Math.min(width - 1, Math.max(0, x + dx));
+          sum += data[sy * width + sx] ?? 0;
+          count += 1;
+        }
+      }
+      out[y * width + x] = sum / count;
+    }
+  }
+  return { data: out, width, height };
 }
 
 const FRAME: { width: number; height: number } = { width: 100, height: 100 };
@@ -209,8 +235,18 @@ describe("sharpnessOf", () => {
     const image: GrayscaleImage = { data, width, height };
     const region: Box = { x: 40, y: 40, width: 120, height: 120 };
 
-    expect(sharpnessOf(image, region)).toBeGreaterThan(sharpnessOf(image));
+    /*
+     * The region reads as the patch does, and the frame around it reads as
+     * something else. Which of the two is the larger number is not the point and
+     * is not asserted: since 2026-09-07 the measurement is normalized by the
+     * contrast of whatever it was pointed at, so a mostly flat frame with one
+     * detailed patch in it can read high precisely because that patch is all the
+     * contrast it has. What matters, and what this asserts, is that pointing the
+     * measurement at the face gives the face's own answer rather than the
+     * background's.
+     */
     expect(sharpnessOf(image, region)).toBeCloseTo(sharpnessOf(patch), 5);
+    expect(sharpnessOf(image, region)).not.toBeCloseTo(sharpnessOf(image), 1);
   });
 
   it("falls back to the whole frame when the region is off the picture", () => {
@@ -229,12 +265,43 @@ describe("sharpnessOf", () => {
     // The same answer whether the caller crops first or hands over the region.
     const image = stripes(600, 600);
     const region: Box = { x: 100, y: 100, width: 400, height: 400 };
+    const resampled = resampleToLongEdge(
+      cropToBox(image, region),
+      SHARPNESS_MEASURE_LONG_EDGE,
+    );
     expect(sharpnessOf(image, region)).toBeCloseTo(
-      laplacianVariance(
-        resampleToLongEdge(cropToBox(image, region), SHARPNESS_MEASURE_LONG_EDGE),
-      ),
+      (laplacianVariance(resampled) / intensityVariance(resampled)) *
+        SHARPNESS_SCALE,
       10,
     );
+  });
+
+  /**
+   * The reason the measurement was changed on 2026-09-07, as an assertion.
+   *
+   * The same pattern at the same focus, once at full contrast and once at a
+   * fraction of it. A bare Laplacian variance reads these far apart, because
+   * edge energy scales with the contrast of the thing being measured, and a
+   * deeply pigmented face in soft light carries less local contrast than a pale
+   * one under the same lamp. That is how a sharp photograph was being called
+   * blurry, and it was being called blurry on exactly the skin tones
+   * docs/00-product.md says this product exists to serve.
+   */
+  it("reads the same focus the same way at any contrast", () => {
+    const strong = sharpnessOf(checkerboard(40, 200, 100, 100));
+    const faint = sharpnessOf(checkerboard(120, 136, 100, 100));
+    expect(faint).toBeCloseTo(strong, 6);
+
+    // And the raw measurement, which is what it used to return, does not.
+    expect(laplacianVariance(checkerboard(120, 136, 100, 100))).toBeLessThan(
+      laplacianVariance(checkerboard(40, 200, 100, 100)) / 10,
+    );
+  });
+
+  it("still falls when the picture goes soft", () => {
+    const sharp = stripes(400, 400);
+    const softened = boxBlur(sharp, 3);
+    expect(sharpnessOf(softened)).toBeLessThan(sharpnessOf(sharp));
   });
 });
 
@@ -383,11 +450,38 @@ describe("autoCropBoxFor", () => {
     expect(autoCropBoxFor({ faceBox: null, frame: FRAME })).toBeNull();
   });
 
-  it("does nothing when the face already meets the rule", () => {
-    for (const coverage of [0.6, 0.62, 0.75, 0.95]) {
+  it("does nothing when the face already meets both rules", () => {
+    /*
+     * "Both" is the 2026-09-07 change. A gallery frame is 3 by 4, so the face has
+     * to be tall enough for our height rule and wide enough for the engine's
+     * width rule before there is nothing left to compose. At the 0.72 aspect this
+     * helper draws, a face needs about 0.83 of the frame height before its width
+     * clears 0.60 of the short axis, which is why the coverages that satisfy this
+     * now start well above FACE_COVERAGE_MIN.
+     */
+    for (const coverage of [0.85, 0.9, 0.95]) {
       const { faceBox, frame } = gallery(coverage);
       expect(autoCropBoxFor({ faceBox, frame })).toBeNull();
     }
+  });
+
+  /**
+   * The frame that used to slip through: tall enough for us, too narrow for the
+   * engine. It was sent whole and refused with error_src_face_too_small.
+   */
+  it("composes a face that clears the height rule and fails the width rule", () => {
+    const { faceBox, frame } = gallery(0.62);
+    expect(faceCoverageCheck(faceBox, frame).meetsMinimum).toBe(true);
+    expect(faceWidthRatio(faceBox, frame)).toBeLessThan(FACE_WIDTH_RATIO_MIN);
+
+    const crop = autoCropBoxFor({ faceBox, frame });
+    expect(crop).not.toBeNull();
+    if (crop === null) {
+      return;
+    }
+    expect(faceWidthRatio(faceBox, crop)).toBeGreaterThanOrEqual(
+      FACE_WIDTH_RATIO_MIN,
+    );
   });
 
   it("frames the face at 62 percent of the crop, from 30 to 50 percent", () => {

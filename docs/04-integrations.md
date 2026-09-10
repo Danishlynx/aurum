@@ -116,6 +116,32 @@ Answers to the two open questions in "verify first"
 - Cloth try on takes one garment_category per call. A multi garment outfit needs one call per garment, so a Look renders as a sequence of renders, not as one call. The accepted values are the full enum, confirmed live on 2026-09-02: full_body, lower_body, upper_body, shoes, auto, outer. A value outside it answers 400 "garment_category is not one of the accepted values."
 - Image input constraints per API are recorded on each entry in src/lib/server/providers/perfectcorp/endpoints.ts. The tightest ones are hairstyle try on (long side 1024px, face width at least 128px) and makeup try on (long side 1920px, face width at least 100px, head tilt within 10 degrees). Skin analysis needs a short side of 480px for SD and 1080px for HD, and a face wider than 60 percent of the frame.
 
+Face angle strictness, and what this app now sends. Read from the ai_face_analyzer OpenAPI bundle on 2026-09-07, where it is documented as BasicFaceAttrReqFaceAngleStrictnessLevel with a default of "high".
+
+    strict      pitch 4,  yaw 6,   roll 4
+    high        pitch 10, yaw 10,  roll 10     the provider's default
+    medium      15 on all three
+    low         20 on all three
+    flexible    30 on all three
+
+The app sent "high" on facialColorTones and faceAttributes until 2026-09-07. Ten degrees on all three axes at once is a studio tolerance: a person holding a phone at arm's length spends the roll budget on the tilt of their hand before their head has moved. Every pose refusal recorded against this project was produced under it. DEFAULT_FACE_ANGLE_STRICTNESS in src/lib/server/providers/perfectcorp/schemas.ts is now "flexible", and the client gate keeps a genuinely unreadable pose from reaching the call at all, measured in the same degrees (POSE_YAW_MAX_DEGREES and its neighbours in src/lib/shared/quality.ts). The level changes what the engine refuses, not what it measures.
+
+Two more facts from the same read, both of which the capture gate was getting wrong.
+
+There is no blur, sharpness, focus, or generic image quality error code anywhere in the API. All six OpenAPI bundles, the global error code page, the debugging guide and the FAQ were searched. The only image quality gates published are error_lighting_dark on the skin analyzer and error_insufficient_lighting on Fitzpatrick, and both are darkness only. Any "blurry" a person sees is ours, and until 2026-09-07 ours was measuring contrast rather than focus.
+
+The 60 percent face rule is measured against the short axis, not the width as such. The Camera Kit quality configuration on the skin analysis page states it: "Landscape mode: vertical ratio. Portrait mode: horizontal ratio." The same page publishes the numeric thresholds Perfect Corp's own capture SDK enforces, which is the closest thing to a specification for our gate that exists, and the RELAXED column is what src/lib/shared/quality.ts is now written to.
+
+    parameter              STRICT   MODERATE   RELAXED
+    face size ratio        0.75     0.65       0.55
+    yaw and roll           5        10         15
+    pitch upper            0        5          10
+    pitch lower            -10      -15        -20
+    lighting lower         0.80     0.70       0.55
+    lighting upper         0.90     0.85       0.80
+
+Two things worth carrying: the pitch window is asymmetric, so looking down is tolerated twice as far as looking up, and a phone held below the face pushes pitch into the tight half. And lighting has an upper bound, so an over lit frame fails the same way a dark one does, with no error code of its own to say so.
+
 The face attribute request, confirmed on 2026-09-03
 
 The selection field is features, not dst_actions. dst_actions is the skin analyzer's word, this endpoint has no such field, and the app was sending it on every capture, so every face shape task was rejected 400 before it existed and /hair told every person their face shape was not read from their photo. The same free oracle settled it: { dst_actions: ["faceShape"] } and a body with no selection both answer "features is required but wasn't included in your request.", { features: ["faceShape"] } answers the generic "One or more parameters in this request are invalid.", and the snake case { features: ["face_shape"] } answers "0 is not one of the accepted values.", naming the index in the array. Balance 408 before those probes and 408 after. face_angle_strictness_level is accepted alongside and defaults to high.

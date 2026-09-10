@@ -1,10 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { warmFaceDetector } from "@/lib/client/landmarks";
 import { Sheet } from "@/components/ui/Sheet";
 import { Toggle } from "@/components/ui/Toggle";
 import { saveConsent, type ApiFailureKind } from "@/lib/client/api";
@@ -38,6 +39,25 @@ export function consentErrorLine(kind: ApiFailureKind): string {
 }
 export function ConsentForm() {
   const router = useRouter();
+
+  /*
+   * Start fetching the face model while the person reads this screen.
+   *
+   * The next screen is the camera, and the model is what decides whether it can
+   * measure a face at all (src/lib/client/landmarks.ts). Loading it on /capture
+   * would mean the first few seconds of the camera run on no detector, which is
+   * exactly the state that produced the refusals this replaced. Consent is a
+   * screen somebody reads rather than skims, so it is the right place to spend
+   * the download.
+   *
+   * Nothing is uploaded, nothing is measured, and no camera is opened here: this
+   * fetches a model file and compiles it. It is also entirely optional. If it
+   * fails or times out the capture screen falls back exactly as it does today.
+   */
+  useEffect(() => {
+    warmFaceDetector();
+  }, []);
+
   const [isAdult, setIsAdult] = useState(false);
   const [agrees, setAgrees] = useState(false);
   const [keepOriginals, setKeepOriginals] = useState(false);

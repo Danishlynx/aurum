@@ -71,14 +71,66 @@ describe("analysisFailureReasonFor, against the codes the API really sent", () =
     expect(analysisFailureReasonFor("  ERROR_NO_FACE  ")).toBe("no_face");
   });
 
-  it("reads a face too small in the frame as a frame problem", () => {
-    // The live code, and the two spellings around it, all land on the line that
-    // asks for another photo rather than on the one that blames the provider.
-    expect(analysisFailureReasonFor(LIVE_CODES.faceTooSmall)).toBe("frame");
-    expect(analysisFailureReasonFor("error_face_too_small")).toBe("frame");
+  it("reads a face too small in the frame as its own thing, not a generic one", () => {
+    /*
+     * Both spellings, because the provider uses both: the skin analyzer answers
+     * error_src_face_too_small and the other endpoints answer
+     * error_face_position_too_small. Read off their reference pages 2026-09-07.
+     */
+    expect(analysisFailureReasonFor(LIVE_CODES.faceTooSmall)).toBe(
+      "face_too_small",
+    );
+    expect(analysisFailureReasonFor("error_face_too_small")).toBe(
+      "face_too_small",
+    );
+    expect(analysisFailureReasonFor("error_face_position_too_small")).toBe(
+      "face_too_small",
+    );
     expect(analysisFailureReasonFor("error_src_face_too_small")).not.toBe(
       "provider",
     );
+  });
+
+  it("separates the refusals a tighter crop cannot answer", () => {
+    /*
+     * These three used to land on "frame", which is the reframeable class, so
+     * the client cropped a dark photo and sent it again, then cropped it tighter
+     * and sent it again. Both attempts were spent on a certain refusal.
+     */
+    expect(analysisFailureReasonFor("error_lighting_dark")).toBe("lighting");
+    expect(analysisFailureReasonFor("error_insufficient_lighting")).toBe(
+      "lighting",
+    );
+    expect(analysisFailureReasonFor("error_below_min_image_size")).toBe(
+      "image_size",
+    );
+    expect(analysisFailureReasonFor("error_exceed_max_image_size")).toBe(
+      "image_size",
+    );
+    for (const code of [
+      "error_lighting_dark",
+      "error_insufficient_lighting",
+      "error_below_min_image_size",
+      "error_exceed_max_image_size",
+    ]) {
+      expect(isReframeableFailure(analysisFailureReasonFor(code))).toBe(false);
+    }
+  });
+
+  it("names the two refusals that were reaching the generic provider line", () => {
+    // A crop cannot choose which person to keep, and a face already running off
+    // the edge needs a wider frame than the one it was refused in.
+    expect(analysisFailureReasonFor("error_multiple_people")).toBe(
+      "multiple_faces",
+    );
+    expect(analysisFailureReasonFor("error_face_position_out_of_boundary")).toBe(
+      "face_out_of_bounds",
+    );
+    expect(analysisFailureReasonFor("error_src_face_out_of_bound")).toBe(
+      "face_out_of_bounds",
+    );
+    expect(isReframeableFailure("multiple_faces")).toBe(false);
+    expect(isReframeableFailure("face_out_of_bounds")).toBe(false);
   });
 
   it("reads an unrecorded code about the photo as a frame problem", () => {
@@ -105,12 +157,18 @@ describe("analysisFailureReasonFor, against the codes the API really sent", () =
   });
 
   it("sends the same photo back only for what a tighter crop could fix", () => {
-    // A face too small in the picture, or one the engine could not find at all.
-    expect(isReframeableFailure("frame")).toBe(true);
+    // A face too small in the picture, or one the engine could not find at all,
+    // or a photo problem we have no better name for.
+    expect(isReframeableFailure("face_too_small")).toBe(true);
     expect(isReframeableFailure("no_face")).toBe(true);
-    // No crop squares a face to the lens, and neither one is the provider's
-    // fault. Sending either back again would waste the person's time.
+    expect(isReframeableFailure("frame")).toBe(true);
+    // No crop squares a face to the lens, adds light to a room, makes a picture
+    // bigger, or decides which of two people is the one to read.
     expect(isReframeableFailure("face_angle")).toBe(false);
+    expect(isReframeableFailure("lighting")).toBe(false);
+    expect(isReframeableFailure("image_size")).toBe(false);
+    expect(isReframeableFailure("multiple_faces")).toBe(false);
+    expect(isReframeableFailure("face_out_of_bounds")).toBe(false);
     expect(isReframeableFailure("provider")).toBe(false);
   });
 
