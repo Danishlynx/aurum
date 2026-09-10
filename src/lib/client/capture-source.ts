@@ -1,4 +1,4 @@
-/**
+﻿/**
  * The photo the capture screen sent, kept in memory in case the engine refuses
  * the way it was framed.
  *
@@ -79,6 +79,7 @@ export function bindCaptureSource(captureId: string): void {
 
 export function forgetCaptureSource(): void {
   held = null;
+  resubmitting = null;
 }
 
 /** True when this capture has a frame here and an attempt left to spend. */
@@ -109,13 +110,46 @@ export type ReframeOutcome =
  * a photo that failed the gate, which the route enforces as well). It costs
  * nothing to find out, so the next, tighter crop is tried instead of giving up.
  */
+/**
+ * The capture id a resubmit is currently running for, or null.
+ *
+ * A second call for the same capture is refused rather than queued, because the
+ * thing being guarded is a purchase. Every attempt this function spends creates
+ * a capture, uploads a face, and starts a provider fan out that reserves and
+ * spends real units, so two concurrent calls for one refusal do not race to a
+ * duplicate result: they race to two separate charges, and only one of them ends
+ * up on screen.
+ *
+ * That is not hypothetical. Until 2026-09-10 the poll on /analyzing had no in
+ * flight guard, so two overlapping polls both reached the reframe and both
+ * called this. On a real account eight capture taps consumed twenty four
+ * analyses and 402 units. The poll now guards itself, and this guards the money
+ * directly, because the poll is one caller and the next one will not know.
+ */
+let resubmitting: string | null = null;
+
 export async function resubmitReframedCapture(
   captureId: string,
 ): Promise<ReframeOutcome> {
+  if (resubmitting !== null) {
+    return { ok: false, reason: "no_source" };
+  }
   const source = held;
   if (source === null || source.captureId !== captureId) {
     return { ok: false, reason: "no_source" };
   }
+  resubmitting = captureId;
+  try {
+    return await runResubmit(captureId, source);
+  } finally {
+    resubmitting = null;
+  }
+}
+
+async function runResubmit(
+  captureId: string,
+  source: HeldSource,
+): Promise<ReframeOutcome> {
 
   let attempt = source.attempt;
   while (hasReframeLeft(attempt)) {
@@ -236,3 +270,4 @@ async function submit(
   }
   return created.data.captureId;
 }
+
