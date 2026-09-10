@@ -224,6 +224,44 @@ export function providerCallsEnabled(): boolean {
   return optional("PROVIDER_CALLS_ENABLED") !== "false";
 }
 
+/**
+ * Open access: the app works without an access code.
+ *
+ * Off unless the value is the literal "true", which is the opposite reading to
+ * the kill switch above and is deliberate. A typo must never open the app, and a
+ * missing variable must never open the app, because what this removes is the
+ * only thing standing between a published URL and the account's credits.
+ *
+ * What it is for. The access code exists so a judge can use the real app without
+ * signing up and without being able to drain the balance
+ * (docs/07-payments-and-judge-mode.md). That is the right shape for judging and
+ * the wrong shape for the person building the thing, who is on a phone, testing
+ * the capture screen for the twentieth time, and typing a code every time a
+ * session runs out of analyses.
+ *
+ * What it does not remove. Consent still comes first, every cap still applies,
+ * and each visitor still gets their own session with its own analyses, credits,
+ * renders, and searches counted against it. It removes the code, not the brakes.
+ *
+ * What it costs. The access code is published in README.md and on the project
+ * page, so it was never a secret; what it was is a step that a passer by would
+ * not bother with. With this on, anyone who opens the URL gets a session and can
+ * spend one session's worth of the account's units. Size JUDGE_CREDITS_CAP for
+ * the number of strangers you are willing to pay for, and turn this off before
+ * judging opens.
+ */
+export function openAccessEnabled(): boolean {
+  return optional("AURUM_OPEN_ACCESS") === "true";
+}
+
+/**
+ * The values that turn open access on, as a list, so a test can assert that
+ * nothing else does. Exported rather than inlined because the asymmetry with
+ * providerCallsEnabled above is the kind of thing that gets "tidied" into
+ * consistency by somebody who has not read why it is not consistent.
+ */
+export const OPEN_ACCESS_ON_VALUE = "true";
+
 export interface DailyCaps {
   readonly perfectcorpUnits: number;
   readonly serpapiSearches: number;

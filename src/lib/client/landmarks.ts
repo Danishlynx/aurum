@@ -111,7 +111,24 @@ type LoadState =
 
 let state: LoadState = { kind: "idle" };
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+/**
+ * Answers null after ms, without abandoning the work.
+ *
+ * The distinction is the whole point. The caller cannot wait: the capture screen
+ * has to draw a guidance line now, on whatever estimate it can get. The download
+ * can wait: it is 11.5MB of WASM runtime, it is already in flight, and on a phone
+ * on mobile data it routinely takes longer than any timeout a screen can afford.
+ *
+ * Until 2026-09-10 a timeout here resolved null and the caller then recorded the
+ * detector as permanently unavailable, so one slow load on one phone turned the
+ * real detector off for the whole session and every capture after it ran on the
+ * colour threshold. That is the failure mode this product was trying to leave
+ * behind, reintroduced by its own loading code and completely silent.
+ */
+function raceWithoutCancelling<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<T | null> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       resolve(null);
@@ -186,21 +203,38 @@ export async function loadFaceDetector(): Promise<Detector | null> {
   if (state.kind === "unavailable") {
     return null;
   }
-  if (state.kind === "loading") {
-    return state.promise;
-  }
 
-  const promise = withTimeout(createDetector(), DETECTOR_LOAD_TIMEOUT_MS).then(
-    (detector) => {
+  /*
+   * One load, however many callers. The preview loop asks several times a second
+   * and the gate asks again at the shutter; they all wait on the same download
+   * rather than starting their own.
+   */
+  if (state.kind === "idle") {
+    const load = createDetector().then((detector) => {
+      /*
+       * Only a real failure latches. A load that simply has not finished stays
+       * loading, so the next caller waits on the same promise and picks it up the
+       * moment it lands. This is what stops one slow network moment from turning
+       * the detector off for the rest of the session.
+       */
       state =
         detector === null
           ? { kind: "unavailable" }
           : { kind: "ready", detector };
       return detector;
-    },
-  );
-  state = { kind: "loading", promise };
-  return promise;
+    });
+    state = { kind: "loading", promise: load };
+  }
+
+  const pending = state.kind === "loading" ? state.promise : null;
+  if (pending === null) {
+    return null;
+  }
+  /*
+   * The caller gets an answer inside its own budget. The download keeps going
+   * either way, which is why this races rather than cancels.
+   */
+  return raceWithoutCancelling(pending, DETECTOR_LOAD_TIMEOUT_MS);
 }
 
 /** True once a real detector is answering, which the gate logs for telemetry. */

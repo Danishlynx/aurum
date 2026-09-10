@@ -36,7 +36,6 @@ import type { GuidanceKey } from "@/lib/client/guidance";
 import {
   CAPTURE_JPEG_QUALITY,
   CAPTURE_LONG_EDGE,
-  CAPTURE_MIN_SHORT_EDGE,
   CAPTURE_SOURCE_LONG_EDGE,
   PREVIEW_JPEG_QUALITY,
   PREVIEW_LONG_EDGE,
@@ -210,34 +209,6 @@ function snapshotOf(video: HTMLVideoElement): HTMLCanvasElement {
  * that a photo is good enough. It only gives the gate the best framing the photo
  * contains.
  */
-/**
- * The same frame, recomposed around the face it contains, or the frame itself
- * when there is nothing to improve.
- *
- * The camera path's counterpart to frameForUpload below. It works off an already
- * drawn canvas rather than off a decoded file, because the camera has one frame
- * and it is already in hand, so there is no full resolution original to go back
- * to. The source canvas is the sensor's own frame at CAPTURE_SOURCE_LONG_EDGE,
- * which is twice the upload's long edge, so a crop taken from it still arrives
- * at full size.
- */
-async function composeAroundFace(
-  canvas: HTMLCanvasElement,
-): Promise<HTMLCanvasElement> {
-  const { estimate } = await measure(canvas);
-  if (estimate.faceCount !== 1 || estimate.faceBox === null) {
-    return canvas;
-  }
-  const crop = autoCropBoxFor({
-    faceBox: estimate.faceBox,
-    frame: { width: canvas.width, height: canvas.height },
-  });
-  if (crop === null) {
-    return canvas;
-  }
-  return drawCropToCanvas(canvas, crop, CAPTURE_LONG_EDGE, CAPTURE_MIN_SHORT_EDGE);
-}
-
 async function frameForUpload(
   decoded: DecodedImage,
 ): Promise<HTMLCanvasElement> {
@@ -579,39 +550,44 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       setPhase({ name: "working" });
 
       /*
-       * Composed before it is judged, which the camera path did not do until
-       * 2026-09-07.
+       * This judges the frame. It does not compose it.
        *
-       * The oval on this screen is drawn at 62 percent of the stage height, and
-       * a person who fills it lands a face that clears our own height rule. It
-       * does not clear the engine's, which is about width against the short axis
-       * of the picture (FACE_WIDTH_RATIO_MIN in src/lib/shared/quality.ts): on
-       * the 3 by 4 frame a front camera usually hands back, filling the oval puts
-       * the face at about 0.56 of the width where the engine wants more than
-       * 0.60. So the frame was tapped, passed, sent, and refused.
+       * Both callers have already been through frameForUpload, which is the one
+       * place a frame is recomposed around the face it contains: handleShutter
+       * runs the snapshot through it before freezing, and handleFile runs the
+       * decoded file through it. Composing again here was a real regression, on
+       * for one deploy, and it did two things at once.
        *
-       * The upload path has composed around the face since the gallery refusal
-       * of 2026-09-02. There was never a reason for the camera path not to, and
-       * the reason it did not is that the oval was assumed to be doing the job.
-       * Recomposing here is free, happens before anything is uploaded, and turns
-       * the oval back into what it always should have been: guidance, not a
-       * guarantee.
+       * It cropped a crop. frameForUpload takes its crop off the native snapshot
+       * and downscales once, which is what keeps the upload sharp. A second pass
+       * had only the finished 1024px frame to cut from, so the picture was
+       * downscaled, cropped, and downscaled again, and arrived visibly soft.
+       *
+       * And it tightened a tightening. Each pass frames the face at
+       * AUTO_CROP_FACE_COVERAGE of the result, so running it twice put the face
+       * far closer than either pass intended, cut the forehead and the hairline
+       * off the top, and left the engine looking at a frame with no whole face in
+       * it. "No face in the frame" on a photograph with a face in it.
+       *
+       * The width rule this was added for is not lost by removing it: it lives in
+       * autoCropBoxFor, which frameForUpload already calls, so the camera path
+       * gets it through the same single composition the upload path does.
        */
-      const composed = await composeAroundFace(canvas);
-      const { estimate, full } = await measure(composed);
+      const { estimate, full } = await measure(canvas);
       const assessment = assessCapture({
         image: toGrayscale(full),
         faceCount: estimate.faceCount,
         faceBox: estimate.faceBox,
         pose: estimate.pose ?? null,
+        faceEstimateTrusted: estimate.source !== "skin_region",
       });
 
       if (assessment.verdict === "accept") {
-        await upload(composed, assessment, estimate.source);
+        await upload(canvas, assessment, estimate.source);
         return;
       }
 
-      pendingRef.current = { canvas: composed, assessment };
+      pendingRef.current = { canvas, assessment };
       setPhase({
         name: "review",
         // Non null for every verdict other than accept.
