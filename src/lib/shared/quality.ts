@@ -562,6 +562,56 @@ export const AUTO_CROP_FACE_COVERAGE = 0.62;
 export const AUTO_CROP_MIN_FACE_MARGIN = 0.4;
 
 /**
+ * Where the composed crop puts the face, as a share of the crop's width.
+ *
+ * This is the number the engine actually measures (FACE_WIDTH_RATIO_MIN, "the
+ * width of the face needs to be greater than 60 percent of the width of the
+ * image"), so it is the number the crop is built from rather than one it
+ * happens to satisfy.
+ *
+ * 0.66 sits inside the provider's documented band of roughly 60 to 80 percent,
+ * near the bottom of it. Low on purpose: every point higher is a tighter crop,
+ * and a tighter crop is what cuts a forehead off. The floor is 0.60 and the
+ * margin above it absorbs the rounding that clampBox does when the box is
+ * turned into whole pixels.
+ */
+export const AUTO_CROP_FACE_WIDTH_TARGET = 0.66;
+
+/**
+ * How much room is kept above the face box, as a share of its height, for the
+ * forehead and the hair.
+ *
+ * A face box is not a head, and the difference is what broke the framing on
+ * 2026-09-10. MediaPipe reports eyebrows to chin; a head with hair on it extends
+ * roughly half a face height further up. Keeping 0.45 of a face height above the
+ * box covers the forehead and most of the hair, and the crop is placed to honour
+ * it rather than centring and hoping.
+ *
+ * PROVISIONAL, in the same sense as every other number in this file: it is
+ * derived from where a detector puts its box and from the provider's "forehead
+ * fully revealed", not from measurements over a set of real faces. It errs
+ * loose, because the two failures are not symmetric. A crop that is too loose is
+ * refused with error_src_face_too_small, which costs nothing and which the
+ * reframe path answers by cropping tighter. A crop that is too tight cuts a
+ * person's forehead off, and no retry recovers it.
+ */
+export const AUTO_CROP_HEAD_ROOM_ABOVE = 0.45;
+
+/**
+ * How much room is kept below the face box, as a share of its height.
+ *
+ * Small, and not zero. The jaw needs somewhere to sit: a crop that ends exactly
+ * at the bottom of the face box is a face touching the edge of its own picture,
+ * which is what error_face_position_out_of_boundary names and which the gate
+ * flags as face_out_of_bounds before it is ever sent.
+ *
+ * It is a quarter of the room kept above because the two sides are not worth the
+ * same. Above the face is forehead and hair and the provider asks for both;
+ * below it is chin, neck and shoulders, and a reading needs none of them.
+ */
+export const AUTO_CROP_CHIN_ROOM_BELOW = 0.12;
+
+/**
  * Width over height the crop aims for: 3 by 4, the portrait shape a phone
  * already takes and the shape the capture stage shows a frame in. It is where
  * the width starts, not where it always ends: the two margins below can pull it
@@ -649,24 +699,73 @@ export function autoCropBoxFor(input: AutoCropInput): Box | null {
     return null;
   }
 
+  /*
+   * The width is what the engine measures, so the width is what the crop is
+   * built from. Everything else follows.
+   *
+   * AUTO_CROP_FACE_WIDTH_TARGET sits just inside the provider's own band rather
+   * than in the middle of it, deliberately. Aiming higher would make the crop
+   * tighter, and a tighter crop is the thing that cuts a forehead off.
+   */
   const height = Math.min(
-    faceBox.height / AUTO_CROP_FACE_COVERAGE,
+    faceBox.width / AUTO_CROP_FACE_WIDTH_TARGET / AUTO_CROP_ASPECT,
     frame.height,
   );
   const width = Math.min(
-    Math.max(
-      height * AUTO_CROP_ASPECT,
-      faceBox.width * (1 + AUTO_CROP_MIN_FACE_MARGIN),
-    ),
-    faceBox.width / AUTO_CROP_FACE_COVERAGE,
-    height,
+    /*
+     * Never landscape, whatever the box says. The provider states that "the use
+     * of a portrait aspect ratio is strongly recommended over landscape", and a
+     * box wider than it is tall is a detection this app should not be reshaping
+     * the picture around: it is the colour threshold fallback reporting a neck
+     * and two shoulders. Capping the width at the height keeps the frame the
+     * shape a face belongs in and trims shoulder rather than face.
+     */
+    Math.min(faceBox.width / AUTO_CROP_FACE_WIDTH_TARGET, height),
     frame.width,
   );
 
   const centerX = faceBox.x + faceBox.width / 2;
-  const centerY = faceBox.y + faceBox.height / 2;
-  const x = Math.min(Math.max(centerX - width / 2, 0), frame.width - width);
-  const y = Math.min(Math.max(centerY - height / 2, 0), frame.height - height);
+
+  /*
+   * Vertically the crop is NOT centred on the face box, and this is the fix for
+   * the refusals of 2026-09-10.
+   *
+   * A face box is not a head. The detector this app used until 2026-09-07 was a
+   * skin colour threshold whose box already ran up over the forehead and down
+   * the neck, so centring on it happened to leave room for hair. MediaPipe's box
+   * is a real face box: eyebrows to chin, cheek to cheek, and nothing else. The
+   * geometry was never re derived when the detector changed, so the same
+   * centring left only 0.3 face heights above the box, the crown and part of the
+   * forehead were cut off, and the engine, which asks for the forehead to be
+   * fully revealed, answered that it could not read the face.
+   *
+   * So the room above and below the box is now asked for by name.
+   * AUTO_CROP_HEAD_ROOM_ABOVE is the share of a face height kept above the box
+   * for forehead and hair, and the crop is placed to honour it wherever the
+   * height allows. What is left goes below, where it is neck and shoulders and
+   * where losing some costs nothing.
+   *
+   * The asymmetry is the whole point. Above the face is where a crop can fail;
+   * below it is where a crop can be generous for free.
+   */
+  const spare = Math.max(0, height - faceBox.height);
+  const wantAbove = faceBox.height * AUTO_CROP_HEAD_ROOM_ABOVE;
+  const wantBelow = faceBox.height * AUTO_CROP_CHIN_ROOM_BELOW;
+  /*
+   * Shared out rather than taken. Spending the whole spare height on the
+   * forehead puts the chin exactly on the bottom edge, which is a face touching
+   * the boundary of its own picture and is what
+   * error_face_position_out_of_boundary names. The split keeps the asymmetry
+   * (most of it goes above, where a crop can fail) while always leaving the jaw
+   * somewhere to sit.
+   */
+  const wanted = wantAbove + wantBelow;
+  const roomAbove =
+    wanted <= 0 ? 0 : Math.min(wantAbove, (spare * wantAbove) / wanted);
+  const desiredTop = faceBox.y - roomAbove;
+
+  const x = Math.min(Math.max(centerX - width / 2, 0), Math.max(0, frame.width - width));
+  const y = Math.min(Math.max(desiredTop, 0), Math.max(0, frame.height - height));
 
   const crop = clampBox({ x, y, width, height }, frame);
   if (crop === null) {
