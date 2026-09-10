@@ -686,6 +686,49 @@ describe("assessCapture", () => {
     expect(result.metrics.faceCoverage).toBeCloseTo(0.7, 5);
   });
 
+  /**
+   * The colour threshold does not get to refuse a photograph.
+   *
+   * When the detector has not loaded, the face count and box come from a YCbCr
+   * skin rule that misses deep skin under warm light entirely and reads a bare
+   * arm as a second person. Refusing on that is how a person with a perfectly
+   * good photograph gets told there is no face in it, over and over, which is
+   * exactly what was happening in production on 2026-09-10.
+   */
+  it("offers rather than refuses when the face estimate cannot be trusted", () => {
+    const noFace = assessCapture({
+      image: sharpMidtones(),
+      faceCount: 0,
+      faceBox: null,
+      faceEstimateTrusted: false,
+    });
+    expect(noFace.verdict).toBe("borderline");
+    expect(noFace.reason).toBe("no_face");
+    expect(noFace.canUseAnyway).toBe(true);
+
+    const twoFaces = assessCapture({
+      image: sharpMidtones(),
+      faceCount: 2,
+      faceBox: GOOD_FACE_BOX,
+      faceEstimateTrusted: false,
+    });
+    expect(twoFaces.verdict).toBe("borderline");
+    expect(twoFaces.canUseAnyway).toBe(true);
+  });
+
+  it("still refuses when a real detector says there is no face", () => {
+    for (const trusted of [true, undefined]) {
+      const result = assessCapture({
+        image: sharpMidtones(),
+        faceCount: 0,
+        faceBox: null,
+        ...(trusted === undefined ? {} : { faceEstimateTrusted: trusted }),
+      });
+      expect(result.verdict).toBe("reject");
+      expect(result.canUseAnyway).toBe(false);
+    }
+  });
+
   it("rejects a frame with no face", () => {
     const result = assessCapture({
       image: sharpMidtones(),

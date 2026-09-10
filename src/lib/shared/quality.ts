@@ -770,6 +770,24 @@ export type CaptureAssessmentInput = {
    * not is no worse off than it was.
    */
   readonly pose?: FacePose | null;
+  /**
+   * Whether the face count and box came from something that can actually see a
+   * face. Defaults to true, so a caller that does not say keeps the old
+   * behaviour.
+   *
+   * False means the numbers came from the YCbCr colour threshold in
+   * src/lib/client/face.ts, which is what answers when the detector has not
+   * loaded. That estimator does not find faces; it finds skin coloured blobs. It
+   * misses deep skin under warm light entirely, it merges a face with a wooden
+   * wall behind it, and it reads a bare arm as a second person.
+   *
+   * A guess that wrong is not grounds for refusing to send somebody's
+   * photograph. When it is the only source available, the frame is offered
+   * instead of refused, and the decision is left to the engine's own input gate,
+   * which is free, authoritative, and refuses for nothing when it says no. This
+   * is the same reasoning that already keeps sharpness from refusing a frame.
+   */
+  readonly faceEstimateTrusted?: boolean;
 };
 
 /**
@@ -858,11 +876,29 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
 
   const failures: CaptureFailure[] = [];
 
+  /*
+   * A face claim is only strong enough to refuse a photograph when it came from
+   * something that can see faces. See faceEstimateTrusted above: when the
+   * detector has not loaded, these two numbers are a colour threshold's opinion,
+   * and the engine's own gate is both better at the question and free to ask.
+   *
+   * multiple_faces is downgraded along with no_face, deliberately, even though
+   * docs/06-safety-privacy.md asks for a frame with two faces to be refused. The
+   * rule is kept, it is just enforced by the party that can actually count: every
+   * face endpoint this app calls is single face only and answers
+   * error_multiple_people, which src/lib/shared/analysis-failure.ts classifies and
+   * turns back into the same sentence this screen would have shown. What is given
+   * up is refusing a bare arm; what is bought is not refusing a person.
+   */
+  const trusted = input.faceEstimateTrusted ?? true;
+  const faceSeverity: CaptureFailure["severity"] = trusted
+    ? "reject"
+    : "borderline";
   const hasSingleFace = faceCount === 1 && faceBox !== null;
   if (faceCount > 1) {
-    failures.push({ reason: "multiple_faces", severity: "reject" });
+    failures.push({ reason: "multiple_faces", severity: faceSeverity });
   } else if (!hasSingleFace) {
-    failures.push({ reason: "no_face", severity: "reject" });
+    failures.push({ reason: "no_face", severity: faceSeverity });
   }
 
   const measured =
