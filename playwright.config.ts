@@ -130,6 +130,12 @@ export default defineConfig({
             JUDGE_ACCESS_CODE_HASH_B64: JUDGE_E2E_CODE_HASH_B64,
             JUDGE_ANALYSES_ALLOWED: "0",
             JUDGE_CREDITS_CAP: "0",
+            // The per session caps refuse nothing unless this says so
+            // (src/lib/server/env.ts, judgePerSessionCapsEnabled), and this is
+            // the server whose whole purpose is to walk a session that is
+            // refused. Without it JUDGE_ANALYSES_ALLOWED=0 would be a number
+            // nothing reads.
+            JUDGE_PER_SESSION_CAPS: "true",
             // Its own build output, so the two development servers do not write
             // over each other's compiled routes (next.config.ts). It sits inside
             // .next, which is already ignored by git, eslint, and tsc.

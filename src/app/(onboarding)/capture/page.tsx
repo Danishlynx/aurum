@@ -1,5 +1,5 @@
 import { CaptureScreen } from "@/components/capture/CaptureScreen";
-import { judgeAnalysesRemaining } from "@/lib/server/judge";
+import { judgeAnalysesCapReached } from "@/lib/server/judge";
 import { readJudgeSessionFromCookie } from "@/lib/server/judge/guard";
 
 /**
@@ -16,6 +16,10 @@ import { readJudgeSessionFromCookie } from "@/lib/server/judge/guard";
  * disabled screen and a screen that lets someone frame a selfie, take it, and
  * only then be told it will not be read.
  *
+ * That is the answer while JUDGE_PER_SESSION_CAPS is on (src/lib/server/env.ts).
+ * With it off the camera is offered to every judge session, whatever its count
+ * says, and the deployment wide Perfect Corp ceiling is what stops the spend.
+ *
  * A judge session is read from its cookie alone, never through Supabase Auth, so
  * this page still renders on a build with no project configured.
  */
@@ -25,7 +29,7 @@ export const dynamic = "force-dynamic";
 
 export default async function CapturePage() {
   const judge = await readJudgeSessionFromCookie();
-  const exhausted = judge !== null && judgeAnalysesRemaining(judge) === 0;
+  const exhausted = judge !== null && judgeAnalysesCapReached(judge);
 
   return <CaptureScreen analysesExhausted={exhausted} />;
 }

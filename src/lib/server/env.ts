@@ -211,6 +211,50 @@ export function judgeSearchesAllowed(): number {
   return count("JUDGE_SERPAPI_SEARCHES", 40);
 }
 
+/**
+ * Whether the per session judge caps refuse anything. On for exactly "true", off
+ * for every other value and off when nothing is set.
+ *
+ * Which caps this is. The four that are counted against one judge session for
+ * its whole life: the analyses (judgeConfig().analysesAllowed), the credits
+ * (judgeConfig().creditsCap), the renders (JUDGE_RENDERS_ALLOWED), and the
+ * searches (judgeSearchesAllowed). With this off all four are still counted:
+ * analyses_used and credits_used still move, the ledger still records every
+ * unit, GET /api/judge/stats still reads a true number, and the cap log lines
+ * still say what was spent. The only thing that is switched off is the refusal.
+ *
+ * Why off is the default, which is a decision rather than an oversight. Every
+ * one of those caps is per owner, and an owner costs nothing to mint: the access
+ * code is published, and each submission of it makes a session with a fresh set
+ * of them. So they never bounded the account (globalDailyCap below is what that
+ * cost on 2026-09-12). What they bounded was the founder, who cannot mint a way
+ * around a cap without re entering the code, and did so 44 times in one
+ * afternoon. A brake that stops only the person who respects it is friction, not
+ * protection.
+ *
+ * What still stops a runaway, and none of it is this switch:
+ * GLOBAL_CAP_PERFECTCORP_UNITS_PER_DAY, the ceiling on what this whole
+ * deployment may spend at Perfect Corp in a UTC day, counted across every owner
+ * at once, and DAILY_CAP_PERFECTCORP_UNITS, the per owner day. Both are read
+ * before any per session cap and neither is touched by this variable.
+ *
+ * The comparison is openAccessEnabled's rather than providerCallsEnabled's: only
+ * the literal "true" counts as yes. The reason is that function's reason,
+ * pointed the other way. A typo must never open the app, and a typo must never
+ * put these caps back either, because putting them back mid demo sends the
+ * person holding the app to the access screen. Setting it to "true" restores the
+ * hackathon judging behaviour exactly as it shipped.
+ */
+export function judgePerSessionCapsEnabled(): boolean {
+  return optional("JUDGE_PER_SESSION_CAPS") === "true";
+}
+
+/**
+ * The one value that turns the per session caps on, exported for the same reason
+ * OPEN_ACCESS_ON_VALUE is: so a test can assert that nothing else does.
+ */
+export const JUDGE_PER_SESSION_CAPS_ON_VALUE = "true";
+
 // ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
