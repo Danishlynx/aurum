@@ -18,6 +18,7 @@ import {
 import {
   ensureAnalysis,
   findJobForSubject,
+  getCapture,
   insertJob,
   listAnalyses,
   listJobsForSubjects,
@@ -66,7 +67,9 @@ import {
  * retry    one automatic retry for a transient failure, attempts capped at 2
  * idempotency  creating a job for a subject that already has one running
  *          returns the running job
- * timeout  a job running longer than 120 seconds fails with the timeout copy
+ * timeout  a job running longer than 120 seconds fails with the timeout copy,
+ *          and is NOT refunded: the task is still at the provider and will be
+ *          charged whether or not we ever read it
  *
  * The order the analyses are started in, and why it is not all at once.
  *
@@ -541,7 +544,9 @@ async function providerFileFor(args: {
  *
  * Reservations are sequential because each one reads the running total. Task
  * creation is parallel, and a single kind that will not start refunds only its
- * own units.
+ * own units. A reservation that throws mid list takes the ones already written
+ * back out with it, so this call either holds reservations it is about to spend
+ * or holds none at all.
  */
 async function startKinds(args: {
   readonly session: AppSession;
@@ -555,48 +560,80 @@ async function startKinds(args: {
   const failures = new Map<AnalysisKind, string>();
 
   const started: StartedAnalysis[] = [];
-  for (const kind of args.kinds) {
-    const analysis = args.byKind.get(kind);
-    if (analysis === undefined) {
-      continue;
-    }
-    const plan = planFor(kind);
-    const outcome = await reserve({
-      session: args.session,
-      provider: "perfectcorp",
-      units: plan.units,
-      subjectId: analysis.id,
-      note: `reserve ${kind}`,
-    });
-
-    if (!outcome.ok) {
-      const message =
-        outcome.reason === "session_cap"
-          ? copy.errors.judgeExhausted
-          : messages.dailyCapReached;
-      await updateAnalysis(analysis.id, {
-        status: "failed",
-        error: message,
-        credits_used: 0,
-      });
-      await writeJob({
-        ownerId,
+  try {
+    for (const kind of args.kinds) {
+      const analysis = args.byKind.get(kind);
+      if (analysis === undefined) {
+        continue;
+      }
+      const plan = planFor(kind);
+      const outcome = await reserve({
+        session: args.session,
+        provider: "perfectcorp",
+        units: plan.units,
         subjectId: analysis.id,
-        status: "failed",
-        providerTaskId: null,
-        attempts: MAX_ATTEMPTS,
-        error: message,
+        note: `reserve ${kind}`,
       });
-      failures.set(kind, message);
-      continue;
-    }
 
-    args.onCredits?.(outcome.reservation.units);
-    started.push({
-      analysis,
-      kind,
-      reservationUnits: outcome.reservation.units,
-    });
+      if (!outcome.ok) {
+        const message =
+          outcome.reason === "session_cap"
+            ? copy.errors.judgeExhausted
+            : messages.dailyCapReached;
+        await updateAnalysis(analysis.id, {
+          status: "failed",
+          error: message,
+          credits_used: 0,
+        });
+        await writeJob({
+          ownerId,
+          subjectId: analysis.id,
+          status: "failed",
+          providerTaskId: null,
+          attempts: MAX_ATTEMPTS,
+          error: message,
+        });
+        failures.set(kind, message);
+        continue;
+      }
+
+      args.onCredits?.(outcome.reservation.units);
+      started.push({
+        analysis,
+        kind,
+        reservationUnits: outcome.reservation.units,
+      });
+    }
+  } catch (thrown) {
+    /*
+     * A reservation threw part way down the list, so the ones already written
+     * go back before this leaves.
+     *
+     * A refusal is a returned value and is handled above; what throws here is
+     * the ledger write itself, or the judge counter behind it. Without this the
+     * kinds reserved before the throw held a positive ledger row and no task,
+     * and nothing would ever settle it: the next poll starts the same kinds
+     * again and reserves again, and findReservation only ever returns the
+     * newest row, so the older ones stand forever as spend against the daily
+     * cap and the judge cap for readings that were never bought.
+     */
+    for (const entry of started) {
+      try {
+        await refundFor(args.session, entry.analysis.id);
+      } catch {
+        // The ledger is unreachable, which is what threw in the first place.
+        // The original failure is the one the caller has to see, so it is not
+        // replaced by a second copy of the same outage.
+        console.warn(
+          JSON.stringify({
+            event: "aurum.reservation_unrefunded",
+            kind: entry.kind,
+            units: entry.reservationUnits,
+          }),
+        );
+      }
+    }
+    throw thrown;
   }
 
   await Promise.all(
@@ -807,9 +844,27 @@ export async function readCaptureJobs(
  *
  * A start once guarantee cannot come from a time window, because the window has
  * to outlast work whose duration nobody controls. It comes from a state
- * transition that can only happen once. This claims on last_polled_at being
- * null, which is the state createAnalysisJobs writes a waiting follower in and
- * which nothing else ever restores, so exactly one caller can win it.
+ * transition that can only happen once, and the transition is the one the start
+ * itself makes: pending with no provider task becomes running with one.
+ *
+ * That is why all three predicates below are on the update and not just the
+ * timestamp. Claiming on last_polled_at alone was still the same bug one step
+ * further along, because last_polled_at is not a state nothing restores:
+ * writeJob sets it back to null on every write, including the one that marks the
+ * job running at the very end of the start. So the claim came back the instant
+ * the start finished, and a second poll holding a snapshot read before it (still
+ * pending, still no task id, still no timestamp) passed its own in memory check,
+ * won the update, and started the followers a second time. Two skin analyses at
+ * 16 units, two face shape readings at 10, exactly what claiming on a one second
+ * throttle used to buy.
+ *
+ * status and provider_task_id are the columns the start actually moves, so they
+ * are what the claim is compared against. They match releasePendingStart, which
+ * has always used both, and a job that has been started can never be claimed
+ * again whatever the timestamp says. writeJob is left alone: nulling
+ * last_polled_at is what lets claimForPolling read a freshly running job
+ * immediately rather than waiting out a throttle against a stamp from before
+ * the task existed.
  *
  * The claim is released again if the start fails (releasePendingStart), because
  * a claim held by a caller that gave up would strand the fan out until the job
@@ -823,6 +878,8 @@ async function claimPendingStart(job: JobRecord): Promise<boolean> {
     .from("jobs")
     .update({ last_polled_at: new Date().toISOString() })
     .eq("id", job.id)
+    .eq("status", "pending")
+    .is("provider_task_id", null)
     .is("last_polled_at", null)
     .select("id")
     .maybeSingle();
@@ -893,22 +950,32 @@ async function failJob(args: {
 }
 
 /**
- * A task the provider says succeeded, whose result we could not read.
+ * A task we have to assume the provider charged for, closed without a refund.
  *
- * It is not failJob: that one refunds, and refunding here would be a lie. A
- * task that fails is charged nothing, but a task that succeeds is charged
- * whether or not our schema can read the answer. That is not a hypothetical:
- * the first live skin analysis cost 16 units and was recorded as failed and
- * refunded, because data.error arrives as null and the schema wanted a string,
- * and the ledger then said the account had 16 units it did not have. So the
- * reservation is reconciled as spent, the analysis is marked failed, and the
- * step is simply missing from the report.
+ * It is not failJob: that one refunds, and refunding here would be a lie. A task
+ * that fails is charged nothing, but a task that succeeds is charged whether or
+ * not anybody ever reads the answer. That is not a hypothetical: the first live
+ * skin analysis cost 16 units and was recorded as failed and refunded, because
+ * data.error arrives as null and the schema wanted a string, and the ledger then
+ * said the account had 16 units it did not have. So the reservation is
+ * reconciled as spent, the analysis is marked failed, and the step is simply
+ * missing from the report.
+ *
+ * Two callers, one rule. A task whose result would not parse, and a task still
+ * running at the provider when our own lifetime expired. Neither of them is a
+ * refusal, and only a refusal is free.
+ *
+ * The message is the caller's, because the two say different things to the
+ * person: one is a reading that could not be used, the other is a reading that
+ * did not arrive in time.
  */
 async function failChargedJob(args: {
   readonly session: AppSession;
   readonly job: JobRecord;
   readonly analysis: Analysis;
+  readonly message?: string;
 }): Promise<void> {
+  const message = args.message ?? messages.analysisUnavailable;
   const reservation = await findReservation({
     owner: { ownerType: args.session.ownerType, ownerId: args.session.id },
     subjectId: args.analysis.id,
@@ -924,12 +991,12 @@ async function failChargedJob(args: {
   }
   await updateAnalysis(args.analysis.id, {
     status: "failed",
-    error: messages.analysisUnavailable,
+    error: message,
     credits_used: units,
   });
   await updateJob(args.job.id, {
     status: "failed",
-    error: messages.analysisUnavailable,
+    error: message,
     attempts: MAX_ATTEMPTS,
   });
 }
@@ -1021,11 +1088,33 @@ export async function pollCaptureJobs(
       continue;
     }
 
+    /*
+     * Our lifetime ran out, which says nothing about the task.
+     *
+     * The asymmetry this branch is on the wrong side of until now. A task the
+     * engine refuses is charged nothing, so failJob gives the reservation back
+     * and that is correct for every refusal. A task that is still running at the
+     * provider when our 120 seconds are up is not a refusal: it is work in
+     * progress that we have stopped waiting for, and the provider will charge
+     * for it whether or not we ever read the answer. Refunding it wrote credit
+     * into the ledger that the account does not have, which is the same lie
+     * failChargedJob was added to stop telling about an unreadable result.
+     *
+     * It reaches here more often since restartJob was removed, and deliberately:
+     * a sustained transient read error now leaves the job running and re polls
+     * the same task, so a provider that stays unreachable ends here rather than
+     * buying a second copy of the reading. That makes this the branch that has
+     * to be honest about the money.
+     *
+     * A job that never started (a follower still pending, no task, no
+     * reservation) passes through the same call and settles nothing, because
+     * there is nothing to settle.
+     */
     if (Date.now() - Date.parse(job.created_at) > JOB_LIFETIME_MS) {
-      await failJob({
+      await failChargedJob({
         session: input.session,
         job,
-        analysisId: analysis.id,
+        analysis,
         message: copy.errors.providerTimeout,
       });
       continue;
@@ -1239,6 +1328,72 @@ export async function pollCaptureJobs(
    */
 
   return view;
+}
+
+/**
+ * One catch up pass over a capture whose readings the client stopped polling.
+ *
+ * The straggler this exists for. /analyzing routes to /report about thirty
+ * seconds after the core set succeeds (STRAGGLER_POLLS_AFTER_CORE in
+ * src/components/analyzing/AnalyzingScreen.tsx), and the face shape or
+ * Fitzpatrick reading can still be running when it does. That poll is the only
+ * thing in the system that drives pollCaptureJobs, so the moment it stops, a
+ * running task is left with a reservation nothing will ever settle and a jobs
+ * row that says running for good. The units were spent, the reading may well
+ * have landed, and neither the ledger nor the report ever hears about it.
+ *
+ * So the report asks once, on its way in. It is the first screen after the
+ * reveal and the person is already waiting on a render of the page, which makes
+ * it the one place where a single extra pass is both cheap and certain to
+ * happen. One pass, nothing else: the throttle inside claimForPolling and the
+ * lifetime timeout still hold, so this can never turn into a loop, and a
+ * reading that arrived is stored and reconciled exactly the way the client poll
+ * would have stored it.
+ *
+ * It also settles the orphan from a lost analyze response
+ * (src/lib/client/capture-source.ts): a capture the client gave up on but the
+ * server started anyway is reached here the moment its profile is read.
+ *
+ * Nothing here may fail the report. A report that will not render because a
+ * bookkeeping pass threw is a worse outcome than a job row left running, so
+ * every failure is logged and swallowed.
+ */
+export async function reconcileRunningCaptureJobs(args: {
+  readonly session: AppSession;
+  readonly captureId: string;
+}): Promise<void> {
+  const ownerId = args.session.id;
+  try {
+    const analyses = await listAnalyses(ownerId, args.captureId);
+    if (analyses.length === 0) {
+      return;
+    }
+    const jobs = await listJobsForSubjects(
+      ownerId,
+      analyses.map((analysis) => analysis.id),
+    );
+    // Only a job that points at a provider task is worth a pass. A pending one
+    // holds no reservation and has nothing to reconcile.
+    const running = jobs.some(
+      (job) => job.status === "running" && job.provider_task_id !== null,
+    );
+    if (!running) {
+      return;
+    }
+    const capture = await getCapture(ownerId, args.captureId);
+    if (capture === null) {
+      return;
+    }
+    await pollCaptureJobs({ session: args.session, capture });
+  } catch (thrown) {
+    console.warn(
+      JSON.stringify({
+        event: "aurum.straggler_reconcile_failed",
+        captureId: args.captureId,
+        reason: thrown instanceof Error ? thrown.name : "unknown",
+      }),
+    );
+  }
 }
 
 /**
