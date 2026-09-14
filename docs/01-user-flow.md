@@ -138,7 +138,7 @@ Copy for a rejected frame (choose the one matching the failure):
 - "Move closer so your face fills the oval."
 - Buttons: "Retake" (primary), "Use it anyway" (secondary, only shown for borderline frames, never for failed face detection)
 
-Behavior: on accept, the image is downscaled client side to a 1024px long edge, EXIF stripped, hashed, uploaded to the private captures bucket, and the analysis jobs start. Route to /analyzing.
+Behavior: one tap takes a short burst of 5 frames about 90ms apart, not the single frame at the instant of the tap, because the instant of the tap is the instant the finger pressing the glass moves the phone and this product gets one attempt at a reading. Every frame of the burst is composed and measured by the same gate, the best scoring one is sent (frameScore in src/lib/shared/quality.ts, which ranks on pose first, then framing, then light, then sharpness), and the frame frozen on screen becomes the winner. There is still one shutter and it still fires only when it is tapped. On accept, the image is downscaled client side to a 1024px long edge, EXIF stripped, hashed, uploaded to the private captures bucket, and the analysis jobs start. Route to /analyzing.
 
 ## E. Analyzing (/analyzing)
 

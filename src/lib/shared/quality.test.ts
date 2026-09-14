@@ -1,6 +1,7 @@
 ﻿import { describe, expect, it } from "vitest";
 
 import { captureRejectionCopy } from "./copy";
+import type { FacePose } from "./pose";
 import {
   AUTO_CROP_ASPECT,
   AUTO_CROP_FACE_WIDTH_TARGET,
@@ -13,6 +14,15 @@ import {
   AUTO_CROP_HEAD_ROOM_ABOVE,
   FACE_WIDTH_RATIO_MAX,
   FACE_WIDTH_RATIO_MIN,
+  FRAME_SCORE_BORDERLINE_PENALTY,
+  FRAME_SCORE_LUMINANCE_TARGET,
+  FRAME_SCORE_LUMINANCE_WEIGHT,
+  FRAME_SCORE_POSE_WEIGHT,
+  FRAME_SCORE_SHARPNESS_CAP,
+  FRAME_SCORE_SHARPNESS_WEIGHT,
+  FRAME_SCORE_WIDTH_WEIGHT,
+  POSE_SLACK_DEGREES,
+  POSE_YAW_MAX_DEGREES,
   SHARPNESS_BORDERLINE_BELOW,
   SHARPNESS_MEASURE_LONG_EDGE,
   SHARPNESS_SCALE,
@@ -23,13 +33,17 @@ import {
   exposureStats,
   faceCoverageCheck,
   faceWidthRatio,
+  frameScore,
   intensityVariance,
   laplacianVariance,
+  pickBestFrame,
   resampleToLongEdge,
   scaleBox,
   sharpnessOf,
   type Box,
+  type CaptureAssessment,
   type CaptureAssessmentInput,
+  type CaptureVerdict,
   type GrayscaleImage,
 } from "./quality";
 
@@ -1143,6 +1157,243 @@ describe("assessCapture", () => {
     });
     expect(result.metrics.meanLuminance).toBeGreaterThan(0);
     expect(result.metrics.faceCoverage).toBeNull();
+  });
+});
+
+/**
+ * A gate reading with nothing wrong with it, and only the things a test cares
+ * about moved off it. frameScore reads a verdict and four numbers, so this is
+ * every input it has.
+ */
+function reading(
+  overrides: {
+    readonly verdict?: CaptureVerdict;
+    readonly sharpness?: number;
+    readonly meanLuminance?: number;
+    readonly faceWidthRatio?: number | null;
+    readonly pose?: FacePose | null;
+  } = {},
+): CaptureAssessment {
+  const verdict = overrides.verdict ?? "accept";
+  return {
+    verdict,
+    reason: verdict === "accept" ? null : "blurry",
+    canUseAnyway: verdict === "borderline",
+    failures: [],
+    metrics: {
+      sharpness: overrides.sharpness ?? FRAME_SCORE_SHARPNESS_CAP,
+      blownFraction: 0,
+      crushedFraction: 0,
+      meanLuminance: overrides.meanLuminance ?? FRAME_SCORE_LUMINANCE_TARGET,
+      faceCoverage: 0.7,
+      faceWidthRatio:
+        overrides.faceWidthRatio === undefined
+          ? AUTO_CROP_FACE_WIDTH_TARGET
+          : overrides.faceWidthRatio,
+      pose: overrides.pose ?? null,
+    },
+  };
+}
+
+/** A head turned by this much, square in the other two axes. */
+function turned(yawDegrees: number): FacePose {
+  return { yawDegrees, pitchDegrees: 0, rollDegrees: 0 };
+}
+
+/** Far enough outside the pose window to carry a full unit of badness. */
+const FULLY_TURNED = turned(POSE_YAW_MAX_DEGREES + POSE_SLACK_DEGREES);
+
+describe("frameScore", () => {
+  it("is minus infinity for a frame the gate refused", () => {
+    /*
+     * Perfect on every measurement the score reads, and still not a candidate.
+     * A reject is not a frame that ranks badly, it is a frame this app will not
+     * send, and the burst has to be unable to choose one however good the rest
+     * of it looked.
+     */
+    expect(frameScore(reading({ verdict: "reject" }))).toBe(
+      Number.NEGATIVE_INFINITY,
+    );
+  });
+
+  it("is zero for a frame with nothing wrong with it", () => {
+    // Every term is a penalty, so the top of the range is the absence of them.
+    expect(frameScore(reading())).toBe(0);
+  });
+
+  it("ranks a turned head below a square one", () => {
+    expect(frameScore(reading({ pose: FULLY_TURNED }))).toBeLessThan(
+      frameScore(reading({ pose: turned(0) })),
+    );
+    // And further out is further down, not just different.
+    expect(frameScore(reading({ pose: turned(POSE_YAW_MAX_DEGREES + 10) }))).
+      toBeLessThan(
+        frameScore(reading({ pose: turned(POSE_YAW_MAX_DEGREES + 4) })),
+      );
+  });
+
+  it("does not charge a head that is inside the window", () => {
+    // poseExcessDegrees is zero anywhere in the window, so the score is too.
+    expect(frameScore(reading({ pose: turned(POSE_YAW_MAX_DEGREES) }))).toBe(
+      frameScore(reading({ pose: turned(0) })),
+    );
+  });
+
+  it("ranks a frame at the width target above one off it", () => {
+    const onTarget = frameScore(
+      reading({ faceWidthRatio: AUTO_CROP_FACE_WIDTH_TARGET }),
+    );
+    expect(onTarget).toBeGreaterThan(
+      frameScore(reading({ faceWidthRatio: FACE_WIDTH_RATIO_MIN })),
+    );
+    // Both sides of the target, not just the small one.
+    expect(onTarget).toBeGreaterThan(
+      frameScore(reading({ faceWidthRatio: FACE_WIDTH_RATIO_MAX })),
+    );
+  });
+
+  it("ranks a frame in the middle of the light band above one at the edge", () => {
+    expect(frameScore(reading({ meanLuminance: FRAME_SCORE_LUMINANCE_TARGET })))
+      .toBeGreaterThan(
+        frameScore(
+          reading({ meanLuminance: FRAME_SCORE_LUMINANCE_TARGET - 50 }),
+        ),
+      );
+    expect(frameScore(reading({ meanLuminance: FRAME_SCORE_LUMINANCE_TARGET })))
+      .toBeGreaterThan(
+        frameScore(
+          reading({ meanLuminance: FRAME_SCORE_LUMINANCE_TARGET + 50 }),
+        ),
+      );
+  });
+
+  it("prefers the sharper frame, and stops caring above the cap", () => {
+    expect(frameScore(reading({ sharpness: FRAME_SCORE_SHARPNESS_CAP / 2 })))
+      .toBeLessThan(
+        frameScore(reading({ sharpness: FRAME_SCORE_SHARPNESS_CAP })),
+      );
+    /*
+     * Capped, because the difference between sharp and very sharp is not one
+     * the engine will ever act on, and without the cap a frame that caught one
+     * high contrast edge would outvote pose and framing together.
+     */
+    expect(frameScore(reading({ sharpness: FRAME_SCORE_SHARPNESS_CAP }))).toBe(
+      frameScore(reading({ sharpness: FRAME_SCORE_SHARPNESS_CAP * 40 })),
+    );
+  });
+
+  it("puts borderline below accept for two otherwise identical frames", () => {
+    expect(frameScore(reading({ verdict: "borderline" }))).toBeLessThan(
+      frameScore(reading({ verdict: "accept" })),
+    );
+    expect(frameScore(reading({ verdict: "borderline" }))).toBe(
+      -FRAME_SCORE_BORDERLINE_PENALTY,
+    );
+  });
+
+  /**
+   * The verdict outranks every measurement, and that is the point of it.
+   *
+   * An accepted frame goes straight to the engine; a borderline one stops on
+   * the review screen and asks. Preferring a borderline frame because it was a
+   * little sharper would put somebody in front of "Use it anyway" with a clean
+   * frame sitting in memory unused.
+   */
+  it("prefers the worst accepted frame to the best borderline one", () => {
+    const worstAccept = reading({
+      pose: FULLY_TURNED,
+      faceWidthRatio: 0,
+      meanLuminance: 255,
+      sharpness: 0,
+    });
+    const bestBorderline = reading({ verdict: "borderline" });
+    expect(frameScore(worstAccept)).toBeGreaterThan(
+      frameScore(bestBorderline),
+    );
+  });
+
+  /**
+   * The order of the weights, as one assertion rather than four separate
+   * beliefs: one full unit of badness on each term, measured on its own.
+   */
+  it("weighs pose over framing, framing over light, and light over sharpness", () => {
+    const pose = frameScore(reading({ pose: FULLY_TURNED }));
+    const width = frameScore(reading({ faceWidthRatio: 0 }));
+    const light = frameScore(reading({ meanLuminance: 255 }));
+    const sharpness = frameScore(reading({ sharpness: 0 }));
+
+    expect(pose).toBeCloseTo(-FRAME_SCORE_POSE_WEIGHT, 10);
+    expect(width).toBeCloseTo(-FRAME_SCORE_WIDTH_WEIGHT, 10);
+    expect(light).toBeCloseTo(-FRAME_SCORE_LUMINANCE_WEIGHT, 10);
+    expect(sharpness).toBeCloseTo(-FRAME_SCORE_SHARPNESS_WEIGHT, 10);
+
+    expect(pose).toBeLessThan(width);
+    expect(width).toBeLessThan(light);
+    expect(light).toBeLessThan(sharpness);
+    expect(sharpness).toBeLessThan(frameScore(reading()));
+  });
+
+  /**
+   * A measurement that was never made is not a measurement that came out badly.
+   * Ranking a frame on the absence of the detector's opinion would rank the
+   * detector rather than the photograph.
+   */
+  it("does not charge a frame for a measurement the detector did not make", () => {
+    expect(frameScore(reading({ pose: null }))).toBe(
+      frameScore(reading({ pose: turned(0) })),
+    );
+    expect(frameScore(reading({ faceWidthRatio: null }))).toBe(
+      frameScore(reading({ faceWidthRatio: AUTO_CROP_FACE_WIDTH_TARGET })),
+    );
+  });
+});
+
+describe("pickBestFrame", () => {
+  it("returns null when the gate refused every frame", () => {
+    expect(
+      pickBestFrame([
+        { assessment: reading({ verdict: "reject" }), value: "a" },
+        { assessment: reading({ verdict: "reject" }), value: "b" },
+      ]),
+    ).toBeNull();
+  });
+
+  it("returns null for a burst with nothing in it", () => {
+    expect(pickBestFrame<string>([])).toBeNull();
+  });
+
+  it("returns the highest scoring frame", () => {
+    const best = pickBestFrame([
+      { assessment: reading({ pose: FULLY_TURNED }), value: "turned" },
+      { assessment: reading({ sharpness: 0 }), value: "soft" },
+      { assessment: reading(), value: "clean" },
+      { assessment: reading({ meanLuminance: 255 }), value: "bright" },
+    ]);
+    expect(best).toBe("clean");
+  });
+
+  it("skips the rejects and picks the best of what is left", () => {
+    const best = pickBestFrame([
+      // A reject with perfect numbers still cannot win.
+      { assessment: reading({ verdict: "reject" }), value: "refused" },
+      { assessment: reading({ verdict: "borderline" }), value: "offered" },
+      { assessment: reading({ sharpness: 0 }), value: "soft" },
+    ]);
+    expect(best).toBe("soft");
+  });
+
+  /**
+   * Deterministic on a tie, first wins. The frames of a burst are in the order
+   * they were taken, so an unbroken tie hands back the one closest to the
+   * instant the person meant to take.
+   */
+  it("keeps the first of two equally good frames", () => {
+    const candidates = [
+      { assessment: reading({ sharpness: 0 }), value: "first" },
+      { assessment: reading({ sharpness: 0 }), value: "second" },
+    ];
+    expect(pickBestFrame(candidates)).toBe("first");
+    expect(pickBestFrame([...candidates].reverse())).toBe("second");
   });
 });
 

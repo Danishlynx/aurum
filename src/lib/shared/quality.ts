@@ -1138,6 +1138,233 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
   };
 }
 
+// ---------------------------------------------------------------------------
+// Choosing between frames
+// ---------------------------------------------------------------------------
+
+/**
+ * The span of face width ratio the score measures a miss against: half the
+ * documented band, so a frame sitting on either edge of what the engine accepts
+ * carries roughly a full unit of badness.
+ */
+const FRAME_SCORE_WIDTH_SPAN = (FACE_WIDTH_RATIO_MAX - FACE_WIDTH_RATIO_MIN) / 2;
+
+/**
+ * The middle of the band of mean luminance the gate is willing to send, which is
+ * halfway between the two borderline lines. Not the middle of 0 to 255: a frame
+ * at 128 is not preferable to one at 130 for any reason except that both are
+ * comfortably inside what an analyzer can read, and this is where that band
+ * actually sits.
+ */
+export const FRAME_SCORE_LUMINANCE_TARGET =
+  (MEAN_LUMINANCE_BORDERLINE_BELOW + MEAN_LUMINANCE_BORDERLINE_ABOVE) / 2;
+
+/** Half that band, so an edge of it is roughly a full unit of badness. */
+const FRAME_SCORE_LUMINANCE_SPAN =
+  (MEAN_LUMINANCE_BORDERLINE_ABOVE - MEAN_LUMINANCE_BORDERLINE_BELOW) / 2;
+
+/**
+ * Pose, the heaviest term, because pose is what the engine actually refuses on.
+ * Every refusal read off the live API has been one: error_face_angle_rightward,
+ * error_face_not_forward_facing, error_face_angle_downward (see
+ * POSE_YAW_MAX_DEGREES). A frame a degree squarer to the lens is worth more than
+ * a frame a little better framed or a little sharper, because it is the
+ * difference between a reading and a person told to try again.
+ *
+ * Measured against POSE_SLACK_DEGREES, since a head further outside the window
+ * than that is a reject and has already scored minus infinity.
+ *
+ * PROVISIONAL, like every number in this file. It is a shape, set from what the
+ * engine refuses on rather than from a set of scored frames.
+ */
+export const FRAME_SCORE_POSE_WEIGHT = 8;
+
+/**
+ * Framing next, at half of pose. Face width over the frame's short axis is the
+ * engine's other published input rule (FACE_WIDTH_RATIO_MIN), so it can refuse
+ * on it too, but it is weighted lower for a reason: autoCropBoxFor has already
+ * composed every frame in a burst to AUTO_CROP_FACE_WIDTH_TARGET, so what is
+ * left to rank here is the detector disagreeing with itself between frames
+ * rather than a framing anybody needs to fix.
+ *
+ * PROVISIONAL.
+ */
+export const FRAME_SCORE_WIDTH_WEIGHT = 4;
+
+/**
+ * Light next, at half of framing. The extremes already refuse a frame outright,
+ * so this term only ever separates frames the gate was willing to send: between
+ * two of those it prefers the one nearer the middle of the band, which is the
+ * one an analyzer has the most tone signal in.
+ *
+ * PROVISIONAL.
+ */
+export const FRAME_SCORE_LUMINANCE_WEIGHT = 2;
+
+/**
+ * Sharpness, the lightest term, because the provider does not gate on it.
+ * Perfect Corp publishes no blur error code anywhere, which is the same reason
+ * assessCapture never refuses a frame for softness. So softness ranks and
+ * nothing else.
+ *
+ * Lightest is not unimportant here. Between frames taken 90ms apart the pose,
+ * the framing and the light barely move, so in practice this is the term that
+ * decides a burst, and that is exactly what the burst is for: the frame at the
+ * instant of the tap is the one the finger shook.
+ *
+ * PROVISIONAL.
+ */
+export const FRAME_SCORE_SHARPNESS_WEIGHT = 1;
+
+/**
+ * Where extra sharpness stops being worth anything, five times the line below
+ * which a frame is called soft.
+ *
+ * A cap rather than an open scale, because the difference between a sharp frame
+ * and a very sharp one is not a difference the engine will ever act on, and
+ * without a cap one frame that happened to catch a high contrast edge would
+ * outvote pose and framing together.
+ *
+ * PROVISIONAL, and the one number here most likely to be wrong: it is set from
+ * SHARPNESS_BORDERLINE_BELOW, which is itself set from synthetic patterns. If
+ * real faces read far above this the term saturates and stops separating frames
+ * that it should. docs/SUBMISSION-RUNBOOK.md C4 sets both from real captures.
+ */
+export const FRAME_SCORE_SHARPNESS_CAP = 5 * SHARPNESS_BORDERLINE_BELOW;
+
+/**
+ * What a borderline verdict costs, and why it is larger than everything above
+ * put together.
+ *
+ * The gate has already made this call. An accepted frame goes straight to the
+ * engine; a borderline one stops on the review screen and asks the person
+ * whether to send it anyway. Preferring a borderline frame because it was a
+ * little sharper would put somebody in front of "Use it anyway" while a clean
+ * frame sat in memory unused, which is the opposite of what a burst is for. So
+ * the four terms rank frames within a verdict and never across one, and one
+ * more than their combined span is what guarantees it.
+ */
+export const FRAME_SCORE_BORDERLINE_PENALTY =
+  FRAME_SCORE_POSE_WEIGHT +
+  FRAME_SCORE_WIDTH_WEIGHT +
+  FRAME_SCORE_LUMINANCE_WEIGHT +
+  FRAME_SCORE_SHARPNESS_WEIGHT +
+  1;
+
+/** 0 to 1, with anything unmeasurable left as the NaN it arrived as. */
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * How good a frame is, relative to every other frame of the same face. Higher is
+ * better, 0 is the best a frame can do, and a reject is minus infinity.
+ *
+ * Why this exists. A person taps the shutter and the finger pressing the glass
+ * moves the phone, so the single frame at that instant is the one frame of the
+ * second most likely to be shaken. This product gets one attempt: the reading is
+ * paid for and nobody retakes. Every production face capture app answers that by
+ * taking a short burst and sending the best of it, and this is how the best of
+ * it is decided, in the gate's own terms rather than in a new set of them.
+ *
+ * The shape. Four penalties, each normalized to 0 to 1 over the span that
+ * matters for that measurement so the weights above can be read against each
+ * other directly, plus a flat penalty for a verdict of borderline. Nothing is
+ * rewarded: a perfect frame is 0 and everything else is the distance below it.
+ *
+ * Two cases where a measurement is simply absent, and both are treated as
+ * nothing rather than as something bad. A frame the detector could not solve a
+ * pose for is not judged on pose, which is what poseVerdictFor already does. A
+ * frame with no face box has no width ratio, and ranking on the absence of a
+ * detector's opinion would rank the detector rather than the photograph. Those
+ * frames are usually rejects anyway, and when they are not
+ * (faceEstimateTrusted false) they already carry the borderline penalty.
+ */
+export function frameScore(assessment: CaptureAssessment): number {
+  if (assessment.verdict === "reject") {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const { metrics } = assessment;
+
+  const poseBadness = clampUnit(
+    (metrics.pose === null ? 0 : poseExcessDegrees(metrics.pose)) /
+      POSE_SLACK_DEGREES,
+  );
+
+  const widthBadness =
+    metrics.faceWidthRatio === null
+      ? 0
+      : clampUnit(
+          Math.abs(metrics.faceWidthRatio - AUTO_CROP_FACE_WIDTH_TARGET) /
+            FRAME_SCORE_WIDTH_SPAN,
+        );
+
+  const luminanceBadness = clampUnit(
+    Math.abs(metrics.meanLuminance - FRAME_SCORE_LUMINANCE_TARGET) /
+      FRAME_SCORE_LUMINANCE_SPAN,
+  );
+
+  const softness =
+    1 - clampUnit(metrics.sharpness / FRAME_SCORE_SHARPNESS_CAP);
+
+  const penalty =
+    FRAME_SCORE_POSE_WEIGHT * poseBadness +
+    FRAME_SCORE_WIDTH_WEIGHT * widthBadness +
+    FRAME_SCORE_LUMINANCE_WEIGHT * luminanceBadness +
+    FRAME_SCORE_SHARPNESS_WEIGHT * softness +
+    (assessment.verdict === "borderline" ? FRAME_SCORE_BORDERLINE_PENALTY : 0);
+
+  // Subtracted from a perfect frame rather than negated, so a frame with
+  // nothing wrong with it scores zero rather than negative zero.
+  return 0 - penalty;
+}
+
+/**
+ * One frame of a burst: the gate's reading of it, and whatever the caller is
+ * actually choosing between. The caller holds canvases; this module holds none.
+ */
+export type FrameCandidate<T> = {
+  readonly assessment: CaptureAssessment;
+  readonly value: T;
+};
+
+/**
+ * The best frame of a burst, or null when the gate refused every one of them.
+ *
+ * Null is not a failure to answer, it is the answer: no frame here is one this
+ * app is willing to send, and the caller has a refusal to show rather than a
+ * photograph to upload.
+ *
+ * Ties go to the first candidate, which makes the choice deterministic and, for
+ * a burst, makes it the earliest frame. That matters slightly: the frames are
+ * ordered in time, so an unbroken tie hands back the frame closest to the
+ * instant the person meant to take.
+ *
+ * Anything that does not produce a real number is skipped rather than compared,
+ * so one frame whose metrics came back unmeasurable cannot win by being
+ * incomparable.
+ */
+export function pickBestFrame<T>(
+  candidates: ReadonlyArray<FrameCandidate<T>>,
+): T | null {
+  let best: FrameCandidate<T> | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    const score = frameScore(candidate.assessment);
+    if (!Number.isFinite(score)) {
+      continue;
+    }
+    if (best === null || score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+
+  return best === null ? null : best.value;
+}
+
 function firstByPrecedence(
   failures: readonly CaptureFailure[],
   severity: CaptureFailure["severity"],
