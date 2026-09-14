@@ -54,10 +54,15 @@ import { backTargetFor } from "@/lib/shared/navigation";
 import {
   assessCapture,
   autoCropBoxFor,
+  pickBestFrame,
   scaleBox,
   sharpnessOf,
 } from "@/lib/shared/quality";
-import type { CaptureAssessment, CaptureRejectionReason } from "@/lib/shared/quality";
+import type {
+  CaptureAssessment,
+  CaptureRejectionReason,
+  FrameCandidate,
+} from "@/lib/shared/quality";
 
 /**
  * D. Capture, docs/01-user-flow.md section D.
@@ -79,6 +84,11 @@ import type { CaptureAssessment, CaptureRejectionReason } from "@/lib/shared/qua
  * The preview is mirrored, as a person expects of a camera pointed at them. The
  * frame that is taken is not: it is the picture the analysis reads and the one
  * /report shows back, and mirroring it would put a mole on the wrong cheek.
+ *
+ * One tap takes a short burst rather than one frame, and the best of it is sent.
+ * See BURST_FRAMES for why, and frameScore in src/lib/shared/quality.ts for what
+ * "best" means. There is still one shutter and it still fires only when it is
+ * tapped.
  *
  * On capture the frame is drawn to a canvas at a 1024px long edge, which strips
  * EXIF, hashed with SHA 256, and put through the shared quality gate before
@@ -102,6 +112,57 @@ import type { CaptureAssessment, CaptureRejectionReason } from "@/lib/shared/qua
 
 /** How often the preview is measured for the live guidance line. */
 const SAMPLE_INTERVAL_MS = 400;
+
+/**
+ * How many frames one tap takes.
+ *
+ * The problem, which every production face capture app solves this way. A person
+ * taps the shutter and the finger pressing the glass moves the phone, so the
+ * single frame at that instant is the one frame of the second most likely to be
+ * shaken. This product gets one attempt at a reading: it has been paid for and
+ * nobody retakes. Sending the frame from the moment of the tap is therefore
+ * sending the worst frame available on purpose.
+ *
+ * Five, because that is enough to have the shake over by the end of it and
+ * cheap enough to be over before anybody notices. Each frame costs a canvas at
+ * sensor size, a composition, and a detection, and the still from the first one
+ * is already frozen on the screen while the rest are taken, so the wait is spent
+ * looking at the photograph rather than at a camera that kept moving.
+ *
+ * This is not auto capture. There is still exactly one shutter and it still
+ * fires only when it is tapped (docs/01-user-flow.md section D).
+ */
+const BURST_FRAMES = 5;
+
+/**
+ * How far apart the frames of a burst are taken.
+ *
+ * 90ms, so the five of them span 360ms. Long enough that consecutive frames are
+ * genuinely different moments rather than the same shake sampled twice, and
+ * short enough that the last one is still the photograph the person meant to
+ * take rather than whatever they did next.
+ */
+const BURST_INTERVAL_MS = 90;
+
+/** Yields to the browser for a while. Nothing here runs on the UI thread. */
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+}
+
+/**
+ * Gives a canvas back.
+ *
+ * A burst holds several frames at sensor size at once, which on a phone is tens
+ * of megabytes, and dropping the reference is not the same as freeing the
+ * pixels: a canvas keeps its backing store until it is resized, and the browser
+ * collects it whenever it feels like it. Setting it to nothing frees it now.
+ */
+function releaseCanvas(canvas: HTMLCanvasElement): void {
+  canvas.width = 0;
+  canvas.height = 0;
+}
 
 type Phase =
   | { readonly name: "starting" }
@@ -185,6 +246,17 @@ function snapshotOf(video: HTMLVideoElement): HTMLCanvasElement {
 }
 
 /**
+ * One photo, composed: the frame that will be judged and sent, and the same
+ * photo uncropped for the retry that crops it tighter.
+ */
+type ComposedFrame = {
+  /** The frame to judge and upload, at CAPTURE_LONG_EDGE. */
+  readonly canvas: HTMLCanvasElement;
+  /** The same photo whole, at CAPTURE_SOURCE_LONG_EDGE. */
+  readonly source: HTMLCanvasElement;
+};
+
+/**
  * The uploaded photo, composed the way the oval composes a live one.
  *
  * A phone gallery selfie carries the face at 30 to 50 percent of the frame
@@ -209,39 +281,71 @@ function snapshotOf(video: HTMLVideoElement): HTMLCanvasElement {
  * that a photo is good enough. It only gives the gate the best framing the photo
  * contains.
  */
-async function frameForUpload(
-  decoded: DecodedImage,
-): Promise<HTMLCanvasElement> {
+async function frameForUpload(decoded: DecodedImage): Promise<ComposedFrame> {
   /*
-   * The photo itself, kept in memory before anything is cropped out of it.
+   * The photo itself, kept before anything is cropped out of it.
    *
-   * Both paths reach this function with their source still open, which is why
-   * the frame is taken here and in one place. The framing below can be wrong,
-   * because on a browser with no face detector it is composed around lit skin
-   * rather than around a face, and when the engine says so the reveal sends this
-   * frame back cropped tighter (src/lib/client/capture-source.ts). It never
-   * leaves the tab and it is dropped as soon as a reading lands.
+   * The framing below can be wrong, because on a browser with no face detector
+   * it is composed around lit skin rather than around a face, and when the
+   * engine says so the reveal sends this frame back cropped tighter
+   * (src/lib/client/capture-source.ts).
+   *
+   * It is returned rather than remembered here, and that is a change the burst
+   * forced. rememberCaptureSource holds one slot, so composing five frames and
+   * remembering each of them would leave the retry holding the last frame of the
+   * burst while the upload carried a different one: a tighter crop of a
+   * photograph nobody sent. The caller composes, chooses, and only then says
+   * which frame the retry belongs to.
    */
-  rememberCaptureSource(
-    drawToCanvas(decoded.source, decoded.size, CAPTURE_SOURCE_LONG_EDGE),
+  const source = drawToCanvas(
+    decoded.source,
+    decoded.size,
+    CAPTURE_SOURCE_LONG_EDGE,
   );
   const whole = drawToCanvas(decoded.source, decoded.size, CAPTURE_LONG_EDGE);
   const { estimate } = await measure(whole);
   if (estimate.faceCount !== 1) {
-    return whole;
+    return { canvas: whole, source };
   }
   const crop = autoCropBoxFor({
     faceBox: estimate.faceBox,
     frame: { width: whole.width, height: whole.height },
   });
   if (crop === null) {
-    return whole;
+    return { canvas: whole, source };
   }
-  return drawCropToCanvas(
+  const cropped = drawCropToCanvas(
     decoded.source,
     scaleBox(crop, decoded.size.height / whole.height),
     CAPTURE_LONG_EDGE,
   );
+  // The uncropped copy was only ever the thing the face was found in.
+  releaseCanvas(whole);
+  return { canvas: cropped, source };
+}
+
+/**
+ * The gate's reading of one composed frame. No screen state, no upload.
+ *
+ * One function rather than two, because the burst and the frame that is finally
+ * sent have to be judged by identical code: a frame that wins on a measurement
+ * the gate does not make is a frame chosen for the wrong reason.
+ */
+async function readFrame(canvas: HTMLCanvasElement): Promise<{
+  readonly assessment: CaptureAssessment;
+  readonly faceSource: FaceEstimateSource;
+}> {
+  const { estimate, full } = await measure(canvas);
+  return {
+    assessment: assessCapture({
+      image: toGrayscale(full),
+      faceCount: estimate.faceCount,
+      faceBox: estimate.faceBox,
+      pose: estimate.pose ?? null,
+      faceEstimateTrusted: estimate.source !== "skin_region",
+    }),
+    faceSource: estimate.source,
+  };
 }
 
 export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps) {
@@ -573,17 +677,10 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
        * autoCropBoxFor, which frameForUpload already calls, so the camera path
        * gets it through the same single composition the upload path does.
        */
-      const { estimate, full } = await measure(canvas);
-      const assessment = assessCapture({
-        image: toGrayscale(full),
-        faceCount: estimate.faceCount,
-        faceBox: estimate.faceBox,
-        pose: estimate.pose ?? null,
-        faceEstimateTrusted: estimate.source !== "skin_region",
-      });
+      const { assessment, faceSource } = await readFrame(canvas);
 
       if (assessment.verdict === "accept") {
-        await upload(canvas, assessment, estimate.source);
+        await upload(canvas, assessment, faceSource);
         return;
       }
 
@@ -624,26 +721,104 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
      * was in front of the camera at the instant of the tap, and the feed does
      * not carry on moving underneath while the face is found.
      *
-     * Then the framing. The stage shows a center crop of the sensor, but the
-     * sensor frame is wider than the stage, so a face filling the oval on
-     * screen can still be a small fraction of the raw capture. The provider
-     * refused exactly that live (error_src_face_too_small, 2026-09-03). A
-     * canvas is a canvas image source, so the shutter goes through the same
-     * face framing pipeline the upload path uses, and both paths send what the
-     * person believed they framed. The framed frame replaces the snapshot on
-     * screen, so what the person is looking at while the upload runs is the
-     * frame that is being uploaded, down to the crop.
+     * That first frame is what freezes, and it is deliberately not what gets
+     * sent. See BURST_FRAMES: the instant of the tap is the instant the finger
+     * moved the phone, so the shutter takes four more frames behind the frozen
+     * one and the best of the five is the one that goes. The person sees an
+     * answer immediately either way, and by the time the burst has been judged
+     * the winner has replaced it on screen.
      */
-    const snapshot = snapshotOf(video);
-    freeze(snapshot);
+    const first = snapshotOf(video);
+    freeze(first);
+
     void (async () => {
-      const framed = await frameForUpload({
-        source: snapshot,
-        size: { width: snapshot.width, height: snapshot.height },
-        release: () => {},
-      });
-      freeze(framed);
-      await assess(framed);
+      /*
+       * The burst itself, taken before anything is measured. Measuring between
+       * frames would stretch the spacing out to however long a detection
+       * happened to take, and the point of BURST_INTERVAL_MS is that the five
+       * frames are five known moments of the same second.
+       */
+      const snapshots = [first];
+      for (let taken = 1; taken < BURST_FRAMES; taken += 1) {
+        await delay(BURST_INTERVAL_MS);
+        const live = videoRef.current;
+        if (live === null || live.videoWidth === 0) {
+          // The camera went away mid burst. What was caught is the burst.
+          break;
+        }
+        snapshots.push(snapshotOf(live));
+      }
+
+      /*
+       * Every frame through the same composition and the same gate the single
+       * frame path has always used. The stage shows a center crop of the
+       * sensor, but the sensor frame is wider than the stage, so a face filling
+       * the oval on screen can still be a small fraction of the raw capture,
+       * and the provider refused exactly that live (error_src_face_too_small,
+       * 2026-09-03). A canvas is a canvas image source, so a snapshot goes
+       * through the same face framing the upload path uses.
+       *
+       * Each sensor sized frame is given back the moment its composition has
+       * been cut from it, so the burst never holds more of them than it is
+       * still reading.
+       */
+      const candidates: FrameCandidate<ComposedFrame>[] = [];
+      for (const snapshot of snapshots) {
+        const composed = await frameForUpload({
+          source: snapshot,
+          size: { width: snapshot.width, height: snapshot.height },
+          release: () => {},
+        });
+        releaseCanvas(snapshot);
+        const read = await readFrame(composed.canvas);
+        candidates.push({ assessment: read.assessment, value: composed });
+      }
+
+      /*
+       * The best frame, or the frame the tap was aimed at when the gate refused
+       * all five.
+       *
+       * pickBestFrame answers null when every candidate is a reject, and that
+       * is not a case to handle by giving up: the person still has to be told
+       * what was wrong. Five frames 90ms apart are refused for the same reason
+       * as each other in practice, so the first one carries the same message as
+       * any of them and is the one the person actually meant to take. It then
+       * goes through the existing gate and lands on the review screen exactly
+       * as a single refused frame always has.
+       */
+      const fallback = candidates.length > 0 ? candidates[0].value : null;
+      const winner = pickBestFrame(candidates) ?? fallback;
+      if (winner === null) {
+        return;
+      }
+
+      // The losers are of no further use, and on a phone they are tens of
+      // megabytes of face.
+      for (const candidate of candidates) {
+        if (candidate.value !== winner) {
+          releaseCanvas(candidate.value.canvas);
+          releaseCanvas(candidate.value.source);
+        }
+      }
+
+      /*
+       * The retry frame belongs to the photograph that is being sent, which is
+       * why this is here and not inside frameForUpload any more.
+       */
+      rememberCaptureSource(winner.source);
+      /*
+       * The winner replaces the first frame on screen, so what the person is
+       * looking at while the upload runs is the frame that is being uploaded,
+       * down to the crop.
+       */
+      freeze(winner.canvas);
+      /*
+       * Through the gate unchanged, which reads the winner once more. That
+       * second reading is the price of leaving the gate and the upload exactly
+       * as they were: one detection on one canvas, against a burst that has
+       * already run five.
+       */
+      await assess(winner.canvas);
     })();
   }
 
@@ -657,9 +832,9 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         setPhase({ name: "failed", message: copy.errors.uploadFailed });
         return;
       }
-      let canvas: HTMLCanvasElement;
+      let composed: ComposedFrame;
       try {
-        canvas = await frameForUpload(decoded);
+        composed = await frameForUpload(decoded);
       } catch {
         setPhase({ name: "failed", message: copy.errors.uploadFailed });
         return;
@@ -669,8 +844,11 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         // done.
         decoded.release();
       }
-      freeze(canvas);
-      await assess(canvas);
+      // One photo, so there is nothing to choose between: this is the frame the
+      // retry crops tighter.
+      rememberCaptureSource(composed.source);
+      freeze(composed.canvas);
+      await assess(composed.canvas);
     })();
   }
 
