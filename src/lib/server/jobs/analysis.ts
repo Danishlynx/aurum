@@ -5,10 +5,12 @@ import {
   mapProviderConcern,
   presenceScoreFor,
 } from "@/lib/shared/concerns";
+import { LEADER_ANALYSIS_KIND } from "@/lib/shared/fan-out";
 import { storedImageType } from "@/lib/shared/image-type";
 
 import { BUCKETS, maskPath, uploadObject } from "../db/storage";
 import type { AnalysisKind, Json } from "../db/types";
+import { DEFAULT_FACE_ANGLE_STRICTNESS } from "../providers/perfectcorp/schemas";
 import {
   createTask,
   downloadResultAssets,
@@ -92,6 +94,60 @@ export function requiresMorePhotos(kind: AnalysisKind): boolean {
 }
 
 /**
+ * The two readings a capture has to be able to afford before it is admitted.
+ *
+ * A profile needs the skin analysis and a tone reading together
+ * (src/lib/server/profile), and the tone reading is the leader the fan out
+ * starts alone, so the cheapest path from a selfie to a report is these two and
+ * there is no cheaper one. Anything less buys a charge and no profile.
+ */
+export const PROFILE_MINIMUM_KINDS: readonly AnalysisKind[] = [
+  LEADER_ANALYSIS_KIND,
+  "skin",
+];
+
+/**
+ * What those two cost, read from the same table that reserves them.
+ *
+ * The analyze route used to admit a capture on the price of the cheapest kind,
+ * which is 10. Between 20 and 35 units of headroom that was an admission it
+ * could not honour: the 20 unit leader was bought, charged, and succeeded, the
+ * 16 unit skin reading was then refused by the cap, and the person paid for a
+ * reading that can never become a report. The threshold is the pair, priced
+ * from the cost table rather than written down as a number that can go stale
+ * the way UNITS_PER_CAPTURE_SET did.
+ */
+export function profileMinimumUnits(): number {
+  return PROFILE_MINIMUM_KINDS.reduce(
+    (total, kind) => total + planFor(kind).units,
+    0,
+  );
+}
+
+/**
+ * Whether a capture may be started against the room left under every ceiling
+ * that applies to it.
+ *
+ * Both are checked, because either one can refuse a reservation mid fan out and
+ * the damage is the same either way: a judge session with 30 credits left and a
+ * daily cap with headroom to spare still buys the leader and then refuses the
+ * skin reading. A session with no per session ceiling passes null.
+ *
+ * Pure, so the rule can be read and tested without a request
+ * (evals/budget/budget.test.ts).
+ */
+export function admitsCaptureSpend(args: {
+  readonly dailyRemaining: number;
+  readonly sessionRemaining: number | null;
+}): boolean {
+  const required = profileMinimumUnits();
+  if (args.dailyRemaining < required) {
+    return false;
+  }
+  return args.sessionRemaining === null || args.sessionRemaining >= required;
+}
+
+/**
  * The request body one analysis kind sends, from the endpoint table's own field
  * names. Pure and exported so evals/golden/render-bodies.test.ts can assert the
  * shape without a network call, which is how the face shape body would have been
@@ -113,8 +169,29 @@ export function analysisTaskBody(
       };
     case "fitzpatrick":
       return { [fileField]: fileId };
+    /*
+     * The strictness comes from DEFAULT_FACE_ANGLE_STRICTNESS and is not written
+     * out here, which it was until 2026-09-10 and which cost a whole deploy.
+     *
+     * This function is the one that runs. There is a second request builder in
+     * src/lib/server/providers/perfectcorp/index.ts, used by the golden run
+     * script, and on 2026-09-07 the default was moved to "flexible" there and
+     * only there. Every doc, comment, threshold and test written that day says
+     * the app asks the engine for 30 degrees. Every capture a person actually
+     * took went on asking for 10, which is the tolerance that produced the pose
+     * refusals in the first place. The whole point of that change never reached
+     * production, and nothing failed, because the literal below agreed with
+     * nothing except itself.
+     *
+     * So both builders now read the same exported constant. A literal here is
+     * what let the two drift, and the drift was silent in the direction that
+     * costs money.
+     */
     case "attributes":
-      return { [fileField]: fileId, face_angle_strictness_level: "high" };
+      return {
+        [fileField]: fileId,
+        face_angle_strictness_level: DEFAULT_FACE_ANGLE_STRICTNESS,
+      };
     /*
      * "features", not "dst_actions". The skin analyzer spells its selection
      * dst_actions and this call was sending the same word, which the server
@@ -122,15 +199,12 @@ export function analysisTaskBody(
      * request." So face shape never ran, on any capture, whatever the balance
      * was: /hair has been showing "your face shape was not read from this photo"
      * because the request was malformed, not because the photo was.
-     * face_angle_strictness_level is the provider's own default of "high",
-     * repeated here so this call and the tone call agree about which frames they
-     * accept rather than one of them relying on an unstated default.
      */
     case "face_shape":
       return {
         [fileField]: fileId,
         features: [...FACE_ATTRIBUTES_REQUESTED],
-        face_angle_strictness_level: "high",
+        face_angle_strictness_level: DEFAULT_FACE_ANGLE_STRICTNESS,
       };
     case "hair_type":
       return { [fileField]: [fileId] };

@@ -22,6 +22,7 @@ import type { JobRecord, Json, Render, RenderKind } from "../db/types";
 import { findReservation, perfectCorpUnits, reconcile, refund, reserve } from "../credits";
 import {
   isSupabaseConfigured,
+  judgePerSessionCapsEnabled,
   JUDGE_RENDERS_ALLOWED,
   providerCallsEnabled,
 } from "../env";
@@ -242,6 +243,8 @@ export type CreateRenderRefusal =
   | "kill_switch"
   | "daily_cap"
   | "session_cap"
+  /** The deployment's Perfect Corp allowance for the UTC day, across everyone. */
+  | "global_cap"
   | "nothing_to_render";
 
 export type CreateRenderOutcome =
@@ -611,7 +614,12 @@ export async function createRender(
     return { ok: false, reason: "render_in_progress" };
   }
 
-  if (input.session.kind === "judge") {
+  // One of the four per session judge caps, so it is the switch's to disable
+  // (src/lib/server/env.ts, judgePerSessionCapsEnabled). With it off the row is
+  // still written and the render still costs its units against the reservation
+  // below, the deployment wide ceiling, and the owner's day; what is gone is the
+  // count that refused a thirteenth try on.
+  if (input.session.kind === "judge" && judgePerSessionCapsEnabled()) {
     const used = await countRenders(ownerId);
     if (used >= JUDGE_RENDERS_ALLOWED) {
       return {
@@ -654,9 +662,12 @@ export async function createRender(
     if (existing === null) {
       await deleteRender(ownerId, render.id);
     }
+    // The three cap refusals carry straight through: they are the same three
+    // names, and folding the global ceiling into daily_cap would hide the one
+    // refusal a person cannot fix by waiting for their own day to roll over.
     return {
       ok: false,
-      reason: reservation.reason === "session_cap" ? "session_cap" : "daily_cap",
+      reason: reservation.reason,
       remaining: reservation.remaining,
     };
   }

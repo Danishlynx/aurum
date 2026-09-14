@@ -3,7 +3,7 @@ import "server-only";
 import { isSupabaseConfigured } from "../env";
 import { getAestheticProfile } from "../profile/db";
 import type { AppSession } from "../session";
-import { DEMO_OWNER_ID, judgeAnalysesRemaining } from "./index";
+import { DEMO_OWNER_ID, judgeAnalysesCapReached } from "./index";
 
 /**
  * Where a screen reads from, for this request.
@@ -66,12 +66,18 @@ export function isDemoFixtureMode(): boolean {
  * route, and every write guard can ask it without a round trip. A session
  * created with JUDGE_ANALYSES_ALLOWED=0 is exhausted on its first request, which
  * is the whole point of this build: judges spend no Perfect Corp units.
+ *
+ * All of that is true while JUDGE_PER_SESSION_CAPS is on. With it off this is
+ * always false, and it has to be: the refusal and the demo profile fallback are
+ * two halves of one state. A session that may take a photo and then reads the
+ * seeded demo profile instead of its own reading would be shown somebody else's
+ * face after spending a unit on its own.
  */
 export function judgeAnalysesExhausted(session: AppSession | null): boolean {
   return (
     session !== null &&
     session.kind === "judge" &&
-    judgeAnalysesRemaining(session.session) === 0
+    judgeAnalysesCapReached(session.session)
   );
 }
 

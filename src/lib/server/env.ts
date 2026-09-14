@@ -211,6 +211,50 @@ export function judgeSearchesAllowed(): number {
   return count("JUDGE_SERPAPI_SEARCHES", 40);
 }
 
+/**
+ * Whether the per session judge caps refuse anything. On for exactly "true", off
+ * for every other value and off when nothing is set.
+ *
+ * Which caps this is. The four that are counted against one judge session for
+ * its whole life: the analyses (judgeConfig().analysesAllowed), the credits
+ * (judgeConfig().creditsCap), the renders (JUDGE_RENDERS_ALLOWED), and the
+ * searches (judgeSearchesAllowed). With this off all four are still counted:
+ * analyses_used and credits_used still move, the ledger still records every
+ * unit, GET /api/judge/stats still reads a true number, and the cap log lines
+ * still say what was spent. The only thing that is switched off is the refusal.
+ *
+ * Why off is the default, which is a decision rather than an oversight. Every
+ * one of those caps is per owner, and an owner costs nothing to mint: the access
+ * code is published, and each submission of it makes a session with a fresh set
+ * of them. So they never bounded the account (globalDailyCap below is what that
+ * cost on 2026-09-12). What they bounded was the founder, who cannot mint a way
+ * around a cap without re entering the code, and did so 44 times in one
+ * afternoon. A brake that stops only the person who respects it is friction, not
+ * protection.
+ *
+ * What still stops a runaway, and none of it is this switch:
+ * GLOBAL_CAP_PERFECTCORP_UNITS_PER_DAY, the ceiling on what this whole
+ * deployment may spend at Perfect Corp in a UTC day, counted across every owner
+ * at once, and DAILY_CAP_PERFECTCORP_UNITS, the per owner day. Both are read
+ * before any per session cap and neither is touched by this variable.
+ *
+ * The comparison is openAccessEnabled's rather than providerCallsEnabled's: only
+ * the literal "true" counts as yes. The reason is that function's reason,
+ * pointed the other way. A typo must never open the app, and a typo must never
+ * put these caps back either, because putting them back mid demo sends the
+ * person holding the app to the access screen. Setting it to "true" restores the
+ * hackathon judging behaviour exactly as it shipped.
+ */
+export function judgePerSessionCapsEnabled(): boolean {
+  return optional("JUDGE_PER_SESSION_CAPS") === "true";
+}
+
+/**
+ * The one value that turns the per session caps on, exported for the same reason
+ * OPEN_ACCESS_ON_VALUE is: so a test can assert that nothing else does.
+ */
+export const JUDGE_PER_SESSION_CAPS_ON_VALUE = "true";
+
 // ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
@@ -277,11 +321,95 @@ export interface DailyCaps {
  * the discipline against the real SerpApi monthly quota lives in the deployed
  * environment, and every search is logged.
  */
+/**
+ * One capture set, in Perfect Corp units, at the prices in
+ * src/lib/server/credits/costs.ts: the tone reading leads at 20, then the skin
+ * analysis at 16, the Fitzpatrick reading at 10 and the face shape reading
+ * at 10.
+ *
+ * Written down here because the daily cap has to be able to fit one, and until
+ * 2026-09-10 it could not.
+ *
+ * It said 46 until now, which left the Fitzpatrick reading out. That was not a
+ * rounding: fitzpatrick is one of the three followers advanceFanOut starts on
+ * every single capture, so the number that was meant to be "what one capture
+ * costs" was ten units short of what one capture costs, and every ceiling
+ * derived from it was short by the same amount five times over. Hair type is
+ * the one analysis kind not counted here, because it needs three photos, never
+ * starts from this flow and never reserves a unit (requiresMorePhotos in
+ * src/lib/server/jobs/analysis.ts). docs/04-integrations.md prices all five at
+ * 58; these four are what a selfie actually buys.
+ *
+ * evals/budget/budget.test.ts derives the same total from planFor over the
+ * runnable kinds and asserts it equals this constant, so the two cannot drift
+ * apart again.
+ */
+export const UNITS_PER_CAPTURE_SET = 56;
+
+/**
+ * The Perfect Corp default was 40, which is less than one capture set, and that
+ * is not a conservative setting: it is a cap that guarantees the thing it is
+ * capping can never finish.
+ *
+ * What it did. The fan out starts the 20 unit leader alone and, when it
+ * succeeds, starts the 16 unit skin reading, the 10 unit Fitzpatrick reading and
+ * the 10 unit face shape reading. Under a 40 unit ceiling the first two fit at
+ * 36 and the rest are refused by a cap they can never clear. The person has
+ * already been charged 20, and on any capture where the leader landed and the
+ * skin reading did not, they were charged 20 for nothing at all. The analyze
+ * route's admission check used to price the cheapest kind at 10, so a capture
+ * was waved through and then ran into this halfway.
+ *
+ * Five capture sets, which is 280 units at the corrected price of a set. It is
+ * a real limit, it is per owner per UTC day, and it is above the number that has
+ * to fit rather than below it. The multiplication is left in the code rather
+ * than flattened to a literal, because the literal is exactly what went stale
+ * here before: the comment said 240 while the code computed 230 and neither was
+ * the price of five capture sets. The discipline against the account balance is
+ * JUDGE_CREDITS_CAP and the deployed environment, not a default that breaks the
+ * product.
+ */
 export function dailyCaps(): DailyCaps {
   return {
-    perfectcorpUnits: integer("DAILY_CAP_PERFECTCORP_UNITS", 40),
+    perfectcorpUnits: integer(
+      "DAILY_CAP_PERFECTCORP_UNITS",
+      UNITS_PER_CAPTURE_SET * 5,
+    ),
     serpapiSearches: integer("DAILY_CAP_SERPAPI_SEARCHES", 120),
   };
+}
+
+/**
+ * The one number that bounds what this whole deployment may spend at Perfect
+ * Corp in a UTC day, across every owner at once.
+ *
+ * Why it has to exist. Every other cap here is per owner, and an owner is free.
+ * A judge session is an owner, the access code is published on the project page,
+ * and each submission of it mints a new session with a fresh JUDGE_CREDITS_CAP
+ * and a fresh DAILY_CAP_PERFECTCORP_UNITS. On 2026-09-12 that produced 44
+ * sessions in one afternoon and the account fell from 502 units to 100, because
+ * nothing in the system was counting the total. Per owner caps answer "how much
+ * may this person spend"; they cannot answer "how much may everybody spend",
+ * and the account balance is a single shared number.
+ *
+ * The default, UNITS_PER_CAPTURE_SET * 10, is 560: room for ten full analyses a
+ * day across everyone put together, which is more than a demo day needs, and
+ * small enough that a runaway costs at most one day of that before the ceiling
+ * stops it. It is deliberately not sized from the balance, because the code
+ * cannot know the balance.
+ *
+ * The env value wins, and it is the one that should be set. Read the real
+ * Perfect Corp balance (GET /api/health reports it as perfectcorpCredits),
+ * decide how much of it a single day is allowed to consume, and set
+ * GLOBAL_CAP_PERFECTCORP_UNITS_PER_DAY to that number in the deployed
+ * environment. Only perfectcorp is bounded here: SerpApi has its own per owner
+ * daily cap and its own plan quota, and Claude is recorded rather than capped.
+ */
+export function globalDailyCap(): number {
+  return integer(
+    "GLOBAL_CAP_PERFECTCORP_UNITS_PER_DAY",
+    UNITS_PER_CAPTURE_SET * 10,
+  );
 }
 
 /**

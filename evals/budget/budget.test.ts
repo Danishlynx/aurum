@@ -15,7 +15,14 @@ import { z } from "zod";
 vi.mock("server-only", () => ({}));
 
 import { ANALYSIS_KINDS } from "@/lib/server/db/types";
-import { planFor, requiresMorePhotos } from "@/lib/server/jobs/analysis";
+import { UNITS_PER_CAPTURE_SET } from "@/lib/server/env";
+import {
+  admitsCaptureSpend,
+  planFor,
+  profileMinimumUnits,
+  PROFILE_MINIMUM_KINDS,
+  requiresMorePhotos,
+} from "@/lib/server/jobs/analysis";
 import {
   hasUnknownCost,
   perfectCorpUnits,
@@ -101,6 +108,21 @@ const capturePlans = ANALYSIS_KINDS.map((kind) => planFor(kind));
 /** What the app reserves today, unknown rows included at their fallback. */
 const captureSetReservedUnits = capturePlans.reduce(
   (total, plan) => total + plan.units,
+  0,
+);
+
+/**
+ * What one capture actually starts, which is not the same list.
+ *
+ * Hair type needs three photos and never runs from this flow, so it never
+ * reserves a unit (requiresMorePhotos). Every other kind is started on every
+ * capture: the tone reading leads and the poll starts skin, Fitzpatrick and face
+ * shape the moment it succeeds. This is therefore the number every ceiling has
+ * to be able to fit, and it is what UNITS_PER_CAPTURE_SET is asserted against
+ * below.
+ */
+const captureSetStartedUnits = capturePlans.reduce(
+  (total, plan) => (requiresMorePhotos(plan.kind) ? total : total + plan.units),
   0,
 );
 
@@ -254,6 +276,9 @@ const summary: Record<string, unknown> = {
   })),
   captureSetReservedUnits,
   captureSetConfirmedUnits,
+  captureSetStartedUnits,
+  unitsPerCaptureSet: UNITS_PER_CAPTURE_SET,
+  profileMinimumUnits: profileMinimumUnits(),
   renderMixes: RENDER_MIXES.map((mix) => ({
     label: mix.label,
     renders: mixRenderCount(mix),
@@ -329,6 +354,89 @@ describe("eval:budget", () => {
 
     expect(captureSetConfirmedUnits).toBe(58);
     expect(captureSetReservedUnits).toBe(58);
+  });
+
+  /*
+   * The constant the daily cap is built out of, checked against the table that
+   * charges for it.
+   *
+   * UNITS_PER_CAPTURE_SET said 46 until 2026-09-14, which is the tone reading,
+   * the skin analysis and the face shape reading with the Fitzpatrick reading
+   * left out. Fitzpatrick is one of the three followers started on every single
+   * capture, so the number meant to say "what one capture costs" was ten units
+   * under the truth, and the daily cap derived from it was fifty under. Nothing
+   * caught it because the constant was a literal and the only other place the
+   * same sum exists is this file.
+   *
+   * It is not a literal any more on this side either: the total is derived from
+   * planFor over the kinds a single selfie actually starts, so the day a kind is
+   * added, priced differently, or made runnable, this fails instead of the
+   * ledger.
+   */
+  it("keeps UNITS_PER_CAPTURE_SET equal to what one capture really starts", () => {
+    expect(captureSetStartedUnits).toBe(56);
+    expect(UNITS_PER_CAPTURE_SET).toBe(captureSetStartedUnits);
+
+    // And the only difference from the five analysis set the doc prices is hair
+    // type, which needs three photos and reserves nothing.
+    expect(captureSetReservedUnits - captureSetStartedUnits).toBe(
+      planFor("hair_type").units,
+    );
+    expect(requiresMorePhotos("hair_type")).toBe(true);
+  });
+
+  /*
+   * What the analyze route admits on, and why it is not the cheapest reading.
+   *
+   * The route priced admission at the cheapest kind (10 units) until
+   * 2026-09-14. The fan out never buys the cheapest kind on its own: it buys the
+   * 20 unit tone reading alone, and a profile needs the 16 unit skin analysis
+   * with it. So between 20 and 35 units of headroom a capture was admitted, the
+   * leader was bought and charged, and the skin reading was refused by the same
+   * ceiling the capture had just been waved through. Paid for, and no profile
+   * possible.
+   */
+  it("admits a capture only when the cheapest profile still fits", () => {
+    expect([...PROFILE_MINIMUM_KINDS]).toEqual(["attributes", "skin"]);
+    expect(profileMinimumUnits()).toBe(36);
+    expect(profileMinimumUnits()).toBeGreaterThan(
+      Math.min(
+        ...ANALYSIS_KINDS.filter((kind) => !requiresMorePhotos(kind)).map(
+          (kind) => planFor(kind).units,
+        ),
+      ),
+    );
+
+    // The window the old check got wrong, from both sides of it.
+    expect(
+      admitsCaptureSpend({ dailyRemaining: 35, sessionRemaining: null }),
+    ).toBe(false);
+    expect(
+      admitsCaptureSpend({ dailyRemaining: 36, sessionRemaining: null }),
+    ).toBe(true);
+
+    // A judge session inside the daily cap and out of its own credits fails in
+    // exactly the same way, so both ceilings are asked and the tighter decides.
+    expect(
+      admitsCaptureSpend({ dailyRemaining: 280, sessionRemaining: 30 }),
+    ).toBe(false);
+    expect(
+      admitsCaptureSpend({ dailyRemaining: 280, sessionRemaining: 36 }),
+    ).toBe(true);
+  });
+
+  /*
+   * The cap that has to fit what the route admits.
+   *
+   * A daily default under one capture set is not a conservative setting: it is
+   * one that charges for a leader and then refuses the readings that would have
+   * made it worth something. Five sets is the default, and the multiplication is
+   * asserted rather than the product, so the day a price moves this says so.
+   */
+  it("leaves the daily default able to fit whole capture sets", () => {
+    const DEFAULT_SETS_PER_DAY = 5;
+    expect(UNITS_PER_CAPTURE_SET * DEFAULT_SETS_PER_DAY).toBe(280);
+    expect(UNITS_PER_CAPTURE_SET).toBeGreaterThanOrEqual(profileMinimumUnits());
   });
 
   it("records which rows are still unpriced, so nothing reads as confirmed", () => {

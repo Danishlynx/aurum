@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+﻿import { describe, expect, it, vi } from "vitest";
 
 /**
  * The Perfect Corp task status envelope, tested against the response the live
@@ -39,6 +39,7 @@ import {
 } from "@/lib/server/providers/perfectcorp";
 import { PERFECTCORP_ENDPOINTS } from "@/lib/server/providers/perfectcorp/endpoints";
 import {
+  DEFAULT_FACE_ANGLE_STRICTNESS,
   FACE_ATTRIBUTE_NAMES,
   FACE_SHAPE_VALUES,
   faceAttributesResultSchema,
@@ -710,10 +711,22 @@ describe("the face attribute analysis body the app sends", () => {
   const body = analysisTaskBody("face_shape", "file-123");
 
   it("names the selection features, which is the field this endpoint has", () => {
+    /*
+     * The strictness is asserted against the shared constant rather than against
+     * a literal, and that is the point of this line rather than a detail of it.
+     *
+     * This assertion used to read "high". On 2026-09-07 the default was moved to
+     * "flexible" in the provider module and this test kept passing, because it
+     * was checking the live builder against a copy of the old value rather than
+     * against the value the app believes it sends. A whole deploy went out
+     * asking the engine for 10 degrees while every doc, threshold and other test
+     * said 30. A test that hardcodes what the code hardcodes cannot notice they
+     * have drifted; it can only notice that they have both changed.
+     */
     expect(body).toEqual({
       src_file_id: "file-123",
       features: ["faceShape"],
-      face_angle_strictness_level: "high",
+      face_angle_strictness_level: DEFAULT_FACE_ANGLE_STRICTNESS,
     });
   });
 
@@ -893,3 +906,4 @@ describe("the face attribute analysis cost", () => {
     expect(verification.note).toContain("408 to 398");
   });
 });
+

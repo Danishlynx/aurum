@@ -202,7 +202,7 @@ The five capture analyses run in parallel from the same uploaded object. Perfect
 ## Credits and caps
 
 - Every provider call reserves credits in credit_ledger before it starts and reconciles after. Reservation uses the cost table in docs/04-integrations.md, which must be filled from the live docs on day one.
-- A person has a daily cap (config, default 40 Perfect Corp units, 30 SerpApi searches). A judge session has a hard cap (3 full analyses, credits_cap units). Requests beyond a cap return 429 with the copy from the flow doc, and the UI switches to demo mode where relevant.
+- A person has a daily cap (config, default 280 Perfect Corp units, 120 SerpApi searches). The Perfect Corp default is five capture sets: one set is 56 units (tone 20, skin 16, Fitzpatrick 10, face shape 10), and a default below one set is not a conservative setting but one that charges for a leader and then refuses the rest. A judge session has a hard cap (3 full analyses, credits_cap units). Requests beyond a cap return 429 with the copy from the flow doc, and the UI switches to demo mode where relevant.
 - A global kill switch (env PROVIDER_CALLS_ENABLED=false) makes every provider route serve from cache or the demo profile. Flip it if credits are nearly exhausted before judging ends.
 
 ## Judge mode

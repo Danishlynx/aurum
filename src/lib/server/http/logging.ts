@@ -89,7 +89,19 @@ export interface CapEventFields {
   readonly route: string;
   readonly sessionKind: "user" | "judge";
   readonly sessionId: string;
-  readonly kind: "judge_analyses" | "judge_credits" | "daily_credits" | "rate_limit";
+  /**
+   * global_credits is the deployment wide Perfect Corp ceiling
+   * (GLOBAL_CAP_PERFECTCORP_UNITS_PER_DAY). It is its own kind rather than
+   * another daily_credits because a line saying which of the two refused is the
+   * difference between raising one owner's cap and finding out the account is
+   * nearly empty.
+   */
+  readonly kind:
+    | "judge_analyses"
+    | "judge_credits"
+    | "daily_credits"
+    | "global_credits"
+    | "rate_limit";
   readonly remaining: number;
 }
 

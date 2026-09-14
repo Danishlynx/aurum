@@ -107,10 +107,21 @@ export function tooManyRequests(args: {
   });
 }
 
-/** A cap, not a rate limit: the same 429 with the copy the flow doc uses. */
+/**
+ * A cap, not a rate limit: the same 429 with the copy the flow doc uses.
+ *
+ * global_credits is the deployment wide Perfect Corp ceiling, which reads the
+ * same to the person as daily_credits and needs a different code in the log,
+ * because the two want opposite fixes: one is this owner's day, the other is
+ * everybody's day and the account balance behind it.
+ */
 export function capReached(args: {
   readonly message: string;
-  readonly code: "judge_analyses" | "judge_credits" | "daily_credits";
+  readonly code:
+    | "judge_analyses"
+    | "judge_credits"
+    | "daily_credits"
+    | "global_credits";
   readonly remaining: number;
 }): HttpError {
   return new HttpError({

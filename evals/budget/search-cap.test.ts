@@ -111,7 +111,11 @@ const SPENT_SESSION = {
   },
 };
 
-const TOUCHED = ["JUDGE_SERPAPI_SEARCHES", "DAILY_CAP_SERPAPI_SEARCHES"] as const;
+const TOUCHED = [
+  "JUDGE_SERPAPI_SEARCHES",
+  "DAILY_CAP_SERPAPI_SEARCHES",
+  "JUDGE_PER_SESSION_CAPS",
+] as const;
 const saved = new Map<string, string | undefined>();
 
 beforeEach(() => {
@@ -122,6 +126,14 @@ beforeEach(() => {
     saved.set(name, process.env[name]);
     delete process.env[name];
   }
+  /*
+   * Both per session caps in this file refuse only while JUDGE_PER_SESSION_CAPS
+   * is on (src/lib/server/env.ts), and it is off by default. What this suite
+   * asserts is that the two currencies are counted separately when they are
+   * enforced, so it turns them on. The daily cap block at the bottom does not
+   * need the switch and is not affected by it.
+   */
+  process.env.JUDGE_PER_SESSION_CAPS = "true";
 });
 
 afterEach(() => {

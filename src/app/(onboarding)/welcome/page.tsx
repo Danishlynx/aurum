@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { BackLink } from "@/components/app-shell/BackLink";
 import { Column } from "@/components/layout/Column";
 import { ConsentForm } from "@/components/welcome/ConsentForm";
-import { judgeAnalysesRemaining } from "@/lib/server/judge";
+import { judgeAnalysesCapReached } from "@/lib/server/judge";
 import { readJudgeSessionFromCookie } from "@/lib/server/judge/guard";
 import { copy } from "@/lib/shared/copy";
 import { backTargetFor } from "@/lib/shared/navigation";
@@ -24,6 +24,10 @@ import { backTargetFor } from "@/lib/shared/navigation";
  * because a bookmark, a back button, or the landing page's own button can all
  * arrive here without going through /judge.
  *
+ * With JUDGE_PER_SESSION_CAPS off, no session is ever in that state
+ * (src/lib/server/env.ts): the count still moves but it refuses nothing, so
+ * every judge session reaches consent and the camera behind it.
+ *
  * The other half of that doc line, a signed in person who already has a profile,
  * still waits on the auth work: it needs a session read that reaches Supabase,
  * which this screen must not require on a build with no project configured.
@@ -38,7 +42,7 @@ export const dynamic = "force-dynamic";
 
 export default async function WelcomePage() {
   const judge = await readJudgeSessionFromCookie();
-  if (judge !== null && judgeAnalysesRemaining(judge) === 0) {
+  if (judge !== null && judgeAnalysesCapReached(judge)) {
     redirect("/report");
   }
 
