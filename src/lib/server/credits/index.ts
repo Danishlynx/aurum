@@ -2,7 +2,7 @@ import "server-only";
 
 import { serviceClient, unwrap } from "../db/service";
 import type { CreditLedgerEntry, CreditProvider, Insert } from "../db/types";
-import { dailyCaps, judgeSearchesAllowed } from "../env";
+import { dailyCaps, globalDailyCap, judgeSearchesAllowed } from "../env";
 import { adjustJudgeCredits } from "../judge";
 import type { AppSession } from "../session";
 
@@ -23,6 +23,12 @@ export {
  * credits before it starts and reconciles after. A person has a daily cap; a
  * judge session has a hard cap for its whole life. Requests beyond a cap return
  * 429 and the UI falls back to cache or the demo profile.
+ *
+ * Above both of those sits one ceiling that is not per owner at all: the
+ * deployment's own Perfect Corp spend for the UTC day
+ * (GLOBAL_CAP_PERFECTCORP_UNITS_PER_DAY, src/lib/server/env.ts). Every per owner
+ * cap is only as strong as the number of owners, and owners are free to mint, so
+ * the total needs a number of its own.
  *
  * The ledger is append only. A reservation is a positive row, a refund is a
  * negative row, and reconciliation is a signed adjustment. The balance is
@@ -46,11 +52,22 @@ export interface Reservation {
   readonly subjectId: string | null;
 }
 
+/**
+ * Why a reservation was refused.
+ *
+ * - daily_cap: this owner has spent their own allowance for the UTC day.
+ * - session_cap: this judge session has spent its allowance for its whole life.
+ * - global_cap: the deployment has spent its Perfect Corp allowance for the UTC
+ *   day, whoever spent it. The only refusal here that is not about the caller,
+ *   and the only one another owner's traffic can cause.
+ */
+export type ReserveRefusal = "daily_cap" | "session_cap" | "global_cap";
+
 export type ReserveResult =
   | { readonly ok: true; readonly reservation: Reservation }
   | {
       readonly ok: false;
-      readonly reason: "daily_cap" | "session_cap";
+      readonly reason: ReserveRefusal;
       readonly remaining: number;
     };
 
@@ -75,17 +92,34 @@ function dailyCapFor(provider: CreditProvider): number | null {
   return null;
 }
 
+/**
+ * Sums ledger rows for one provider, optionally narrowed to one owner.
+ *
+ * A null owner is the deployment wide total, and it is the one query in this
+ * file that deliberately does not filter on ownership. It reads no row content,
+ * only the units column, so it cannot hand one person another person's data: the
+ * answer is a single number about the account, which is exactly what a global
+ * ceiling has to be measured against.
+ *
+ * Refunds are negative rows, so they come out of this sum on their own. A task
+ * the engine refused therefore gives its units back to the ceiling as well as to
+ * its owner, and does not eat a day's allowance for nothing.
+ */
 async function sumUnits(args: {
-  readonly owner: CreditOwner;
+  readonly owner: CreditOwner | null;
   readonly provider: CreditProvider;
   readonly since: string | null;
 }): Promise<number> {
   let query = serviceClient()
     .from("credit_ledger")
     .select("units")
-    .eq("owner_type", args.owner.ownerType)
-    .eq("owner_id", args.owner.ownerId)
     .eq("provider", args.provider);
+
+  if (args.owner !== null) {
+    query = query
+      .eq("owner_type", args.owner.ownerType)
+      .eq("owner_id", args.owner.ownerId);
+  }
 
   if (args.since !== null) {
     query = query.gte("created_at", args.since);
@@ -113,6 +147,27 @@ export async function spentTotal(
   provider: CreditProvider,
 ): Promise<number> {
   return sumUnits({ owner, provider, since: null });
+}
+
+/**
+ * Units spent today on this provider by every owner together, refunds included.
+ * The number the global ceiling is checked against.
+ */
+export async function spentTodayAllOwners(
+  provider: CreditProvider,
+): Promise<number> {
+  return sumUnits({ owner: null, provider, since: startOfUtcDay() });
+}
+
+/**
+ * What is left of the deployment's Perfect Corp allowance for this UTC day.
+ * Read by GET /api/health so the ceiling can be watched rather than discovered
+ * from a drained account.
+ */
+export async function globalRemainingToday(): Promise<number> {
+  const ceiling = globalDailyCap();
+  const used = await spentTodayAllOwners("perfectcorp");
+  return Math.max(0, ceiling - used);
 }
 
 /**
@@ -149,7 +204,11 @@ function judgeCapKindFor(provider: CreditProvider): JudgeCapKind {
  * throwing, because a cap is an expected answer the routes turn into a 429 with
  * the judge copy, not an error.
  *
- * For a judge session the session counter is moved first: it is the counter the
+ * The global Perfect Corp ceiling is checked first, before anything per owner
+ * and before any counter moves, because it is the only check that can refuse a
+ * caller who has done nothing wrong and it must not leave a half spend behind.
+ *
+ * For a judge session the session counter is moved next: it is the counter the
  * cap is checked against, so if it refuses, no ledger row is written and no
  * provider call happens.
  */
@@ -162,6 +221,26 @@ export async function reserve(args: {
 }): Promise<ReserveResult> {
   const owner = ownerOf(args.session);
   const units = Math.max(1, Math.round(args.units));
+
+  /*
+   * The deployment wide ceiling, Perfect Corp only.
+   *
+   * SerpApi is left alone on purpose: it has its own per owner daily cap and its
+   * own plan quota, and its unit is a search rather than a share of one prepaid
+   * unit balance. Claude is recorded, never capped. Only Perfect Corp units come
+   * out of a single number that can reach zero mid demo.
+   */
+  if (args.provider === "perfectcorp") {
+    const ceiling = globalDailyCap();
+    const spentEverywhere = await spentTodayAllOwners("perfectcorp");
+    if (spentEverywhere + units > ceiling) {
+      return {
+        ok: false,
+        reason: "global_cap",
+        remaining: Math.max(0, ceiling - spentEverywhere),
+      };
+    }
+  }
 
   const cap = dailyCapFor(args.provider);
   if (cap !== null) {

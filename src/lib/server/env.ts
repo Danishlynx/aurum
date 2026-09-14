@@ -317,6 +317,39 @@ export function dailyCaps(): DailyCaps {
 }
 
 /**
+ * The one number that bounds what this whole deployment may spend at Perfect
+ * Corp in a UTC day, across every owner at once.
+ *
+ * Why it has to exist. Every other cap here is per owner, and an owner is free.
+ * A judge session is an owner, the access code is published on the project page,
+ * and each submission of it mints a new session with a fresh JUDGE_CREDITS_CAP
+ * and a fresh DAILY_CAP_PERFECTCORP_UNITS. On 2026-09-12 that produced 44
+ * sessions in one afternoon and the account fell from 502 units to 100, because
+ * nothing in the system was counting the total. Per owner caps answer "how much
+ * may this person spend"; they cannot answer "how much may everybody spend",
+ * and the account balance is a single shared number.
+ *
+ * The default, UNITS_PER_CAPTURE_SET * 10, is 460: room for ten full analyses a
+ * day across everyone put together, which is more than a demo day needs, and
+ * small enough that a runaway costs at most one day of that before the ceiling
+ * stops it. It is deliberately not sized from the balance, because the code
+ * cannot know the balance.
+ *
+ * The env value wins, and it is the one that should be set. Read the real
+ * Perfect Corp balance (GET /api/health reports it as perfectcorpCredits),
+ * decide how much of it a single day is allowed to consume, and set
+ * GLOBAL_CAP_PERFECTCORP_UNITS_PER_DAY to that number in the deployed
+ * environment. Only perfectcorp is bounded here: SerpApi has its own per owner
+ * daily cap and its own plan quota, and Claude is recorded rather than capped.
+ */
+export function globalDailyCap(): number {
+  return integer(
+    "GLOBAL_CAP_PERFECTCORP_UNITS_PER_DAY",
+    UNITS_PER_CAPTURE_SET * 10,
+  );
+}
+
+/**
  * Build identity for /api/health. Vercel sets VERCEL_GIT_COMMIT_SHA; a local
  * dev server has neither, and "unknown" is an honest answer.
  */

@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { getCapture } from "@/lib/server/db";
 import { ANALYSIS_KINDS } from "@/lib/server/db/types";
-import { ownerOf, spentToday } from "@/lib/server/credits";
+import { globalRemainingToday, ownerOf, spentToday } from "@/lib/server/credits";
 import { dailyCaps, providerCallsEnabled } from "@/lib/server/env";
 import {
   enforceRateLimit,
@@ -45,7 +45,8 @@ import { refuseWhenJudgeAnalysesExhausted } from "@/lib/server/judge/guard";
  * 4. the capture, so a wrong id costs nothing
  * 5. the kill switch, which serves cache or demo without touching a provider
  * 6. the judge analyses cap, which is per capture and not per credit
- * 7. the daily credit cap, checked once so a refusal is not a half spend
+ * 7. the credit ceilings, deployment wide first and then per owner, each checked
+ *    once so a refusal is not a half spend
  */
 
 export const runtime = "nodejs";
@@ -150,9 +151,20 @@ export async function POST(
       }
     }
 
-    const caps = dailyCaps();
-    const usedToday = await spentToday(ownerOf(session), "perfectcorp");
-    if (caps.perfectcorpUnits - usedToday < cheapestPlannedUnits()) {
+    /*
+     * Two ceilings, checked in the same place and for the same reason: the fan
+     * out must not start when the cheapest kind in it cannot be paid for, or the
+     * person is charged for the leader and refused the readings that follow it.
+     *
+     * The deployment wide one is read first because it is the one that bounds
+     * the account rather than the person. Every other cap here is per owner, and
+     * a judge session is an owner that anyone holding the published access code
+     * can mint again (src/lib/server/env.ts, globalDailyCap).
+     */
+    const refuseOnCredits = async (
+      kind: "daily_credits" | "global_credits",
+      remaining: number,
+    ): Promise<never> => {
       if (firstRun && session.kind === "judge") {
         await releaseJudgeAnalysis(session.id);
       }
@@ -161,14 +173,30 @@ export async function POST(
         route: "/api/captures/[id]/analyze",
         sessionKind: session.kind,
         sessionId: session.id,
-        kind: "daily_credits",
-        remaining: Math.max(0, caps.perfectcorpUnits - usedToday),
+        kind,
+        remaining,
       });
       throw capReached({
         message: messages.dailyCapReached,
-        code: "daily_credits",
-        remaining: Math.max(0, caps.perfectcorpUnits - usedToday),
+        code: kind,
+        remaining,
       });
+    };
+
+    const cheapest = cheapestPlannedUnits();
+
+    const globalRemaining = await globalRemainingToday();
+    if (globalRemaining < cheapest) {
+      await refuseOnCredits("global_credits", globalRemaining);
+    }
+
+    const caps = dailyCaps();
+    const usedToday = await spentToday(ownerOf(session), "perfectcorp");
+    if (caps.perfectcorpUnits - usedToday < cheapest) {
+      await refuseOnCredits(
+        "daily_credits",
+        Math.max(0, caps.perfectcorpUnits - usedToday),
+      );
     }
 
     let view: CaptureJobsView;
