@@ -18,6 +18,7 @@ import {
 import {
   ensureAnalysis,
   findJobForSubject,
+  getCapture,
   insertJob,
   listAnalyses,
   listJobsForSubjects,
@@ -66,7 +67,9 @@ import {
  * retry    one automatic retry for a transient failure, attempts capped at 2
  * idempotency  creating a job for a subject that already has one running
  *          returns the running job
- * timeout  a job running longer than 120 seconds fails with the timeout copy
+ * timeout  a job running longer than 120 seconds fails with the timeout copy,
+ *          and is NOT refunded: the task is still at the provider and will be
+ *          charged whether or not we ever read it
  *
  * The order the analyses are started in, and why it is not all at once.
  *
@@ -541,7 +544,9 @@ async function providerFileFor(args: {
  *
  * Reservations are sequential because each one reads the running total. Task
  * creation is parallel, and a single kind that will not start refunds only its
- * own units.
+ * own units. A reservation that throws mid list takes the ones already written
+ * back out with it, so this call either holds reservations it is about to spend
+ * or holds none at all.
  */
 async function startKinds(args: {
   readonly session: AppSession;
@@ -555,48 +560,82 @@ async function startKinds(args: {
   const failures = new Map<AnalysisKind, string>();
 
   const started: StartedAnalysis[] = [];
-  for (const kind of args.kinds) {
-    const analysis = args.byKind.get(kind);
-    if (analysis === undefined) {
-      continue;
-    }
-    const plan = planFor(kind);
-    const outcome = await reserve({
-      session: args.session,
-      provider: "perfectcorp",
-      units: plan.units,
-      subjectId: analysis.id,
-      note: `reserve ${kind}`,
-    });
-
-    if (!outcome.ok) {
-      const message =
-        outcome.reason === "session_cap"
-          ? copy.errors.judgeExhausted
-          : messages.dailyCapReached;
-      await updateAnalysis(analysis.id, {
-        status: "failed",
-        error: message,
-        credits_used: 0,
-      });
-      await writeJob({
-        ownerId,
+  try {
+    for (const kind of args.kinds) {
+      const analysis = args.byKind.get(kind);
+      if (analysis === undefined) {
+        continue;
+      }
+      const plan = planFor(kind);
+      const outcome = await reserve({
+        session: args.session,
+        provider: "perfectcorp",
+        units: plan.units,
         subjectId: analysis.id,
-        status: "failed",
-        providerTaskId: null,
-        attempts: MAX_ATTEMPTS,
-        error: message,
+        note: `reserve ${kind}`,
       });
-      failures.set(kind, message);
-      continue;
-    }
 
-    args.onCredits?.(outcome.reservation.units);
-    started.push({
-      analysis,
-      kind,
-      reservationUnits: outcome.reservation.units,
-    });
+      if (!outcome.ok) {
+        // daily_cap and global_cap read the same to the person: no units until
+        // tomorrow. Only session_cap is about this session and has its own line.
+        const message =
+          outcome.reason === "session_cap"
+            ? copy.errors.judgeExhausted
+            : messages.dailyCapReached;
+        await updateAnalysis(analysis.id, {
+          status: "failed",
+          error: message,
+          credits_used: 0,
+        });
+        await writeJob({
+          ownerId,
+          subjectId: analysis.id,
+          status: "failed",
+          providerTaskId: null,
+          attempts: MAX_ATTEMPTS,
+          error: message,
+        });
+        failures.set(kind, message);
+        continue;
+      }
+
+      args.onCredits?.(outcome.reservation.units);
+      started.push({
+        analysis,
+        kind,
+        reservationUnits: outcome.reservation.units,
+      });
+    }
+  } catch (thrown) {
+    /*
+     * A reservation threw part way down the list, so the ones already written
+     * go back before this leaves.
+     *
+     * A refusal is a returned value and is handled above; what throws here is
+     * the ledger write itself, or the judge counter behind it. Without this the
+     * kinds reserved before the throw held a positive ledger row and no task,
+     * and nothing would ever settle it: the next poll starts the same kinds
+     * again and reserves again, and findReservation only ever returns the
+     * newest row, so the older ones stand forever as spend against the daily
+     * cap and the judge cap for readings that were never bought.
+     */
+    for (const entry of started) {
+      try {
+        await refundFor(args.session, entry.analysis.id);
+      } catch {
+        // The ledger is unreachable, which is what threw in the first place.
+        // The original failure is the one the caller has to see, so it is not
+        // replaced by a second copy of the same outage.
+        console.warn(
+          JSON.stringify({
+            event: "aurum.reservation_unrefunded",
+            kind: entry.kind,
+            units: entry.reservationUnits,
+          }),
+        );
+      }
+    }
+    throw thrown;
   }
 
   await Promise.all(
@@ -790,6 +829,80 @@ export async function readCaptureJobs(
  * Exported because the render poll (src/lib/server/renders) is a job poll too
  * and must not have a second copy of this rule.
  */
+/**
+ * Claims the right to START a pending job, exactly once, for all time.
+ *
+ * Not the same thing as claimForPolling below, and the difference is money.
+ *
+ * claimForPolling is a one second throttle: it stamps last_polled_at and lets
+ * the next caller through as soon as a second has passed. That is right for
+ * asking the provider how a task is getting on, which is idempotent and free.
+ * advanceFanOut used it as a start once lock, and it is not one. Starting the
+ * followers means uploading the selfie to the provider and creating two paid
+ * tasks, which takes well over a second on a phone connection, so a second poll
+ * arriving mid upload found the claim already expired, claimed it again, and
+ * started the same readings a second time. Two skin analyses at 16 units, two
+ * face shape readings at 10, neither of them visible to the person.
+ *
+ * A start once guarantee cannot come from a time window, because the window has
+ * to outlast work whose duration nobody controls. It comes from a state
+ * transition that can only happen once, and the transition is the one the start
+ * itself makes: pending with no provider task becomes running with one.
+ *
+ * That is why all three predicates below are on the update and not just the
+ * timestamp. Claiming on last_polled_at alone was still the same bug one step
+ * further along, because last_polled_at is not a state nothing restores:
+ * writeJob sets it back to null on every write, including the one that marks the
+ * job running at the very end of the start. So the claim came back the instant
+ * the start finished, and a second poll holding a snapshot read before it (still
+ * pending, still no task id, still no timestamp) passed its own in memory check,
+ * won the update, and started the followers a second time. Two skin analyses at
+ * 16 units, two face shape readings at 10, exactly what claiming on a one second
+ * throttle used to buy.
+ *
+ * status and provider_task_id are the columns the start actually moves, so they
+ * are what the claim is compared against. They match releasePendingStart, which
+ * has always used both, and a job that has been started can never be claimed
+ * again whatever the timestamp says. writeJob is left alone: nulling
+ * last_polled_at is what lets claimForPolling read a freshly running job
+ * immediately rather than waiting out a throttle against a stamp from before
+ * the task existed.
+ *
+ * The claim is released again if the start fails (releasePendingStart), because
+ * a claim held by a caller that gave up would strand the fan out until the job
+ * timed out.
+ */
+async function claimPendingStart(job: JobRecord): Promise<boolean> {
+  if (job.last_polled_at !== null) {
+    return false;
+  }
+  const result = await serviceClient()
+    .from("jobs")
+    .update({ last_polled_at: new Date().toISOString() })
+    .eq("id", job.id)
+    .eq("status", "pending")
+    .is("provider_task_id", null)
+    .is("last_polled_at", null)
+    .select("id")
+    .maybeSingle();
+  return unwrapNullable("claim pending job for start", result) !== null;
+}
+
+/** Puts a claimed start back, so a later poll can try again. */
+async function releasePendingStart(job: JobRecord): Promise<void> {
+  try {
+    await serviceClient()
+      .from("jobs")
+      .update({ last_polled_at: null })
+      .eq("id", job.id)
+      .eq("status", "pending")
+      .is("provider_task_id", null);
+  } catch {
+    // A claim that cannot be released is a stalled fan out and nothing worse:
+    // the job stays pending and the ordinary lifetime timeout ends it.
+  }
+}
+
 export async function claimForPolling(job: JobRecord): Promise<boolean> {
   const now = Date.now();
   if (
@@ -839,22 +952,32 @@ async function failJob(args: {
 }
 
 /**
- * A task the provider says succeeded, whose result we could not read.
+ * A task we have to assume the provider charged for, closed without a refund.
  *
- * It is not failJob: that one refunds, and refunding here would be a lie. A
- * task that fails is charged nothing, but a task that succeeds is charged
- * whether or not our schema can read the answer. That is not a hypothetical:
- * the first live skin analysis cost 16 units and was recorded as failed and
- * refunded, because data.error arrives as null and the schema wanted a string,
- * and the ledger then said the account had 16 units it did not have. So the
- * reservation is reconciled as spent, the analysis is marked failed, and the
- * step is simply missing from the report.
+ * It is not failJob: that one refunds, and refunding here would be a lie. A task
+ * that fails is charged nothing, but a task that succeeds is charged whether or
+ * not anybody ever reads the answer. That is not a hypothetical: the first live
+ * skin analysis cost 16 units and was recorded as failed and refunded, because
+ * data.error arrives as null and the schema wanted a string, and the ledger then
+ * said the account had 16 units it did not have. So the reservation is
+ * reconciled as spent, the analysis is marked failed, and the step is simply
+ * missing from the report.
+ *
+ * Two callers, one rule. A task whose result would not parse, and a task still
+ * running at the provider when our own lifetime expired. Neither of them is a
+ * refusal, and only a refusal is free.
+ *
+ * The message is the caller's, because the two say different things to the
+ * person: one is a reading that could not be used, the other is a reading that
+ * did not arrive in time.
  */
 async function failChargedJob(args: {
   readonly session: AppSession;
   readonly job: JobRecord;
   readonly analysis: Analysis;
+  readonly message?: string;
 }): Promise<void> {
+  const message = args.message ?? messages.analysisUnavailable;
   const reservation = await findReservation({
     owner: { ownerType: args.session.ownerType, ownerId: args.session.id },
     subjectId: args.analysis.id,
@@ -870,12 +993,12 @@ async function failChargedJob(args: {
   }
   await updateAnalysis(args.analysis.id, {
     status: "failed",
-    error: messages.analysisUnavailable,
+    error: message,
     credits_used: units,
   });
   await updateJob(args.job.id, {
     status: "failed",
-    error: messages.analysisUnavailable,
+    error: message,
     attempts: MAX_ATTEMPTS,
   });
 }
@@ -947,10 +1070,6 @@ export async function pollCaptureJobs(
     analyses.map((analysis) => analysis.id),
   );
 
-  // One restart per poll keeps a bad minute from turning into a burst of
-  // uploads. The next poll picks up the next one.
-  let restartsLeft = 1;
-
   /**
    * Whether the reading the rest of the fan out waits on is in. Read from the
    * rows and set again below if it lands during this very pass, so the followers
@@ -971,11 +1090,33 @@ export async function pollCaptureJobs(
       continue;
     }
 
+    /*
+     * Our lifetime ran out, which says nothing about the task.
+     *
+     * The asymmetry this branch is on the wrong side of until now. A task the
+     * engine refuses is charged nothing, so failJob gives the reservation back
+     * and that is correct for every refusal. A task that is still running at the
+     * provider when our 120 seconds are up is not a refusal: it is work in
+     * progress that we have stopped waiting for, and the provider will charge
+     * for it whether or not we ever read the answer. Refunding it wrote credit
+     * into the ledger that the account does not have, which is the same lie
+     * failChargedJob was added to stop telling about an unreadable result.
+     *
+     * It reaches here more often since restartJob was removed, and deliberately:
+     * a sustained transient read error now leaves the job running and re polls
+     * the same task, so a provider that stays unreachable ends here rather than
+     * buying a second copy of the reading. That makes this the branch that has
+     * to be honest about the money.
+     *
+     * A job that never started (a follower still pending, no task, no
+     * reservation) passes through the same call and settles nothing, because
+     * there is nothing to settle.
+     */
     if (Date.now() - Date.parse(job.created_at) > JOB_LIFETIME_MS) {
-      await failJob({
+      await failChargedJob({
         session: input.session,
         job,
-        analysisId: analysis.id,
+        analysis,
         message: copy.errors.providerTimeout,
       });
       continue;
@@ -1096,18 +1237,42 @@ export async function pollCaptureJobs(
       // Still running: last_polled_at was already stamped by the claim.
     } catch (thrown) {
       const transient = isProviderError(thrown) && thrown.isTransient;
-      if (transient && job.attempts < MAX_ATTEMPTS && restartsLeft > 0) {
-        restartsLeft -= 1;
-        const restarted = await restartJob({
-          session: input.session,
-          job,
-          analysis,
-          capture: input.capture,
-          onProviderCall: input.onProviderCall,
-        });
-        if (restarted) {
-          continue;
-        }
+      /*
+       * A transient error here is a failure to READ the task, not a failure of
+       * the task.
+       *
+       * What throws in this block is getTaskSnapshot: a 15 second HTTP timeout,
+       * a dropped connection, a 429, a 5xx. In every one of those the task is
+       * still sitting at the provider with the id this job already holds, doing
+       * the work, and it will be charged for whether or not anybody ever reads
+       * the answer.
+       *
+       * Until 2026-09-10 this branch called restartJob, which uploaded the
+       * selfie again, created a SECOND task, and overwrote provider_task_id with
+       * the new id. The first task was then unreachable: never polled, never
+       * reconciled, and never cancelled, because the provider has no cancel and
+       * this code has one column for one id. So a network blip on a status GET
+       * bought a second copy of a reading nobody would see, at 20 units for the
+       * leader or 16 for the skin analysis, with no reservation written for it
+       * at all, which is why neither the credit ledger nor the daily cap nor the
+       * judge cap could see the spend.
+       *
+       * The right answer to a read that failed is to read again. Leaving the job
+       * running does exactly that on the next poll, one second later, against the
+       * same task. JOB_LIFETIME_MS already bounds how long that can go on, and
+       * the timeout path below is what ends it honestly.
+       */
+      if (transient) {
+        console.warn(
+          JSON.stringify({
+            event: "aurum.task_read_failed",
+            captureId,
+            kind: analysis.kind,
+            attempts: job.attempts,
+            note: "left running, will be polled again against the same task",
+          }),
+        );
+        continue;
       }
       await failJob({
         session: input.session,
@@ -1168,6 +1333,72 @@ export async function pollCaptureJobs(
 }
 
 /**
+ * One catch up pass over a capture whose readings the client stopped polling.
+ *
+ * The straggler this exists for. /analyzing routes to /report about thirty
+ * seconds after the core set succeeds (STRAGGLER_POLLS_AFTER_CORE in
+ * src/components/analyzing/AnalyzingScreen.tsx), and the face shape or
+ * Fitzpatrick reading can still be running when it does. That poll is the only
+ * thing in the system that drives pollCaptureJobs, so the moment it stops, a
+ * running task is left with a reservation nothing will ever settle and a jobs
+ * row that says running for good. The units were spent, the reading may well
+ * have landed, and neither the ledger nor the report ever hears about it.
+ *
+ * So the report asks once, on its way in. It is the first screen after the
+ * reveal and the person is already waiting on a render of the page, which makes
+ * it the one place where a single extra pass is both cheap and certain to
+ * happen. One pass, nothing else: the throttle inside claimForPolling and the
+ * lifetime timeout still hold, so this can never turn into a loop, and a
+ * reading that arrived is stored and reconciled exactly the way the client poll
+ * would have stored it.
+ *
+ * It also settles the orphan from a lost analyze response
+ * (src/lib/client/capture-source.ts): a capture the client gave up on but the
+ * server started anyway is reached here the moment its profile is read.
+ *
+ * Nothing here may fail the report. A report that will not render because a
+ * bookkeeping pass threw is a worse outcome than a job row left running, so
+ * every failure is logged and swallowed.
+ */
+export async function reconcileRunningCaptureJobs(args: {
+  readonly session: AppSession;
+  readonly captureId: string;
+}): Promise<void> {
+  const ownerId = args.session.id;
+  try {
+    const analyses = await listAnalyses(ownerId, args.captureId);
+    if (analyses.length === 0) {
+      return;
+    }
+    const jobs = await listJobsForSubjects(
+      ownerId,
+      analyses.map((analysis) => analysis.id),
+    );
+    // Only a job that points at a provider task is worth a pass. A pending one
+    // holds no reservation and has nothing to reconcile.
+    const running = jobs.some(
+      (job) => job.status === "running" && job.provider_task_id !== null,
+    );
+    if (!running) {
+      return;
+    }
+    const capture = await getCapture(ownerId, args.captureId);
+    if (capture === null) {
+      return;
+    }
+    await pollCaptureJobs({ session: args.session, capture });
+  } catch (thrown) {
+    console.warn(
+      JSON.stringify({
+        event: "aurum.straggler_reconcile_failed",
+        captureId: args.captureId,
+        reason: thrown instanceof Error ? thrown.name : "unknown",
+      }),
+    );
+  }
+}
+
+/**
  * Starts the readings that were waiting on the tone reading.
  *
  * A waiting kind is one whose job is still pending and points at no provider
@@ -1195,6 +1426,8 @@ async function advanceFanOut(args: {
   );
 
   const waiting: AnalysisKind[] = [];
+  /** The jobs this call won the start claim on, so it can put them back. */
+  const claimed: JobRecord[] = [];
   for (const analysis of args.analyses) {
     if (analysis.kind === LEADER_ANALYSIS_KIND) {
       continue;
@@ -1210,10 +1443,11 @@ async function advanceFanOut(args: {
     ) {
       continue;
     }
-    if (!(await claimForPolling(job))) {
+    if (!(await claimPendingStart(job))) {
       continue;
     }
     waiting.push(analysis.kind);
+    claimed.push(job);
   }
 
   if (waiting.length === 0) {
@@ -1235,6 +1469,15 @@ async function advanceFanOut(args: {
       onProviderCall: args.onProviderCall,
     });
   } catch (thrown) {
+    /*
+     * The start did not happen, so the claims go back. Holding them would leave
+     * these readings pending with nothing able to start them, and the capture
+     * would sit there until the lifetime timeout rather than trying again on the
+     * next poll a second later.
+     */
+    for (const job of claimed) {
+      await releasePendingStart(job);
+    }
     console.warn(
       JSON.stringify({
         event: "aurum.fan_out_stalled",
@@ -1284,55 +1527,29 @@ async function releaseAnalysisWhenNothingWasBought(args: {
   await releaseJudgeAnalysis(args.session.id);
 }
 
-/**
- * The one automatic retry for a transient failure. The provider file id is not
- * stored between requests, so a restart uploads the selfie again before creating
- * the task. Attempts are capped at 2, which bounds that cost.
+/*
+ * restartJob lived here until 2026-09-10 and is deliberately gone.
+ *
+ * It was the automatic retry for a transient failure, and what it retried was
+ * the wrong thing. The only transient failure that reached it came from reading
+ * a task's status, and a status read that times out says nothing about the task:
+ * it is still at the provider, still working, and still going to be charged.
+ * restartJob uploaded the selfie again, created a second task, and overwrote
+ * provider_task_id with the new id, which left the first one unreachable. There
+ * is one column for one id and the provider has no cancel, so the original ran
+ * to completion, was charged, and was never read by anything. No reservation was
+ * ever written for the second task either, so the credit ledger, the daily cap
+ * and the judge cap were all blind to the spend.
+ *
+ * The retry that was wanted is simply the next poll, one second later, against
+ * the same task id. That is what the transient branch does now, and
+ * JOB_LIFETIME_MS still bounds how long a task can go unread before the timeout
+ * path ends it honestly.
+ *
+ * docs/03-architecture.md still describes a retry ("a failed job can be retried
+ * once automatically if the error is transient"), and that description is
+ * satisfied by re polling. What it must not mean is a second purchase.
  */
-async function restartJob(args: {
-  readonly session: AppSession;
-  readonly job: JobRecord;
-  readonly analysis: Analysis;
-  readonly capture: Capture;
-  readonly onProviderCall?: (count: number) => void;
-}): Promise<boolean> {
-  if (args.capture.storage_path === null) {
-    return false;
-  }
-  try {
-    const object = await downloadObject(
-      BUCKETS.captures,
-      args.capture.storage_path,
-    );
-    const fileId = await uploadCapture({
-      bytes: object.bytes,
-      contentType: object.contentType,
-      captureId: args.capture.id,
-    });
-    args.onProviderCall?.(1);
-
-    const task = await startTask({ kind: args.analysis.kind, fileId });
-    args.onProviderCall?.(1);
-
-    await updateAnalysis(args.analysis.id, {
-      status: "running",
-      provider_task_id: task.taskId,
-      error: null,
-    });
-    await updateJob(args.job.id, {
-      status: "running",
-      provider_task_id: task.taskId,
-      attempts: args.job.attempts + 1,
-      error: null,
-      last_polled_at: null,
-      // The lifetime is measured from here, not from the attempt that failed.
-      created_at: new Date().toISOString(),
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Retention, and where it happens now.

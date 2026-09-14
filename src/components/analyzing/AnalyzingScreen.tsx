@@ -81,6 +81,29 @@ export function AnalyzingScreen() {
   const [problem, setProblem] = useState<string | null>(null);
   const failuresRef = useRef(0);
   const finishedRef = useRef(false);
+  /**
+   * One poll at a time, whatever the interval thinks.
+   *
+   * The interval fires every POLL_INTERVAL_MS, which is 1.5 seconds, and every
+   * tick calls a function whose first statement is an await against
+   * GET /api/jobs. That route declares maxDuration 60 and makes provider HTTP
+   * calls inside it, so a poll taking longer than the interval is ordinary
+   * rather than exceptional.
+   *
+   * Without this, two polls overlap, both read the same settled state, both pass
+   * the finished check (which is read before the await and only written after
+   * it), and both go on to start a self healing reframe. Each reframe is a new
+   * capture, a new upload, and a full provider fan out. One router.replace wins
+   * and the other capture is orphaned: already charged, already counted against
+   * the session's analyses, and never polled again, so nothing ever gives it
+   * back.
+   *
+   * Measured on 2026-09-10, in production, on a real account: roughly eight
+   * capture taps produced twenty four consumed analyses and spent 402 units,
+   * which is the three to one this race produces. It is the most expensive line
+   * of code in the repository and it is a missing boolean.
+   */
+  const pollInFlightRef = useRef(false);
   /** Polls seen since the core set succeeded. Zero until it does. */
   const stragglerPollsRef = useRef(0);
 
@@ -103,10 +126,23 @@ export function AnalyzingScreen() {
   }, [captureId, router]);
 
   const poll = useCallback(async () => {
-    if (captureId === null || finishedRef.current) {
+    if (captureId === null || finishedRef.current || pollInFlightRef.current) {
       return;
     }
+    pollInFlightRef.current = true;
+    try {
     const result = await fetchJobs(captureId);
+
+    /*
+     * Read again after the await. The check above happened before a network
+     * round trip, and everything that decides this screen is finished happens
+     * below it, so a poll that was already in flight when the decision was made
+     * must not act on it a second time. Belt and braces with the in flight
+     * guard: that one stops the overlap, this one survives it.
+     */
+    if (finishedRef.current) {
+      return;
+    }
 
     if (!result.ok) {
       if (result.kind === "unauthorized" || result.kind === "forbidden") {
@@ -194,6 +230,9 @@ export function AnalyzingScreen() {
      */
     forgetCaptureSource();
     setProblem(state.problem ?? copy.errors.providerTimeout);
+    } finally {
+      pollInFlightRef.current = false;
+    }
   }, [captureId, router]);
 
   useEffect(() => {

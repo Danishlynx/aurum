@@ -562,6 +562,56 @@ export const AUTO_CROP_FACE_COVERAGE = 0.62;
 export const AUTO_CROP_MIN_FACE_MARGIN = 0.4;
 
 /**
+ * Where the composed crop puts the face, as a share of the crop's width.
+ *
+ * This is the number the engine actually measures (FACE_WIDTH_RATIO_MIN, "the
+ * width of the face needs to be greater than 60 percent of the width of the
+ * image"), so it is the number the crop is built from rather than one it
+ * happens to satisfy.
+ *
+ * 0.66 sits inside the provider's documented band of roughly 60 to 80 percent,
+ * near the bottom of it. Low on purpose: every point higher is a tighter crop,
+ * and a tighter crop is what cuts a forehead off. The floor is 0.60 and the
+ * margin above it absorbs the rounding that clampBox does when the box is
+ * turned into whole pixels.
+ */
+export const AUTO_CROP_FACE_WIDTH_TARGET = 0.66;
+
+/**
+ * How much room is kept above the face box, as a share of its height, for the
+ * forehead and the hair.
+ *
+ * A face box is not a head, and the difference is what broke the framing on
+ * 2026-09-10. MediaPipe reports eyebrows to chin; a head with hair on it extends
+ * roughly half a face height further up. Keeping 0.45 of a face height above the
+ * box covers the forehead and most of the hair, and the crop is placed to honour
+ * it rather than centring and hoping.
+ *
+ * PROVISIONAL, in the same sense as every other number in this file: it is
+ * derived from where a detector puts its box and from the provider's "forehead
+ * fully revealed", not from measurements over a set of real faces. It errs
+ * loose, because the two failures are not symmetric. A crop that is too loose is
+ * refused with error_src_face_too_small, which costs nothing and which the
+ * reframe path answers by cropping tighter. A crop that is too tight cuts a
+ * person's forehead off, and no retry recovers it.
+ */
+export const AUTO_CROP_HEAD_ROOM_ABOVE = 0.45;
+
+/**
+ * How much room is kept below the face box, as a share of its height.
+ *
+ * Small, and not zero. The jaw needs somewhere to sit: a crop that ends exactly
+ * at the bottom of the face box is a face touching the edge of its own picture,
+ * which is what error_face_position_out_of_boundary names and which the gate
+ * flags as face_out_of_bounds before it is ever sent.
+ *
+ * It is a quarter of the room kept above because the two sides are not worth the
+ * same. Above the face is forehead and hair and the provider asks for both;
+ * below it is chin, neck and shoulders, and a reading needs none of them.
+ */
+export const AUTO_CROP_CHIN_ROOM_BELOW = 0.12;
+
+/**
  * Width over height the crop aims for: 3 by 4, the portrait shape a phone
  * already takes and the shape the capture stage shows a frame in. It is where
  * the width starts, not where it always ends: the two margins below can pull it
@@ -609,6 +659,10 @@ export type AutoCropInput = {
  *      the crop without bound would push the face back under the rule the crop
  *      exists to satisfy. What gets trimmed at that limit is shoulder, not face.
  *
+ *    and then floored at the width of the face box itself, which outranks all
+ *    three: a crop narrower than the face is a face cut down the side, and no
+ *    framing rule is worth that.
+ *
  * 4. Centered on the face box, slid back inside the picture rather than shrunk,
  *    and clamped to the frame.
  *
@@ -623,6 +677,16 @@ export function autoCropBoxFor(input: AutoCropInput): Box | null {
     return null;
   }
   if (faceBox.width <= 0 || faceBox.height <= 0) {
+    return null;
+  }
+  /*
+   * A face box wider than the picture it came from cannot be composed around.
+   * Every crop below is at least as wide as the box, so there is nothing left to
+   * cut that would not be face, and null keeps the caller on the untouched
+   * frame. It is a detection that has gone wrong rather than a framing problem:
+   * the gate answers for the frame, and the engine answers for the photograph.
+   */
+  if (faceBox.width > frame.width) {
     return null;
   }
   /*
@@ -649,24 +713,89 @@ export function autoCropBoxFor(input: AutoCropInput): Box | null {
     return null;
   }
 
+  /*
+   * The width is what the engine measures, so the width is what the crop is
+   * built from. Everything else follows.
+   *
+   * AUTO_CROP_FACE_WIDTH_TARGET sits just inside the provider's own band rather
+   * than in the middle of it, deliberately. Aiming higher would make the crop
+   * tighter, and a tighter crop is the thing that cuts a forehead off.
+   */
   const height = Math.min(
-    faceBox.height / AUTO_CROP_FACE_COVERAGE,
+    faceBox.width / AUTO_CROP_FACE_WIDTH_TARGET / AUTO_CROP_ASPECT,
     frame.height,
   );
-  const width = Math.min(
-    Math.max(
-      height * AUTO_CROP_ASPECT,
-      faceBox.width * (1 + AUTO_CROP_MIN_FACE_MARGIN),
+  /*
+   * The floor is the face itself, and it outranks every cap above it.
+   *
+   * Each of those caps is there to stop a crop being too loose, and two of them
+   * can take the width below the width of the face box: the picture's own width
+   * on a frame narrower than the crop wants, and the height cap on a landscape
+   * frame with a wide box. A width under faceBox.width is a crop that cuts a
+   * face in half down the side, which is the one framing mistake no retry
+   * recovers and is strictly worse than the thing the caps exist to prevent.
+   * A face left a little too large in the frame is answered by the gate as
+   * too_close and by the engine as a refusal, both of which are free.
+   */
+  const width = Math.max(
+    faceBox.width,
+    Math.min(
+      /*
+       * Never landscape, whatever the box says. The provider states that "the
+       * use of a portrait aspect ratio is strongly recommended over landscape",
+       * and a box wider than it is tall is a detection this app should not be
+       * reshaping the picture around: it is the colour threshold fallback
+       * reporting a neck and two shoulders. Capping the width at the height
+       * keeps the frame the shape a face belongs in and trims shoulder rather
+       * than face.
+       */
+      Math.min(faceBox.width / AUTO_CROP_FACE_WIDTH_TARGET, height),
+      frame.width,
     ),
-    faceBox.width / AUTO_CROP_FACE_COVERAGE,
-    height,
-    frame.width,
   );
 
   const centerX = faceBox.x + faceBox.width / 2;
-  const centerY = faceBox.y + faceBox.height / 2;
-  const x = Math.min(Math.max(centerX - width / 2, 0), frame.width - width);
-  const y = Math.min(Math.max(centerY - height / 2, 0), frame.height - height);
+
+  /*
+   * Vertically the crop is NOT centred on the face box, and this is the fix for
+   * the refusals of 2026-09-10.
+   *
+   * A face box is not a head. The detector this app used until 2026-09-07 was a
+   * skin colour threshold whose box already ran up over the forehead and down
+   * the neck, so centring on it happened to leave room for hair. MediaPipe's box
+   * is a real face box: eyebrows to chin, cheek to cheek, and nothing else. The
+   * geometry was never re derived when the detector changed, so the same
+   * centring left only 0.3 face heights above the box, the crown and part of the
+   * forehead were cut off, and the engine, which asks for the forehead to be
+   * fully revealed, answered that it could not read the face.
+   *
+   * So the room above and below the box is now asked for by name.
+   * AUTO_CROP_HEAD_ROOM_ABOVE is the share of a face height kept above the box
+   * for forehead and hair, and the crop is placed to honour it wherever the
+   * height allows. What is left goes below, where it is neck and shoulders and
+   * where losing some costs nothing.
+   *
+   * The asymmetry is the whole point. Above the face is where a crop can fail;
+   * below it is where a crop can be generous for free.
+   */
+  const spare = Math.max(0, height - faceBox.height);
+  const wantAbove = faceBox.height * AUTO_CROP_HEAD_ROOM_ABOVE;
+  const wantBelow = faceBox.height * AUTO_CROP_CHIN_ROOM_BELOW;
+  /*
+   * Shared out rather than taken. Spending the whole spare height on the
+   * forehead puts the chin exactly on the bottom edge, which is a face touching
+   * the boundary of its own picture and is what
+   * error_face_position_out_of_boundary names. The split keeps the asymmetry
+   * (most of it goes above, where a crop can fail) while always leaving the jaw
+   * somewhere to sit.
+   */
+  const wanted = wantAbove + wantBelow;
+  const roomAbove =
+    wanted <= 0 ? 0 : Math.min(wantAbove, (spare * wantAbove) / wanted);
+  const desiredTop = faceBox.y - roomAbove;
+
+  const x = Math.min(Math.max(centerX - width / 2, 0), Math.max(0, frame.width - width));
+  const y = Math.min(Math.max(desiredTop, 0), Math.max(0, frame.height - height));
 
   const crop = clampBox({ x, y, width, height }, frame);
   if (crop === null) {
@@ -1037,6 +1166,233 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
     failures,
     metrics,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Choosing between frames
+// ---------------------------------------------------------------------------
+
+/**
+ * The span of face width ratio the score measures a miss against: half the
+ * documented band, so a frame sitting on either edge of what the engine accepts
+ * carries roughly a full unit of badness.
+ */
+const FRAME_SCORE_WIDTH_SPAN = (FACE_WIDTH_RATIO_MAX - FACE_WIDTH_RATIO_MIN) / 2;
+
+/**
+ * The middle of the band of mean luminance the gate is willing to send, which is
+ * halfway between the two borderline lines. Not the middle of 0 to 255: a frame
+ * at 128 is not preferable to one at 130 for any reason except that both are
+ * comfortably inside what an analyzer can read, and this is where that band
+ * actually sits.
+ */
+export const FRAME_SCORE_LUMINANCE_TARGET =
+  (MEAN_LUMINANCE_BORDERLINE_BELOW + MEAN_LUMINANCE_BORDERLINE_ABOVE) / 2;
+
+/** Half that band, so an edge of it is roughly a full unit of badness. */
+const FRAME_SCORE_LUMINANCE_SPAN =
+  (MEAN_LUMINANCE_BORDERLINE_ABOVE - MEAN_LUMINANCE_BORDERLINE_BELOW) / 2;
+
+/**
+ * Pose, the heaviest term, because pose is what the engine actually refuses on.
+ * Every refusal read off the live API has been one: error_face_angle_rightward,
+ * error_face_not_forward_facing, error_face_angle_downward (see
+ * POSE_YAW_MAX_DEGREES). A frame a degree squarer to the lens is worth more than
+ * a frame a little better framed or a little sharper, because it is the
+ * difference between a reading and a person told to try again.
+ *
+ * Measured against POSE_SLACK_DEGREES, since a head further outside the window
+ * than that is a reject and has already scored minus infinity.
+ *
+ * PROVISIONAL, like every number in this file. It is a shape, set from what the
+ * engine refuses on rather than from a set of scored frames.
+ */
+export const FRAME_SCORE_POSE_WEIGHT = 8;
+
+/**
+ * Framing next, at half of pose. Face width over the frame's short axis is the
+ * engine's other published input rule (FACE_WIDTH_RATIO_MIN), so it can refuse
+ * on it too, but it is weighted lower for a reason: autoCropBoxFor has already
+ * composed every frame in a burst to AUTO_CROP_FACE_WIDTH_TARGET, so what is
+ * left to rank here is the detector disagreeing with itself between frames
+ * rather than a framing anybody needs to fix.
+ *
+ * PROVISIONAL.
+ */
+export const FRAME_SCORE_WIDTH_WEIGHT = 4;
+
+/**
+ * Light next, at half of framing. The extremes already refuse a frame outright,
+ * so this term only ever separates frames the gate was willing to send: between
+ * two of those it prefers the one nearer the middle of the band, which is the
+ * one an analyzer has the most tone signal in.
+ *
+ * PROVISIONAL.
+ */
+export const FRAME_SCORE_LUMINANCE_WEIGHT = 2;
+
+/**
+ * Sharpness, the lightest term, because the provider does not gate on it.
+ * Perfect Corp publishes no blur error code anywhere, which is the same reason
+ * assessCapture never refuses a frame for softness. So softness ranks and
+ * nothing else.
+ *
+ * Lightest is not unimportant here. Between frames taken 90ms apart the pose,
+ * the framing and the light barely move, so in practice this is the term that
+ * decides a burst, and that is exactly what the burst is for: the frame at the
+ * instant of the tap is the one the finger shook.
+ *
+ * PROVISIONAL.
+ */
+export const FRAME_SCORE_SHARPNESS_WEIGHT = 1;
+
+/**
+ * Where extra sharpness stops being worth anything, five times the line below
+ * which a frame is called soft.
+ *
+ * A cap rather than an open scale, because the difference between a sharp frame
+ * and a very sharp one is not a difference the engine will ever act on, and
+ * without a cap one frame that happened to catch a high contrast edge would
+ * outvote pose and framing together.
+ *
+ * PROVISIONAL, and the one number here most likely to be wrong: it is set from
+ * SHARPNESS_BORDERLINE_BELOW, which is itself set from synthetic patterns. If
+ * real faces read far above this the term saturates and stops separating frames
+ * that it should. docs/SUBMISSION-RUNBOOK.md C4 sets both from real captures.
+ */
+export const FRAME_SCORE_SHARPNESS_CAP = 5 * SHARPNESS_BORDERLINE_BELOW;
+
+/**
+ * What a borderline verdict costs, and why it is larger than everything above
+ * put together.
+ *
+ * The gate has already made this call. An accepted frame goes straight to the
+ * engine; a borderline one stops on the review screen and asks the person
+ * whether to send it anyway. Preferring a borderline frame because it was a
+ * little sharper would put somebody in front of "Use it anyway" while a clean
+ * frame sat in memory unused, which is the opposite of what a burst is for. So
+ * the four terms rank frames within a verdict and never across one, and one
+ * more than their combined span is what guarantees it.
+ */
+export const FRAME_SCORE_BORDERLINE_PENALTY =
+  FRAME_SCORE_POSE_WEIGHT +
+  FRAME_SCORE_WIDTH_WEIGHT +
+  FRAME_SCORE_LUMINANCE_WEIGHT +
+  FRAME_SCORE_SHARPNESS_WEIGHT +
+  1;
+
+/** 0 to 1, with anything unmeasurable left as the NaN it arrived as. */
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * How good a frame is, relative to every other frame of the same face. Higher is
+ * better, 0 is the best a frame can do, and a reject is minus infinity.
+ *
+ * Why this exists. A person taps the shutter and the finger pressing the glass
+ * moves the phone, so the single frame at that instant is the one frame of the
+ * second most likely to be shaken. This product gets one attempt: the reading is
+ * paid for and nobody retakes. Every production face capture app answers that by
+ * taking a short burst and sending the best of it, and this is how the best of
+ * it is decided, in the gate's own terms rather than in a new set of them.
+ *
+ * The shape. Four penalties, each normalized to 0 to 1 over the span that
+ * matters for that measurement so the weights above can be read against each
+ * other directly, plus a flat penalty for a verdict of borderline. Nothing is
+ * rewarded: a perfect frame is 0 and everything else is the distance below it.
+ *
+ * Two cases where a measurement is simply absent, and both are treated as
+ * nothing rather than as something bad. A frame the detector could not solve a
+ * pose for is not judged on pose, which is what poseVerdictFor already does. A
+ * frame with no face box has no width ratio, and ranking on the absence of a
+ * detector's opinion would rank the detector rather than the photograph. Those
+ * frames are usually rejects anyway, and when they are not
+ * (faceEstimateTrusted false) they already carry the borderline penalty.
+ */
+export function frameScore(assessment: CaptureAssessment): number {
+  if (assessment.verdict === "reject") {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const { metrics } = assessment;
+
+  const poseBadness = clampUnit(
+    (metrics.pose === null ? 0 : poseExcessDegrees(metrics.pose)) /
+      POSE_SLACK_DEGREES,
+  );
+
+  const widthBadness =
+    metrics.faceWidthRatio === null
+      ? 0
+      : clampUnit(
+          Math.abs(metrics.faceWidthRatio - AUTO_CROP_FACE_WIDTH_TARGET) /
+            FRAME_SCORE_WIDTH_SPAN,
+        );
+
+  const luminanceBadness = clampUnit(
+    Math.abs(metrics.meanLuminance - FRAME_SCORE_LUMINANCE_TARGET) /
+      FRAME_SCORE_LUMINANCE_SPAN,
+  );
+
+  const softness =
+    1 - clampUnit(metrics.sharpness / FRAME_SCORE_SHARPNESS_CAP);
+
+  const penalty =
+    FRAME_SCORE_POSE_WEIGHT * poseBadness +
+    FRAME_SCORE_WIDTH_WEIGHT * widthBadness +
+    FRAME_SCORE_LUMINANCE_WEIGHT * luminanceBadness +
+    FRAME_SCORE_SHARPNESS_WEIGHT * softness +
+    (assessment.verdict === "borderline" ? FRAME_SCORE_BORDERLINE_PENALTY : 0);
+
+  // Subtracted from a perfect frame rather than negated, so a frame with
+  // nothing wrong with it scores zero rather than negative zero.
+  return 0 - penalty;
+}
+
+/**
+ * One frame of a burst: the gate's reading of it, and whatever the caller is
+ * actually choosing between. The caller holds canvases; this module holds none.
+ */
+export type FrameCandidate<T> = {
+  readonly assessment: CaptureAssessment;
+  readonly value: T;
+};
+
+/**
+ * The best frame of a burst, or null when the gate refused every one of them.
+ *
+ * Null is not a failure to answer, it is the answer: no frame here is one this
+ * app is willing to send, and the caller has a refusal to show rather than a
+ * photograph to upload.
+ *
+ * Ties go to the first candidate, which makes the choice deterministic and, for
+ * a burst, makes it the earliest frame. That matters slightly: the frames are
+ * ordered in time, so an unbroken tie hands back the frame closest to the
+ * instant the person meant to take.
+ *
+ * Anything that does not produce a real number is skipped rather than compared,
+ * so one frame whose metrics came back unmeasurable cannot win by being
+ * incomparable.
+ */
+export function pickBestFrame<T>(
+  candidates: ReadonlyArray<FrameCandidate<T>>,
+): T | null {
+  let best: FrameCandidate<T> | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    const score = frameScore(candidate.assessment);
+    if (!Number.isFinite(score)) {
+      continue;
+    }
+    if (best === null || score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+
+  return best === null ? null : best.value;
 }
 
 function firstByPrecedence(

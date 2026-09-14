@@ -5,7 +5,7 @@ import { notFound } from "@/lib/server/http/responses";
 import {
   fixtureGarmentSvg,
 } from "@/lib/server/profile/demo-fixture-wardrobe";
-import { judgeAnalysesRemaining } from "@/lib/server/judge";
+import { judgeAnalysesCapReached } from "@/lib/server/judge";
 import { readJudgeSessionFromCookie } from "@/lib/server/judge/guard";
 import { isDemoFixtureMode } from "@/lib/server/profile/report-view";
 
@@ -46,10 +46,15 @@ const CACHE_CONTROL = "public, max-age=3600, immutable";
  * True when the caller is a judge session with no analyses left, which is being
  * shown the same six garments the fixture wardrobe holds. Read from the judge
  * cookie alone, so this never reaches Supabase Auth and never needs a project.
+ *
+ * It asks the same question judgeAnalysesExhausted asks, through the same
+ * predicate, so the two cannot come apart: with JUDGE_PER_SESSION_CAPS off no
+ * judge session reads the fixture wardrobe, and this route has nothing to serve
+ * one.
  */
 async function judgeReadsTheFixture(): Promise<boolean> {
   const judge = await readJudgeSessionFromCookie();
-  return judge !== null && judgeAnalysesRemaining(judge) === 0;
+  return judge !== null && judgeAnalysesCapReached(judge);
 }
 
 export async function GET(

@@ -2,9 +2,12 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { getCapture } from "@/lib/server/db";
-import { ANALYSIS_KINDS } from "@/lib/server/db/types";
-import { ownerOf, spentToday } from "@/lib/server/credits";
-import { dailyCaps, providerCallsEnabled } from "@/lib/server/env";
+import { globalRemainingToday, ownerOf, spentToday } from "@/lib/server/credits";
+import {
+  dailyCaps,
+  judgePerSessionCapsEnabled,
+  providerCallsEnabled,
+} from "@/lib/server/env";
 import {
   enforceRateLimit,
   handleRoute,
@@ -24,13 +27,18 @@ import {
   readCaptureJobs,
   type CaptureJobsView,
 } from "@/lib/server/jobs";
-import { planFor, requiresMorePhotos } from "@/lib/server/jobs/analysis";
+import {
+  admitsCaptureSpend,
+  profileMinimumUnits,
+} from "@/lib/server/jobs/analysis";
 import {
   consumeJudgeAnalysis,
   judgeAnalysesRemaining,
   releaseJudgeAnalysis,
 } from "@/lib/server/judge";
 import { refuseWhenJudgeAnalysesExhausted } from "@/lib/server/judge/guard";
+import type { AppSession } from "@/lib/server/session";
+import { copy } from "@/lib/shared/copy";
 /**
  * POST /api/captures/[id]/analyze
  *
@@ -45,7 +53,8 @@ import { refuseWhenJudgeAnalysesExhausted } from "@/lib/server/judge/guard";
  * 4. the capture, so a wrong id costs nothing
  * 5. the kill switch, which serves cache or demo without touching a provider
  * 6. the judge analyses cap, which is per capture and not per credit
- * 7. the daily credit cap, checked once so a refusal is not a half spend
+ * 7. the credit ceilings, deployment wide first and then per owner, each checked
+ *    once and priced at what a report costs, so a refusal is not a half spend
  */
 
 export const runtime = "nodejs";
@@ -72,12 +81,27 @@ function respond(view: CaptureJobsView, extra: Partial<AnalyzeResponse>) {
   );
 }
 
-/** The cheapest kind the fan out could still start with the units left. */
-function cheapestPlannedUnits(): number {
-  const runnable = ANALYSIS_KINDS.filter((kind) => !requiresMorePhotos(kind));
-  return runnable.reduce(
-    (lowest, kind) => Math.min(lowest, planFor(kind).units),
-    Number.POSITIVE_INFINITY,
+/**
+ * What is left under the judge session's own credit ceiling, or null for a
+ * session that has none.
+ *
+ * It is a second ceiling, not the same one read twice: reserve() checks the
+ * daily cap and, for a judge, the judge_sessions counter, and either of them can
+ * refuse a reading in the middle of a fan out.
+ *
+ * Null also when per session caps are switched off (JUDGE_PER_SESSION_CAPS, the
+ * default since 2026-09-14). With them off reserve() never answers session_cap,
+ * so admitting on that ceiling here would refuse a capture the fan out would
+ * have run. The two have to read the same switch or the gate and the ledger
+ * disagree about the same session.
+ */
+function judgeCreditsRemaining(session: AppSession): number | null {
+  if (session.kind !== "judge" || !judgePerSessionCapsEnabled()) {
+    return null;
+  }
+  return Math.max(
+    0,
+    session.session.credits_cap - session.session.credits_used,
   );
 }
 
@@ -150,9 +174,33 @@ export async function POST(
       }
     }
 
-    const caps = dailyCaps();
-    const usedToday = await spentToday(ownerOf(session), "perfectcorp");
-    if (caps.perfectcorpUnits - usedToday < cheapestPlannedUnits()) {
+    /*
+     * Three ceilings, checked here and for one reason: the fan out must not
+     * start when the readings a report needs cannot all be paid for, or the
+     * person is charged for the leader and refused the readings that follow it.
+     *
+     * Admission is priced at what a report actually costs, not at what the
+     * cheapest reading costs. This asked for 10 units, the price of the cheapest
+     * kind, until 2026-09-14. The fan out does not buy the cheapest kind: it
+     * buys the 20 unit tone reading alone, and a profile needs the 16 unit skin
+     * analysis with it. Anywhere between 20 and 35 units of headroom the leader
+     * was admitted, started, succeeded and charged, the skin reading was then
+     * refused by the same cap, and the person had paid 20 units for a capture
+     * that could never become a report. profileMinimumUnits is that pair,
+     * priced from the cost table.
+     *
+     * The deployment wide ceiling is read first because it is the one that
+     * bounds the account rather than the person. Every other cap here is per
+     * owner, and a judge session is an owner that anyone holding the access
+     * code can mint again (src/lib/server/env.ts, globalDailyCap). The judge
+     * session's own ceiling is asked only when per session caps are on
+     * (judgePerSessionCapsEnabled); with them off it reads as null and only the
+     * daily and deployment wide ceilings decide.
+     */
+    const refuseOnCredits = async (
+      kind: "daily_credits" | "global_credits" | "judge_credits",
+      remaining: number,
+    ): Promise<never> => {
       if (firstRun && session.kind === "judge") {
         await releaseJudgeAnalysis(session.id);
       }
@@ -161,14 +209,39 @@ export async function POST(
         route: "/api/captures/[id]/analyze",
         sessionKind: session.kind,
         sessionId: session.id,
-        kind: "daily_credits",
-        remaining: Math.max(0, caps.perfectcorpUnits - usedToday),
+        kind,
+        remaining,
       });
       throw capReached({
-        message: messages.dailyCapReached,
-        code: "daily_credits",
-        remaining: Math.max(0, caps.perfectcorpUnits - usedToday),
+        // Which ceiling is short decides the line the person reads: the judge
+        // sentence for a spent session, the daily one otherwise.
+        message:
+          kind === "judge_credits"
+            ? copy.errors.judgeExhausted
+            : messages.dailyCapReached,
+        code: kind,
+        remaining,
       });
+    };
+
+    const required = profileMinimumUnits();
+
+    const globalRemaining = await globalRemainingToday();
+    if (globalRemaining < required) {
+      await refuseOnCredits("global_credits", globalRemaining);
+    }
+
+    const caps = dailyCaps();
+    const usedToday = await spentToday(ownerOf(session), "perfectcorp");
+    const dailyRemaining = Math.max(0, caps.perfectcorpUnits - usedToday);
+    const sessionRemaining = judgeCreditsRemaining(session);
+    if (!admitsCaptureSpend({ dailyRemaining, sessionRemaining })) {
+      const sessionIsShort =
+        sessionRemaining !== null && sessionRemaining < required;
+      await refuseOnCredits(
+        sessionIsShort ? "judge_credits" : "daily_credits",
+        sessionIsShort ? (sessionRemaining ?? 0) : dailyRemaining,
+      );
     }
 
     let view: CaptureJobsView;

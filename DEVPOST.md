@@ -108,7 +108,7 @@ In prose: Next.js (App Router) and TypeScript in strict mode, Tailwind CSS on on
 ## Try it out
 
 - Live URL: https://aurum-danishlynxs-projects.vercel.app
-- Judge access code: AURUM-FU625S
+- Judge access code: rotated after judging closed; available from the maintainer on request
 - Your session includes 3 full analyses. The app keeps working from a saved demo profile after that.
 - Repository: https://github.com/Danishlynx/aurum
 - Tag: `hackathon-submission`

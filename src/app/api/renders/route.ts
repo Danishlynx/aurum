@@ -191,6 +191,24 @@ export async function POST(request: NextRequest): Promise<Response> {
           code: "daily_credits",
           remaining: outcome.remaining ?? 0,
         });
+      case "global_cap":
+        // The deployment's Perfect Corp allowance for the UTC day is gone,
+        // whoever spent it. The same 429 and the same sentence as the per owner
+        // day, because from this person's side it is the same thing: there is
+        // nothing to spend until tomorrow. The log line is what says which.
+        logCapEvent({
+          requestId: route.requestId,
+          route: "/api/renders",
+          sessionKind: session.kind === "judge" ? "judge" : "user",
+          sessionId: session.id,
+          kind: "global_credits",
+          remaining: outcome.remaining ?? 0,
+        });
+        throw capReached({
+          message: messages.dailyCapReached,
+          code: "global_credits",
+          remaining: outcome.remaining ?? 0,
+        });
       case "kill_switch":
         route.noteOutcome("kill_switch");
         throw new HttpError({

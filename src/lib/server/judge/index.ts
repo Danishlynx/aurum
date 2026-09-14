@@ -5,6 +5,7 @@ import { compare } from "bcryptjs";
 import {
   JUDGE_SESSION_LIFETIME_HOURS,
   judgeConfig,
+  judgePerSessionCapsEnabled,
   JUDGE_RENDERS_ALLOWED,
 } from "../env";
 import { serviceClient, unwrap, unwrapNullable } from "../db/service";
@@ -144,6 +145,19 @@ export function judgeRendersRemaining(rendersUsed: number): number {
 }
 
 /**
+ * Whether this session must be refused for having no analyses left: the count is
+ * spent and JUDGE_PER_SESSION_CAPS is on (src/lib/server/env.ts).
+ *
+ * Every refusal that turns on the analyses count asks this rather than asking
+ * judgeAnalysesRemaining directly, so the switch is read in one place and the
+ * count itself keeps meaning what it says. With the caps off this is always
+ * false, and a session past its allowance is admitted exactly like a fresh one.
+ */
+export function judgeAnalysesCapReached(session: JudgeSession): boolean {
+  return judgePerSessionCapsEnabled() && judgeAnalysesRemaining(session) === 0;
+}
+
+/**
  * Counter updates use compare and set rather than a read then blind write:
  * Postgres has no column arithmetic through PostgREST, so the previous value is
  * part of the WHERE clause. A concurrent writer makes the update match zero
@@ -165,7 +179,11 @@ export async function consumeJudgeAnalysis(
     if (session === null) {
       return { ok: false, reason: "expired" };
     }
-    if (judgeAnalysesRemaining(session) === 0) {
+    // With JUDGE_PER_SESSION_CAPS off this never reports exhausted: the counter
+    // below still moves, so analyses_used stays a true record of what the
+    // session ran, and the stats route and the logs keep reading it. What is
+    // gone is the refusal, not the count.
+    if (judgeAnalysesCapReached(session)) {
       return { ok: false, reason: "exhausted" };
     }
 
@@ -243,7 +261,10 @@ export async function adjustJudgeCredits(
       return { ok: false, reason: "expired" };
     }
     const next = Math.max(0, session.credits_used + delta);
-    if (delta > 0 && next > session.credits_cap) {
+    // The same rule as the analyses above: with JUDGE_PER_SESSION_CAPS off the
+    // counter keeps moving past credits_cap rather than refusing at it, so
+    // credits_used still reports what this session actually spent.
+    if (delta > 0 && next > session.credits_cap && judgePerSessionCapsEnabled()) {
       return { ok: false, reason: "exhausted" };
     }
 

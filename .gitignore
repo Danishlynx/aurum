@@ -67,3 +67,6 @@ evals/fixtures/faces/*
 evals/fixtures/golden/
 .vercel
 .env*
+
+# Agent worktrees (full nested checkouts with their own build output)
+.claude/
