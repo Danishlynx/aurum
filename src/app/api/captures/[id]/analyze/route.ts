@@ -2,7 +2,6 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { getCapture } from "@/lib/server/db";
-import { ANALYSIS_KINDS } from "@/lib/server/db/types";
 import { ownerOf, spentToday } from "@/lib/server/credits";
 import { dailyCaps, providerCallsEnabled } from "@/lib/server/env";
 import {
@@ -24,13 +23,18 @@ import {
   readCaptureJobs,
   type CaptureJobsView,
 } from "@/lib/server/jobs";
-import { planFor, requiresMorePhotos } from "@/lib/server/jobs/analysis";
+import {
+  admitsCaptureSpend,
+  profileMinimumUnits,
+} from "@/lib/server/jobs/analysis";
 import {
   consumeJudgeAnalysis,
   judgeAnalysesRemaining,
   releaseJudgeAnalysis,
 } from "@/lib/server/judge";
 import { refuseWhenJudgeAnalysesExhausted } from "@/lib/server/judge/guard";
+import type { AppSession } from "@/lib/server/session";
+import { copy } from "@/lib/shared/copy";
 /**
  * POST /api/captures/[id]/analyze
  *
@@ -45,7 +49,8 @@ import { refuseWhenJudgeAnalysesExhausted } from "@/lib/server/judge/guard";
  * 4. the capture, so a wrong id costs nothing
  * 5. the kill switch, which serves cache or demo without touching a provider
  * 6. the judge analyses cap, which is per capture and not per credit
- * 7. the daily credit cap, checked once so a refusal is not a half spend
+ * 7. the credit ceilings, daily and per judge session, checked once and priced
+ *    at what a report costs, so a refusal is not a half spend
  */
 
 export const runtime = "nodejs";
@@ -72,12 +77,21 @@ function respond(view: CaptureJobsView, extra: Partial<AnalyzeResponse>) {
   );
 }
 
-/** The cheapest kind the fan out could still start with the units left. */
-function cheapestPlannedUnits(): number {
-  const runnable = ANALYSIS_KINDS.filter((kind) => !requiresMorePhotos(kind));
-  return runnable.reduce(
-    (lowest, kind) => Math.min(lowest, planFor(kind).units),
-    Number.POSITIVE_INFINITY,
+/**
+ * What is left under the judge session's own credit ceiling, or null for a
+ * session that has none.
+ *
+ * It is a second ceiling, not the same one read twice: reserve() checks the
+ * daily cap and, for a judge, the judge_sessions counter, and either of them can
+ * refuse a reading in the middle of a fan out.
+ */
+function judgeCreditsRemaining(session: AppSession): number | null {
+  if (session.kind !== "judge") {
+    return null;
+  }
+  return Math.max(
+    0,
+    session.session.credits_cap - session.session.credits_used,
   );
 }
 
@@ -150,24 +164,49 @@ export async function POST(
       }
     }
 
+    /*
+     * Admission is priced at what a report actually costs, not at what the
+     * cheapest reading costs.
+     *
+     * This asked for 10 units, the price of the cheapest kind, until now. The
+     * fan out does not buy the cheapest kind: it buys the 20 unit tone reading
+     * alone, and a profile needs the 16 unit skin analysis with it. So anywhere
+     * between 20 and 35 units of headroom, the leader was admitted, started,
+     * succeeded and charged, the skin reading was then refused by the same cap,
+     * and the person had paid 20 units for a capture that could never become a
+     * report. Refusing before anything is bought is the only honest answer to
+     * that, and the copy is the one the cap already uses.
+     *
+     * Both ceilings are asked, and the tighter one decides
+     * (admitsCaptureSpend). A judge session can be inside the daily cap and out
+     * of its own credits, which fails in exactly the same way.
+     */
     const caps = dailyCaps();
     const usedToday = await spentToday(ownerOf(session), "perfectcorp");
-    if (caps.perfectcorpUnits - usedToday < cheapestPlannedUnits()) {
+    const dailyRemaining = Math.max(0, caps.perfectcorpUnits - usedToday);
+    const sessionRemaining = judgeCreditsRemaining(session);
+    if (!admitsCaptureSpend({ dailyRemaining, sessionRemaining })) {
       if (firstRun && session.kind === "judge") {
         await releaseJudgeAnalysis(session.id);
       }
+      // Which ceiling is short decides the line the person reads: the judge
+      // sentence for a spent session, the daily one otherwise.
+      const sessionIsShort =
+        sessionRemaining !== null && sessionRemaining < profileMinimumUnits();
       logCapEvent({
         requestId: route.requestId,
         route: "/api/captures/[id]/analyze",
         sessionKind: session.kind,
         sessionId: session.id,
-        kind: "daily_credits",
-        remaining: Math.max(0, caps.perfectcorpUnits - usedToday),
+        kind: sessionIsShort ? "judge_credits" : "daily_credits",
+        remaining: sessionIsShort ? (sessionRemaining ?? 0) : dailyRemaining,
       });
       throw capReached({
-        message: messages.dailyCapReached,
-        code: "daily_credits",
-        remaining: Math.max(0, caps.perfectcorpUnits - usedToday),
+        message: sessionIsShort
+          ? copy.errors.judgeExhausted
+          : messages.dailyCapReached,
+        code: sessionIsShort ? "judge_credits" : "daily_credits",
+        remaining: sessionIsShort ? (sessionRemaining ?? 0) : dailyRemaining,
       });
     }
 
