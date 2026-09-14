@@ -264,10 +264,44 @@ async function submit(
     }
   }
 
-  const started = await startAnalysis(created.data.captureId);
-  if (!started.ok) {
+  if (!(await startAnalysisWithOneRetry(created.data.captureId))) {
     return null;
   }
   return created.data.captureId;
+}
+
+/**
+ * Starts the readings, and asks a second time if the first request never got an
+ * answer.
+ *
+ * The failure this covers is the expensive one. POST analyze creates the leader
+ * task at the provider and charges 20 units for it. If the response is lost on
+ * the way back, a dropped connection, a phone changing network, a gateway that
+ * timed out after the work was done, the client sees !ok and treats the capture
+ * as failed: it never navigates to it, never polls it, and nothing ever
+ * reconciles the reservation or reads the result. Paid for, and thrown away
+ * before it was looked at.
+ *
+ * Asking again is safe because the route is idempotent for a capture that
+ * already has jobs: it reads the existing rows, starts nothing, charges nothing,
+ * and does not count a second analysis against a judge session. So the second
+ * request either finds the first one's work and hands it back, or does the work
+ * the first one never did.
+ *
+ * Only a transport failure is retried. A 401, a 403 and a 429 are answers, and
+ * the server gave them before it spent anything; repeating those buys a second
+ * identical refusal and nothing else. status 0 is the only case where the
+ * request may have landed and the answer may not have come back.
+ */
+async function startAnalysisWithOneRetry(captureId: string): Promise<boolean> {
+  const first = await startAnalysis(captureId);
+  if (first.ok) {
+    return true;
+  }
+  if (first.kind !== "network") {
+    return false;
+  }
+  const second = await startAnalysis(captureId);
+  return second.ok;
 }
 

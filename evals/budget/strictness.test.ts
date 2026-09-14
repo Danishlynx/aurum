@@ -82,9 +82,26 @@ describe("the strictness the live capture path sends", () => {
     expect(POSE_PITCH_MAX_DEGREES + POSE_SLACK_DEGREES).toBeLessThanOrEqual(
       FLEXIBLE_DEGREES,
     );
+    /*
+     * The downward half of the pitch window is the one axis that does not fit
+     * the same sentence, and this line used to hide that by adding the slack to
+     * both sides of the comparison, which asserts nothing at all. Said plainly:
+     * the window itself sits inside the level, and the offered band runs two
+     * degrees past it, because the window is asymmetric (minus 20 for a phone
+     * held below the face) and the slack is not.
+     *
+     * Two degrees is not worth narrowing the gate for. The slack is where a
+     * frame is offered with "Use it anyway" rather than sent on its own, and a
+     * frame that goes anyway and is refused on pitch is charged nothing. The
+     * exact overshoot is asserted so that it stays two degrees rather than
+     * drifting quietly into a number that matters.
+     */
+    expect(Math.abs(POSE_PITCH_MIN_DEGREES)).toBeLessThanOrEqual(
+      FLEXIBLE_DEGREES,
+    );
     expect(
-      Math.abs(POSE_PITCH_MIN_DEGREES) + POSE_SLACK_DEGREES,
-    ).toBeLessThanOrEqual(FLEXIBLE_DEGREES + POSE_SLACK_DEGREES);
+      Math.abs(POSE_PITCH_MIN_DEGREES) + POSE_SLACK_DEGREES - FLEXIBLE_DEGREES,
+    ).toBe(2);
   });
 
   it("sends no strictness on the kinds that do not take one", () => {

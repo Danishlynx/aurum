@@ -180,3 +180,67 @@ describe("resubmitReframedCapture, called twice at once", () => {
     expect(startAnalysis).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * The other half of the same account: a capture the server started and the
+ * client threw away.
+ *
+ * submit() creates the capture, uploads the face, and starts the analysis. If
+ * that last response is lost in transit, the server has already created and
+ * charged the 20 unit leader while the client reads !ok, gives up, and never
+ * navigates to the capture, so nothing ever polls it, reconciles it, or shows
+ * it to anybody. Asking once more is free: the route is idempotent for a capture
+ * that already has jobs, and it is the difference between a charge with a
+ * reading behind it and a charge with nothing.
+ *
+ * Only a transport failure is asked again. A 401, a 403 and a 429 are answers
+ * the server gave before it spent anything.
+ */
+describe("submit, when the analyze response never comes back", () => {
+  it("asks once more after a transport failure", async () => {
+    startAnalysis
+      .mockResolvedValueOnce({ ok: false, kind: "network", status: 0 })
+      .mockResolvedValueOnce({ ok: true });
+
+    const mod = await loadModule();
+    const canvas = { width: 800, height: 1000 } as unknown as HTMLCanvasElement;
+    mod.rememberCaptureSource(canvas);
+    mod.bindCaptureSource(CAPTURE_ID);
+
+    const outcome = await mod.resubmitReframedCapture(CAPTURE_ID);
+
+    expect(outcome.ok).toBe(true);
+    expect(startAnalysis).toHaveBeenCalledTimes(2);
+    // One capture, one upload: the retry is the start, not the whole submit.
+    expect(createCapture).toHaveBeenCalledTimes(1);
+    expect(uploadCaptureImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks exactly once more, and no further", async () => {
+    startAnalysis.mockResolvedValue({ ok: false, kind: "network", status: 0 });
+
+    const mod = await loadModule();
+    const canvas = { width: 800, height: 1000 } as unknown as HTMLCanvasElement;
+    mod.rememberCaptureSource(canvas);
+    mod.bindCaptureSource(CAPTURE_ID);
+
+    const outcome = await mod.resubmitReframedCapture(CAPTURE_ID);
+
+    expect(outcome).toEqual({ ok: false, reason: "request" });
+    expect(startAnalysis).toHaveBeenCalledTimes(2);
+  });
+
+  it("takes a refusal for an answer, because it was given before any spend", async () => {
+    startAnalysis.mockResolvedValue({ ok: false, kind: "capped", status: 429 });
+
+    const mod = await loadModule();
+    const canvas = { width: 800, height: 1000 } as unknown as HTMLCanvasElement;
+    mod.rememberCaptureSource(canvas);
+    mod.bindCaptureSource(CAPTURE_ID);
+
+    const outcome = await mod.resubmitReframedCapture(CAPTURE_ID);
+
+    expect(outcome).toEqual({ ok: false, reason: "request" });
+    expect(startAnalysis).toHaveBeenCalledTimes(1);
+  });
+});
