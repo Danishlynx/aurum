@@ -262,6 +262,10 @@ const config = [
     ignores: [
       ".next/**",
       "node_modules/**",
+      // Agent worktrees. Each is a full checkout with its own .next and
+      // node_modules, and "eslint ." walks into them; the top level patterns
+      // above do not match nested copies.
+      ".claude/**",
       "coverage/**",
       "evals/results/**",
       "playwright-report/**",
