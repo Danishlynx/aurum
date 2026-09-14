@@ -11,9 +11,8 @@ import { hasHeroContent } from "@/components/report/report-content";
 import { ReportHero } from "@/components/report/ReportHero";
 import { RoutineGroup } from "@/components/report/RoutineGroup";
 import { ButtonLink } from "@/components/ui/Button";
-import { reconcileRunningCaptureJobs } from "@/lib/server/jobs";
+import { reconcileRunningJobsForProfile } from "@/lib/server/jobs";
 import { resolveGroundingLocale } from "@/lib/server/locale";
-import { getAestheticProfile } from "@/lib/server/profile/db";
 import {
   buildReportView,
   isDemoFixtureMode,
@@ -76,14 +75,14 @@ export default async function ReportPage() {
    * (src/lib/server/jobs/index.ts), so a provider that is down costs a beat of
    * render time and nothing else.
    *
-   * Fixture mode is skipped because it reads no database at all.
+   * Fixture mode is skipped because it reads no database at all. Every other
+   * way the pass can fail, including a server with no project to read, is
+   * absorbed inside it, because a judge at zero analyses reaches this screen
+   * on a server that may have no project and is promised a demo profile, not
+   * an error page.
    */
   if (!isDemoFixtureMode()) {
-    const stored = await getAestheticProfile(session.id);
-    const captureId = stored?.capture_id ?? null;
-    if (captureId !== null) {
-      await reconcileRunningCaptureJobs({ session, captureId });
-    }
+    await reconcileRunningJobsForProfile(session);
   }
 
   /*
