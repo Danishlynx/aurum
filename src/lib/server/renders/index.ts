@@ -22,6 +22,7 @@ import type { JobRecord, Json, Render, RenderKind } from "../db/types";
 import { findReservation, perfectCorpUnits, reconcile, refund, reserve } from "../credits";
 import {
   isSupabaseConfigured,
+  judgePerSessionCapsEnabled,
   JUDGE_RENDERS_ALLOWED,
   providerCallsEnabled,
 } from "../env";
@@ -613,7 +614,12 @@ export async function createRender(
     return { ok: false, reason: "render_in_progress" };
   }
 
-  if (input.session.kind === "judge") {
+  // One of the four per session judge caps, so it is the switch's to disable
+  // (src/lib/server/env.ts, judgePerSessionCapsEnabled). With it off the row is
+  // still written and the render still costs its units against the reservation
+  // below, the deployment wide ceiling, and the owner's day; what is gone is the
+  // count that refused a thirteenth try on.
+  if (input.session.kind === "judge" && judgePerSessionCapsEnabled()) {
     const used = await countRenders(ownerId);
     if (used >= JUDGE_RENDERS_ALLOWED) {
       return {

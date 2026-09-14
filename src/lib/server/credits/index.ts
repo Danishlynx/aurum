@@ -2,7 +2,12 @@ import "server-only";
 
 import { serviceClient, unwrap } from "../db/service";
 import type { CreditLedgerEntry, CreditProvider, Insert } from "../db/types";
-import { dailyCaps, globalDailyCap, judgeSearchesAllowed } from "../env";
+import {
+  dailyCaps,
+  globalDailyCap,
+  judgePerSessionCapsEnabled,
+  judgeSearchesAllowed,
+} from "../env";
 import { adjustJudgeCredits } from "../judge";
 import type { AppSession } from "../session";
 
@@ -57,6 +62,8 @@ export interface Reservation {
  *
  * - daily_cap: this owner has spent their own allowance for the UTC day.
  * - session_cap: this judge session has spent its allowance for its whole life.
+ *   Returned only while JUDGE_PER_SESSION_CAPS is on (src/lib/server/env.ts);
+ *   with it off the allowance is still counted and never refused.
  * - global_cap: the deployment has spent its Perfect Corp allowance for the UTC
  *   day, whoever spent it. The only refusal here that is not about the caller,
  *   and the only one another owner's traffic can cause.
@@ -250,18 +257,26 @@ export async function reserve(args: {
     }
   }
 
+  /*
+   * The per session caps, and only they, answer to JUDGE_PER_SESSION_CAPS
+   * (src/lib/server/env.ts). With it off, session_cap is never returned: the
+   * units counter is still moved, because credits_used is what the stats route
+   * and the banner read and it has to stay true, and the searches are still
+   * counted in the ledger. Both ceilings above are already past at this point
+   * and neither of them reads this switch.
+   */
   if (args.session.kind === "judge") {
     const kind = judgeCapKindFor(args.provider);
     if (kind === "units") {
       const outcome = await adjustJudgeCredits(args.session.id, units);
-      if (!outcome.ok) {
+      if (!outcome.ok && judgePerSessionCapsEnabled()) {
         const remaining = Math.max(
           0,
           args.session.session.credits_cap - args.session.session.credits_used,
         );
         return { ok: false, reason: "session_cap", remaining };
       }
-    } else if (kind === "searches") {
+    } else if (kind === "searches" && judgePerSessionCapsEnabled()) {
       const allowed = judgeSearchesAllowed();
       const used = await spentTotal(owner, args.provider);
       if (used + units > allowed) {

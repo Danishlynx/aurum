@@ -160,6 +160,7 @@ const TOUCHED_VARS = [
   "JUDGE_ANALYSES_ALLOWED",
   "JUDGE_CREDITS_CAP",
   "JUDGE_ACCESS_CODE_HASH",
+  "JUDGE_PER_SESSION_CAPS",
   ...SUPABASE_VARS,
 ] as const;
 
@@ -174,6 +175,16 @@ beforeEach(() => {
     saved.set(name, process.env[name]);
     delete process.env[name];
   }
+  /*
+   * The per session caps are off by default now (src/lib/server/env.ts,
+   * judgePerSessionCapsEnabled): the deployment wide ceiling bounds the account,
+   * and a cap an owner can mint their way around only ever bounded the founder.
+   * This whole suite is about the capped behaviour, which is what
+   * JUDGE_PER_SESSION_CAPS=true asks for, so it is set here and restored with
+   * everything else below. evals/safety/per-session-caps.test.ts holds the other
+   * half: what the same states do with the switch off.
+   */
+  process.env.JUDGE_PER_SESSION_CAPS = "true";
   clearFixtureJudgeSessions();
 });
 
