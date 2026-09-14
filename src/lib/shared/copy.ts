@@ -234,6 +234,17 @@ export const copy = {
       line: "line",
     },
     /**
+     * In house. The steps between the tap and /analyzing, named for the
+     * errors.uploadFailedDetailTemplate line. Keyed by the step the screen
+     * was on when it stopped.
+     */
+    uploadSteps: {
+      encode: "preparing the photo",
+      register: "registering the photo",
+      store: "saving the photo",
+      analyze: "starting the reading",
+    },
+    /**
      * One line per rejection reason. Keyed by CaptureRejectionReason from
      * src/lib/shared/quality.ts so the set stays complete at compile time.
      */
@@ -922,6 +933,20 @@ export const copy = {
     uploadFailed:
       "Upload did not complete. Your photo was not saved. Try again.",
     /**
+     * In house. The second line under uploadFailed and requestFailed on the
+     * capture screen: which step stopped and what the server said. Added
+     * 2026-09-14 after a phone showed "Upload did not complete" with nothing
+     * else to go on, and the cause had to be reconstructed from the code. A
+     * status code is not a sentence a person acts on, but it is the one thing
+     * that turns a screenshot into a diagnosis, and it costs one small line.
+     * {step} is one of capture.uploadSteps.
+     */
+    uploadFailedDetailTemplate:
+      "Stopped while {step}. The server answered {status}.",
+    /** In house. The same line when no answer came back at all. */
+    uploadFailedNoAnswerTemplate:
+      "Stopped while {step}. No answer came back from the server.",
+    /**
      * In house. The engine refused the photo for a reason we have no specific
      * line for. It lived in src/lib/server/http/messages.ts as providerRefused,
      * which still re exports it, and moved here because the reveal shows it on
@@ -993,6 +1018,10 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "capture.cameraUnavailable",
   "capture.shutterLabel",
   "capture.facingAway",
+  "capture.uploadSteps.encode",
+  "capture.uploadSteps.register",
+  "capture.uploadSteps.store",
+  "capture.uploadSteps.analyze",
   "analyzing.reframing",
   "judge.exploreDemoAction",
   "productCard.distanceTemplate",
@@ -1074,6 +1103,8 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "errors.readingRefused",
   "errors.requestFailed",
   "errors.sessionMissing",
+  "errors.uploadFailedDetailTemplate",
+  "errors.uploadFailedNoAnswerTemplate",
   "common.close",
   "privacy.points.0",
   "privacy.points.1",

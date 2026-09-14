@@ -109,6 +109,12 @@ Live guidance (one line at a time, replaced as conditions change, never stacked)
 
 Order is precedence, and pose comes before framing: no amount of moving closer fixes a head that is turned away from the lens, and the engine refuses the turned head first.
 
+"Hold the phone at eye level" is a pitch line. When the detector has measured pitch, the line holds only for a pitch the gate would refuse. Where the face sits down the frame is asked only when there is no pitch to read, as a stand in for it, and its threshold is set from where a correctly framed face actually sits (0.62 of the frame height, measured on a phone 2026-09-14) rather than from the middle of the picture.
+
+Who reaches this screen: a device with a consented session. With open access on, a device without one, or whose 24 hour session has run out, is sent to /welcome before it frames a photo, because that is the screen that can mint a session and record the consent (the register call would answer 401 otherwise, and until 2026-09-14 that was shown as "Upload did not complete"). The same two answers from the server after the tap, 401 and 403, also go to /welcome rather than to a retake.
+
+When an upload does stop, the screen says where and what came back, under the documented line: "Stopped while registering the photo. The server answered 500." or "Stopped while saving the photo. No answer came back from the server." A status code is not a sentence a person acts on, but it is what makes a screenshot a diagnosis.
+
 Quality gate after capture (runs client side first, then server side):
 
 - Exactly one face detected, by a real model rather than a colour rule

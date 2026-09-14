@@ -37,9 +37,11 @@ import type {
 } from "../db/types";
 import { ANALYSIS_KINDS } from "../db/types";
 import { findReservation, refund, reconcile, reserve } from "../credits";
+import { isSupabaseConfigured } from "../env";
 import { messages } from "../http/messages";
 import { HttpError } from "../http/responses";
 import { maybeBuildProfile } from "../profile";
+import { getAestheticProfile } from "../profile/db";
 import { readProfileFacts } from "../profile/facts";
 import { releaseJudgeAnalysis } from "../judge";
 import { isProviderError } from "../providers/errors";
@@ -1396,6 +1398,44 @@ export async function reconcileRunningCaptureJobs(args: {
       }),
     );
   }
+}
+
+/**
+ * The catch up pass above, for the capture a session's profile was built from.
+ *
+ * The report page used to look the capture up itself and then call
+ * reconcileRunningCaptureJobs, and the lookup sat outside that function's
+ * "nothing here may fail the report" rule. On a server with no Supabase
+ * project the lookup threw before the rule applied, and a judge session at
+ * zero analyses, whose every screen is meant to render from the saved demo
+ * profile precisely so that nothing is dead, got the framework's error page
+ * on /report instead (found by e2e/judge-zero.spec.ts, 2026-09-14). The whole
+ * pass now lives under the rule: no project, no profile, or a read that
+ * throws, and the report renders as if the pass had found nothing to do.
+ */
+export async function reconcileRunningJobsForProfile(
+  session: AppSession,
+): Promise<void> {
+  if (!isSupabaseConfigured()) {
+    return;
+  }
+  let captureId: string | null;
+  try {
+    captureId = (await getAestheticProfile(session.id))?.capture_id ?? null;
+  } catch (thrown) {
+    console.warn(
+      JSON.stringify({
+        event: "aurum.straggler_reconcile_failed",
+        captureId: null,
+        reason: thrown instanceof Error ? thrown.name : "unknown",
+      }),
+    );
+    return;
+  }
+  if (captureId === null) {
+    return;
+  }
+  await reconcileRunningCaptureJobs({ session, captureId });
 }
 
 /**

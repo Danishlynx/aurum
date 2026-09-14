@@ -49,6 +49,8 @@ import {
   toGrayscale,
   toJpegBlob,
 } from "@/lib/client/image";
+import { uploadFailureDetail } from "@/lib/client/upload-failure";
+import type { UploadFailure } from "@/lib/client/upload-failure";
 import { captureRejectionCopy, copy } from "@/lib/shared/copy";
 import { backTargetFor } from "@/lib/shared/navigation";
 import {
@@ -207,7 +209,16 @@ type Phase =
       readonly reason: CaptureRejectionReason;
       readonly canUseAnyway: boolean;
     }
-  | { readonly name: "failed"; readonly message: string }
+  | {
+      readonly name: "failed";
+      readonly message: string;
+      /**
+       * Which step stopped and what came back, for the second line under the
+       * message. Absent when the failure happened before any request was made
+       * and there is nothing to report beyond the message itself.
+       */
+      readonly failure?: UploadFailure;
+    }
   | { readonly name: "capped" };
 
 export interface CaptureScreenProps {
@@ -638,7 +649,11 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         blob = await toJpegBlob(canvas, CAPTURE_JPEG_QUALITY);
         sha256 = await sha256Hex(blob);
       } catch {
-        setPhase({ name: "failed", message: copy.errors.uploadFailed });
+        setPhase({
+          name: "failed",
+          message: copy.errors.uploadFailed,
+          failure: { step: "encode", status: 0 },
+        });
         return;
       }
 
@@ -655,7 +670,18 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       });
 
       if (!created.ok) {
-        if (created.kind === "forbidden") {
+        /*
+         * No session, or a session without consent: both are answered by the
+         * consent screen, which records consent for the session it finds and,
+         * with open access on, mints one for a device that has none. A judge
+         * session lives 24 hours (JUDGE_SESSION_LIFETIME_HOURS) and this screen
+         * can be reached from a bookmark, a restored tab, or any screen's
+         * "Start with a selfie" long after that, so a 401 here is the ordinary
+         * way a second day begins, not a broken upload. Until 2026-09-14 it
+         * was reported as one: "Upload did not complete", with a retake button
+         * that led straight back to the same answer.
+         */
+        if (created.kind === "unauthorized" || created.kind === "forbidden") {
           router.push("/welcome");
           return;
         }
@@ -663,14 +689,22 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
           setPhase({ name: "capped" });
           return;
         }
-        setPhase({ name: "failed", message: copy.errors.uploadFailed });
+        setPhase({
+          name: "failed",
+          message: copy.errors.uploadFailed,
+          failure: { step: "register", status: created.status },
+        });
         return;
       }
 
       if (created.data.status === "new") {
         const put = await uploadCaptureImage(created.data.uploadUrl, blob);
         if (!put.ok) {
-          setPhase({ name: "failed", message: copy.errors.uploadFailed });
+          setPhase({
+            name: "failed",
+            message: copy.errors.uploadFailed,
+            failure: { step: "store", status: put.status },
+          });
           return;
         }
       }
@@ -681,11 +715,15 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
           setPhase({ name: "capped" });
           return;
         }
-        if (started.kind === "forbidden") {
+        if (started.kind === "unauthorized" || started.kind === "forbidden") {
           router.push("/welcome");
           return;
         }
-        setPhase({ name: "failed", message: copy.errors.requestFailed });
+        setPhase({
+          name: "failed",
+          message: copy.errors.requestFailed,
+          failure: { step: "analyze", status: started.status },
+        });
         return;
       }
 
@@ -1152,6 +1190,11 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
                 <p role="status" className="font-body text-body text-text">
                   {phase.message}
                 </p>
+                {phase.failure !== undefined ? (
+                  <p className="font-body text-small text-text-muted">
+                    {uploadFailureDetail(phase.failure)}
+                  </p>
+                ) : null}
                 <Button variant="primary" onClick={handleRetake}>
                   {copy.capture.retakeAction}
                 </Button>

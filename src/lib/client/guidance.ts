@@ -22,7 +22,6 @@ import {
   MEAN_LUMINANCE_BORDERLINE_BELOW,
   POSE_PITCH_MAX_DEGREES,
   POSE_PITCH_MIN_DEGREES,
-  SHARPNESS_BORDERLINE_BELOW,
   poseVerdictFor,
 } from "@/lib/shared/quality";
 import type { GrayscaleImage } from "@/lib/shared/quality";
@@ -50,25 +49,29 @@ export const MOTION_STILL_AT_OR_BELOW = 14;
  * How low the middle of the face can sit, as a share of the frame height,
  * before the phone is being held below the person's eyes.
  *
- * The whole heuristic, and deliberately the whole of it: one number, one
- * measurement we already take, no angle estimate.
- *
- * A face framed by somebody holding a phone at eye level sits high in the
- * picture. That is why the auto framing centres its crop at 42 percent of the
- * frame height (REFRAME_VERTICAL_CENTER in src/lib/shared/reframe.ts) and why
- * the reveal draws its vignette at the same 42 percent: people put their head in
+ * A stand in for pitch, and read only when there is no pitch to read. A face
+ * framed by somebody holding a phone at eye level sits high in the picture.
+ * That is why the auto framing centres its crop at 42 percent of the frame
+ * height (REFRAME_VERTICAL_CENTER in src/lib/shared/reframe.ts) and why the
+ * reveal draws its vignette at the same 42 percent: people put their head in
  * the upper half and leave the shoulders below it. A face whose middle has slid
- * past the middle of the frame is therefore not a person standing differently,
- * it is a lens pointing up from below at somebody looking down at it, which is
- * exactly the pose the engine refused on 2026-09-03 with
+ * well past the middle of the frame is therefore not a person standing
+ * differently, it is a lens pointing up from below at somebody looking down at
+ * it, which is exactly the pose the engine refused on 2026-09-03 with
  * error_face_angle_downward.
  *
- * 0.55 and not 0.5: the estimate is a skin region and runs into the neck, which
- * drags its middle down a little on every frame, and a line that showed itself
- * to somebody framed correctly would be worse than no line at all.
- * PROVISIONAL, the same standing as the other thresholds here.
+ * 0.62, raised from 0.55 on 2026-09-14, from a reading off a phone: a face
+ * filling the oval, phone level, pitch measured at three degrees, had its box
+ * middle at 0.58 of the frame. The detector's box runs from the hairline to
+ * under the chin, and the oval it is being asked to fill is drawn below the
+ * middle of the stage, so 0.58 is where a correctly framed face sits, not a
+ * face that has slid. That reading held the line at "Hold the phone at eye
+ * level" with a pitch the engine would have been happy with, which is the
+ * proxy contradicting the measurement it was standing in for; guidanceKey now
+ * asks the proxy only when the measurement is absent. PROVISIONAL, like the
+ * other thresholds here.
  */
-export const FACE_CENTER_TOO_LOW_ABOVE = 0.55;
+export const FACE_CENTER_TOO_LOW_ABOVE = 0.62;
 
 /**
  * The long edge the preview is sampled at for the guidance line.
@@ -181,16 +184,27 @@ export function guidanceKey(stats: LiveFrameStats): GuidanceKey {
    * Before "move closer", because a phone lifted to eye level moves the face
    * inside the frame as well as squaring it to the lens, so answering the
    * distance first would ask for two corrections where one will do.
-   */
-  /*
+   *
+   * Two conditions on the proxy, and both are about not contradicting a better
+   * reading.
+   *
    * Only when the box came from a detector. The colour threshold's box runs
    * down the neck and into whatever bare skin is below it, which drags its
    * middle down the frame, and that is a reading about a neckline, not about
    * where the phone is. A line that held on it held for as long as the person
    * stood there.
+   *
+   * And only when there is no pose. Where the face sits in the frame was only
+   * ever a way of guessing at pitch, and a detector that has measured pitch has
+   * answered the question the proxy was asking. On 2026-09-14 a level phone,
+   * pitch three degrees, was held at "Hold the phone at eye level" because the
+   * box middle read 0.58, which is where a face filling the oval sits. The
+   * pose check above has already let that frame through; asking the guess
+   * after the measurement can only take the answer back.
    */
   const centerY = stats.faceCenterY ?? null;
   if (
+    pose === null &&
     (stats.faceEstimateTrusted ?? true) &&
     centerY !== null &&
     centerY > FACE_CENTER_TOO_LOW_ABOVE
