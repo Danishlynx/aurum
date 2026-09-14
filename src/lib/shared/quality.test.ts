@@ -860,7 +860,19 @@ describe("autoCropBoxFor", () => {
   it("never comes in narrower than the face, even when that means landscape", () => {
     const frame = { width: 1024, height: 768 };
     const faceBox = { x: 112, y: 234, width: 800, height: 300 };
-    const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+    const crop = autoCropBoxFor({ faceBox, frame });
+    /*
+     * This box already fills more than the engine asks of the short axis, so
+     * since 2026-09-14 there is nothing to compose and null is the answer. The
+     * invariant is about any crop that does exist: it never comes in narrower
+     * than the face.
+     */
+    if (crop === null) {
+      expect(faceWidthRatio(faceBox, frame)).toBeGreaterThanOrEqual(
+        FACE_WIDTH_RATIO_MIN,
+      );
+      return;
+    }
     expect(crop.width).toBeGreaterThanOrEqual(faceBox.width);
     expect(crop.x).toBeLessThanOrEqual(faceBox.x);
     expect(crop.x + crop.width).toBeGreaterThanOrEqual(
@@ -1061,37 +1073,37 @@ describe("assessCapture", () => {
       faceBox: GOOD_FACE_BOX,
     });
     expect(result.reason).toBe("too_dark");
+    // Softness is measured on the same frame and decides nothing.
+    expect(result.metrics.sharpness).toBe(0);
     expect(
       result.failures.some((failure) => failure.reason === "blurry"),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   /**
-   * The policy, and the reason the sharpness reject threshold does not exist:
-   * a frame with no local contrast at all, which is what motion blur converges
-   * to, is still offered. The engine's own input gate is free and authoritative,
-   * so the worst case of being wrong here is a couple of seconds, and the worst
-   * case of the old behaviour was a person on a real phone tapping the shutter
-   * over and over with no way through (2026-09-03).
+   * Softness decides nothing at the gate, since 2026-09-14.
+   *
+   * It used to be a borderline: never a refusal, but a review screen saying "A
+   * little blurry" with Retake as the primary answer, which in practice is a
+   * wall. The threshold behind it was set from stripes and checkerboards, and a
+   * smooth face at 96 pixels has every chance of reading under it at any focus.
+   * The engine publishes no blur code, the burst sends the sharpest of five
+   * frames, and the number still lands in the metrics for calibration. So a
+   * frame with no local contrast at all, which is what motion blur converges
+   * to, is accepted here and judged by the party that can actually judge it.
    */
-  it("flags a flat, correctly exposed frame as borderline rather than refusing it", () => {
+  it("accepts a flat, correctly exposed frame and records that it is flat", () => {
     const result = assessCapture({
       image: flat(128, 100, 100),
       faceCount: 1,
       faceBox: GOOD_FACE_BOX,
     });
-    expect(result.verdict).toBe("borderline");
-    expect(result.reason).toBe("blurry");
-    expect(result.canUseAnyway).toBe(true);
+    expect(result.verdict).toBe("accept");
+    expect(result.reason).toBeNull();
     expect(result.metrics.sharpness).toBe(0);
   });
 
-  it("never refuses a frame for sharpness, at any value", () => {
-    /*
-     * The whole range, from a dead flat frame through the borderline line and
-     * out the other side. Below the line the verdict is borderline and the way
-     * forward is offered; at or above it, sharpness says nothing at all.
-     */
+  it("neither refuses nor flags a frame for sharpness, at any value", () => {
     for (const step of [0, 1, 2, 4, 8, 16, 32, 64, 128]) {
       const image = checkerboard(128 - step / 2, 128 + step / 2, 100, 100);
       const result = assessCapture({
@@ -1099,14 +1111,10 @@ describe("assessCapture", () => {
         faceCount: 1,
         faceBox: GOOD_FACE_BOX,
       });
-      expect(result.verdict).not.toBe("reject");
-      const flagged = result.failures.some(
-        (failure) => failure.reason === "blurry",
-      );
-      expect(flagged).toBe(result.metrics.sharpness < SHARPNESS_BORDERLINE_BELOW);
-      if (flagged) {
-        expect(result.canUseAnyway).toBe(true);
-      }
+      expect(result.verdict).toBe("accept");
+      expect(
+        result.failures.some((failure) => failure.reason === "blurry"),
+      ).toBe(false);
     }
   });
 
@@ -1122,17 +1130,36 @@ describe("assessCapture", () => {
   });
 
   it("flags a face just under the rule as borderline and offers use it anyway", () => {
+    /*
+     * Under the old height rule and on the engine's width rule at once, which
+     * is exactly the frame a detector reports for a face filling the oval: the
+     * box is eyebrows to chin, so it is short, and it is as wide as the face.
+     * Until 2026-09-14 this was "Move closer" with Retake as the primary answer.
+     * The engine would have read it. Now the gate does too.
+     */
     const height = Math.round(
       FRAME.height * ((FACE_COVERAGE_MIN + FACE_COVERAGE_BORDERLINE_MIN) / 2),
     );
-    const result = assessCapture({
+    const accepted = assessCapture({
       image: sharpMidtones(),
       faceCount: 1,
       faceBox: { x: 20, y: 10, width: 60, height },
     });
-    expect(result.verdict).toBe("borderline");
-    expect(result.reason).toBe("too_far");
-    expect(result.canUseAnyway).toBe(true);
+    expect(accepted.verdict).toBe("accept");
+    expect(accepted.metrics.faceCoverage).toBeLessThan(FACE_COVERAGE_MIN);
+    expect(accepted.metrics.faceWidthRatio).toBeGreaterThanOrEqual(
+      FACE_WIDTH_RATIO_MIN,
+    );
+
+    // The width rule is the one that flags, and it flags as borderline.
+    const narrow = assessCapture({
+      image: sharpMidtones(),
+      faceCount: 1,
+      faceBox: { x: 25, y: 10, width: 50, height },
+    });
+    expect(narrow.verdict).toBe("borderline");
+    expect(narrow.reason).toBe("too_far");
+    expect(narrow.canUseAnyway).toBe(true);
   });
 
   /**

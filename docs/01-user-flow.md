@@ -112,10 +112,12 @@ Order is precedence, and pose comes before framing: no amount of moving closer f
 Quality gate after capture (runs client side first, then server side):
 
 - Exactly one face detected, by a real model rather than a colour rule
-- The face filling at least 60 percent of the frame height, and at least 60 percent of the frame's short axis in width, which is the rule the engine itself applies
-- Head within the pose window: yaw and roll inside 15 degrees, pitch from minus 20 to plus 10, matching Perfect Corp's own capture profile
+- The face at least 60 percent of the frame's short axis in width, which is the rule the engine itself applies. The frame is composed around the face before it is judged, so this is a statement about the composed frame; the live line asks only whether there is enough face to compose (0.40 of the preview width). A face under a quarter of the frame height is refused as too small to crop.
+- Head within the pose window: yaw and roll inside 15 degrees, pitch from minus 20 to plus 10, matching Perfect Corp's own capture profile. A pose outside the window but inside the slack is offered, not refused, and the live line holds only for a pose the gate would refuse.
 - Exposure within range (no blown highlights on the forehead, no crushed shadows)
-- Sharpness measured, recorded, and never used to refuse a frame
+- Sharpness measured and recorded, and used only to choose the best frame of the burst. It neither refuses nor flags a frame, and it does not hold the live line.
+
+Amended again 2026-09-14, after a level phone with a face filling the oval sat on "Hold the phone at eye level" and then answered "Move closer" on the tap. Every threshold written against the height of the face box had been calibrated against the old skin colour box, which covered the forehead, the hair and the neck. A detector reports a face, eyebrows to chin, about two thirds of that. So the 60 percent height rule called a well framed face too far, and the pitch estimate's guessed neutral point read a level phone as looking up by about eight degrees, on the axis the engine's budget is tightest. The height rule is gone from the gate and the live line, the pitch neutral is corrected, and neither sharpness nor a borderline pose can hold the line any more. `/capture?debug=1` shows the numbers the line was computed from, so the next threshold is set from a phone rather than from a guess.
 
 Amended 2026-09-07, after a wave of good photographs was being refused. Four things were wrong and all four are fixed in place.
 

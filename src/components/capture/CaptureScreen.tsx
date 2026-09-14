@@ -32,7 +32,7 @@ import {
   meanLuminanceOf,
   motionBetween,
 } from "@/lib/client/guidance";
-import type { GuidanceKey } from "@/lib/client/guidance";
+import type { GuidanceKey, LiveFrameStats } from "@/lib/client/guidance";
 import {
   CAPTURE_JPEG_QUALITY,
   CAPTURE_LONG_EDGE,
@@ -54,6 +54,7 @@ import { backTargetFor } from "@/lib/shared/navigation";
 import {
   assessCapture,
   autoCropBoxFor,
+  faceWidthRatio,
   pickBestFrame,
   scaleBox,
   sharpnessOf,
@@ -162,6 +163,37 @@ function delay(milliseconds: number): Promise<void> {
 function releaseCanvas(canvas: HTMLCanvasElement): void {
   canvas.width = 0;
   canvas.height = 0;
+}
+
+/** What the readout shows: which estimator, what it measured, what it said. */
+type LiveReadout = {
+  readonly source: FaceEstimateSource;
+  readonly stats: LiveFrameStats;
+  readonly key: GuidanceKey;
+};
+
+function fixed(value: number | null | undefined, digits: number): string {
+  return value === null || value === undefined ? "-" : value.toFixed(digits);
+}
+
+/** One line, short keys, raw numbers. Read out loud from a phone, on purpose. */
+function formatLiveReadout(readout: LiveReadout): string {
+  const d = copy.capture.debug;
+  const { stats } = readout;
+  const pose = stats.pose ?? null;
+  return [
+    `${d.source} ${readout.source}`,
+    `${d.coverage} ${fixed(stats.faceCoverage, 2)}`,
+    `${d.widthRatio} ${fixed(stats.faceWidthRatio, 2)}`,
+    `${d.centerY} ${fixed(stats.faceCenterY, 2)}`,
+    `${d.yaw} ${fixed(pose?.yawDegrees, 0)}`,
+    `${d.pitch} ${fixed(pose?.pitchDegrees, 0)}`,
+    `${d.roll} ${fixed(pose?.rollDegrees, 0)}`,
+    `${d.luminance} ${fixed(stats.meanLuminance, 0)}`,
+    `${d.sharpness} ${fixed(stats.sharpness, 0)}`,
+    `${d.motion} ${fixed(stats.motion, 1)}`,
+    `${d.line} ${readout.key}`,
+  ].join("  ");
 }
 
 type Phase =
@@ -378,6 +410,27 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
   const [guidance, setGuidance] = useState<GuidanceKey>("light");
   const [still, setStill] = useState<string | null>(null);
   /**
+   * The last live measurement, kept only for the readout below. It is written
+   * on every sample whether or not anybody is looking, because the readout is
+   * switched on by the URL and the measurement is already in hand.
+   */
+  const [liveStats, setLiveStats] = useState<LiveReadout | null>(null);
+  /**
+   * ?debug=1 on /capture shows the numbers the live line was computed from.
+   *
+   * Every threshold in src/lib/shared/quality.ts is a guess until it has been
+   * read against a real face on a real phone, and until 2026-09-14 the only way
+   * to learn what one measured was to describe a screen in words. This turns the
+   * measurement into text a person can read out. Read once, at mount: it is a
+   * developer switch, not a state.
+   */
+  const [debugReadout] = useState<boolean>(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return new URLSearchParams(window.location.search).get("debug") === "1";
+  });
+  /**
    * Bumped to ask for the camera again. It is a dependency of the effect below,
    * so a bump is a full restart: the old tracks are stopped and getUserMedia is
    * called afresh. See handleRetake for the one thing that bumps it.
@@ -510,31 +563,45 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
             : null;
         const faceBox =
           model !== null ? model.box : estimateFaceFromSkin(image).faceBox;
+        const trusted = detected !== null;
 
-        setGuidance(
-          guidanceKey({
-            meanLuminance: meanLuminanceOf(gray),
-            faceCoverage:
-              faceBox === null ? null : faceBox.height / image.height,
-            // Where the middle of the face sits down the frame, which is what
-            // says the phone is being held below the person's eyes. Kept even
-            // with a real pose available, because it still answers for the
-            // frames the detector could not solve a pose for.
-            faceCenterY:
-              faceBox === null
-                ? null
-                : (faceBox.y + faceBox.height / 2) / image.height,
-            motion: motionBetween(previousSampleRef.current, gray.data),
-            sharpness: sharpnessOf(gray, faceBox),
-            pose: model?.pose ?? null,
-          }),
-        );
+        const stats: LiveFrameStats = {
+          meanLuminance: meanLuminanceOf(gray),
+          faceCoverage:
+            faceBox === null ? null : faceBox.height / image.height,
+          // The ratio the engine gates on and the crop is built to satisfy.
+          // The live line asks about it against LIVE_FACE_WIDTH_RATIO_MIN, which
+          // is far below the engine's own number because the crop closes the gap.
+          faceWidthRatio:
+            faceBox === null ? null : faceWidthRatio(faceBox, image),
+          // Where the middle of the face sits down the frame, which is what
+          // says the phone is being held below the person's eyes. Only read when
+          // a detector drew the box: the colour threshold's box runs into the
+          // neck and its middle says nothing about the phone.
+          faceCenterY:
+            faceBox === null
+              ? null
+              : (faceBox.y + faceBox.height / 2) / image.height,
+          faceEstimateTrusted: trusted,
+          motion: motionBetween(previousSampleRef.current, gray.data),
+          sharpness: sharpnessOf(gray, faceBox),
+          pose: model?.pose ?? null,
+        };
+        const key = guidanceKey(stats);
+        setGuidance(key);
+        if (debugReadout) {
+          setLiveStats({
+            source: trusted ? "model" : "skin_region",
+            stats,
+            key,
+          });
+        }
         previousSampleRef.current = gray.data;
       })
       .finally(() => {
         sampleInFlightRef.current = false;
       });
-  }, []);
+  }, [debugReadout]);
 
   useEffect(() => {
     if (phase.name !== "live") {
@@ -1002,6 +1069,14 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
                 >
                   {copy.capture.guidance[guidance]}
                 </p>
+                {debugReadout && liveStats !== null ? (
+                  <p
+                    aria-hidden="true"
+                    className="font-body text-micro text-text-muted"
+                  >
+                    {formatLiveReadout(liveStats)}
+                  </p>
+                ) : null}
                 {/*
                  * docs/02-design-system.md, Layout: the shutter is one of the
                  * three centered elements in the app. Everything else on this
