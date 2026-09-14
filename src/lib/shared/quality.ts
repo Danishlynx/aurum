@@ -173,6 +173,25 @@ export const FACE_COVERAGE_MIN = 0.6;
  */
 export const FACE_COVERAGE_BORDERLINE_MIN = 0.52;
 
+/**
+ * Below this share of the frame height a face is refused as too small, and this
+ * is the only thing the height rule still refuses on.
+ *
+ * Why so low, and why the two constants above no longer decide anything. Both
+ * were calibrated against the skin colour box, which covered the forehead, the
+ * hair and usually the neck: a head, roughly. MediaPipe reports a face,
+ * eyebrows to chin, which is about two thirds of that. Read against the old
+ * numbers, every well framed face now measured as too far. The rule the engine
+ * applies is about width (FACE_WIDTH_RATIO_MIN), the crop is built to satisfy
+ * it, and what remains for height is the case no crop can save: a face a few
+ * hundred pixels tall at sensor size, which the crop would have to upscale into
+ * a soft frame the engine refuses for free anyway.
+ *
+ * 0.25 of a 1920 pixel sensor frame is 480 pixels of face, and a crop of that
+ * lands right at CAPTURE_MIN_SHORT_EDGE. PROVISIONAL like every threshold here.
+ */
+export const FACE_COVERAGE_REJECT_BELOW = 0.25;
+
 // ---------------------------------------------------------------------------
 // The provider's own rule, in the provider's own terms
 // ---------------------------------------------------------------------------
@@ -707,9 +726,15 @@ export function autoCropBoxFor(input: AutoCropInput): Box | null {
    * alike, and the crop it produces targets AUTO_CROP_FACE_COVERAGE, which clears
    * FACE_WIDTH_RATIO_MIN with margin rather than landing on it.
    */
-  const coverage = faceCoverageCheck(faceBox, frame);
+  /*
+   * Width only, since 2026-09-14. The height rule used to be asked here as well,
+   * and for a nearly square face box it could never be satisfied by a crop that
+   * is built from the width, so a frame the engine would take was recomposed
+   * again on every pass. The engine's rule is the one that decides whether there
+   * is anything to do.
+   */
   const widthRatio = faceWidthRatio(faceBox, frame);
-  if (coverage.meetsMinimum && widthRatio >= FACE_WIDTH_RATIO_MIN) {
+  if (widthRatio >= FACE_WIDTH_RATIO_MIN) {
     return null;
   }
 
@@ -1070,16 +1095,29 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
     failures.push({ reason: "over_exposed", severity: "borderline" });
   }
 
-  if (coverage !== null && !coverage.meetsMinimum) {
-    failures.push({
-      reason: "too_far",
-      severity: coverage.isBorderline ? "borderline" : "reject",
-    });
+  /*
+   * Height decides only the hopeless case. Until 2026-09-14 a face under
+   * FACE_COVERAGE_MIN of the frame height was flagged too_far here, and that
+   * contradicted the composition step feeding this gate: autoCropBoxFor builds
+   * the crop from the WIDTH the engine measures, so a face box that is nearly
+   * square (which is what a detector reports for a face without its hair) comes
+   * out of the crop at 0.66 of the width and about 0.58 of the height. The
+   * engine would take that frame. This gate told the person to move closer.
+   *
+   * So the height rule is reduced to what it is actually good for: a face so
+   * small that no crop can rescue it, where the crop would be upscaling a few
+   * hundred pixels into a soft frame the engine refuses anyway. Everything
+   * between that and the width rule below is the composition's job.
+   */
+  if (coverage !== null && coverage.coverage < FACE_COVERAGE_REJECT_BELOW) {
+    failures.push({ reason: "too_far", severity: "reject" });
   }
 
   /*
-   * The engine's own framing rule, checked in the engine's own terms. It sits
-   * beside the height rule above rather than replacing it, because they are two
+   * The engine's own framing rule, checked in the engine's own terms. This is
+   * the rule that decides too_far, because it is the rule the reading is
+   * refused for, and the height rule above is now only the floor under it.
+   * The two used to sit side by side and could disagree, and they did: the
    * different statements about the same photograph and the person is served by
    * both: the height rule is what the oval on the camera screen is drawn to, and
    * this one is what the reading will actually be refused for.
@@ -1113,19 +1151,27 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
   }
 
   /*
-   * Borderline at every value, never a reject. Softness is the one thing on this
-   * screen we are worse at judging than the engine that is about to read the
-   * photo: its input gate is free, it is authoritative, and it answers in a
-   * couple of seconds. A frame we call soft and it would have read is a person
-   * sent back to the camera for nothing, which is exactly the loop the S26 Ultra
-   * was stuck in on 2026-09-03. So a soft frame is always offered: the words say
-   * it is soft, Retake is still the primary answer, and "Use it anyway" is there
-   * underneath it. Only face detection (docs/01 section D) and the exposure
-   * extremes, which cost a credit for a reading nothing can come of, refuse.
+   * Sharpness is measured and recorded and decides nothing here, since
+   * 2026-09-14.
+   *
+   * It was a borderline before that: never a refusal, but a review screen with
+   * "A little blurry" on it and Retake as the primary answer, which in practice
+   * is a wall, because a person who has just been told their photo is blurry
+   * takes it again rather than pressing the smaller button under it. And the
+   * number that put them there was a threshold set from synthetic stripes and
+   * checkerboards, never from a face. A face is mostly smooth skin; measured at
+   * 96 pixels its high frequency share is small whatever the focus, and there
+   * was every chance that a sharp face read under the line. The S26 Ultra loop
+   * of 2026-09-03 was this measurement with different numbers.
+   *
+   * What replaced it is better on every axis. The shutter takes a burst and
+   * frameScore sends the sharpest frame of it (pickBestFrame), so softness is
+   * handled by choosing rather than by refusing. The engine publishes no blur
+   * code at all, so it is not something a reading is refused for. And the
+   * number still lands in captures.quality, where it can be calibrated against
+   * what the engine actually did with the frame before anybody asks it to
+   * decide anything again.
    */
-  if (sharpness < SHARPNESS_BORDERLINE_BELOW) {
-    failures.push({ reason: "blurry", severity: "borderline" });
-  }
 
   const metrics: CaptureMetrics = {
     sharpness,

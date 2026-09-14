@@ -214,6 +214,26 @@ export const copy = {
      */
     shutterLabel: "Take the photo",
     /**
+     * The on device readout, shown only with ?debug=1 on /capture. Short keys
+     * beside raw numbers, for reading what the live line and the gate measured
+     * on a real phone, which is the only way a threshold in
+     * src/lib/shared/quality.ts ever gets set from a face rather than a guess.
+     * Not a screen a person is meant to see, and not in docs/01 for that reason.
+     */
+    debug: {
+      source: "src",
+      coverage: "cov",
+      widthRatio: "w",
+      centerY: "cy",
+      yaw: "yaw",
+      pitch: "pitch",
+      roll: "roll",
+      luminance: "lum",
+      sharpness: "sharp",
+      motion: "motion",
+      line: "line",
+    },
+    /**
      * One line per rejection reason. Keyed by CaptureRejectionReason from
      * src/lib/shared/quality.ts so the set stays complete at compile time.
      */

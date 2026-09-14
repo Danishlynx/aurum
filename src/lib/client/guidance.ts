@@ -18,7 +18,7 @@
 import { copy } from "@/lib/shared/copy";
 import type { FacePose } from "@/lib/shared/pose";
 import {
-  FACE_COVERAGE_MIN,
+  FACE_COVERAGE_REJECT_BELOW,
   MEAN_LUMINANCE_BORDERLINE_BELOW,
   POSE_PITCH_MAX_DEGREES,
   POSE_PITCH_MIN_DEGREES,
@@ -32,10 +32,19 @@ export type GuidanceKey = keyof typeof copy.capture.guidance;
 /**
  * Mean absolute luminance change between two consecutive preview frames. Above
  * this the camera or the person is moving enough to blur the capture.
+ *
+ * 14, raised from 7 on 2026-09-14. Sensor noise alone moves a still frame: at a
+ * per pixel noise of five levels, which is ordinary indoors, the mean absolute
+ * difference between two frames of a phone that has not moved is about eight.
+ * Seven therefore said "Hold still" to a phone on a table in a dim room, and
+ * said it for as long as the room stayed dim. A real shake reads in the tens.
+ *
  * PROVISIONAL, calibrated by hand on a phone, to be checked against
- * evals/fixtures/captures-bad.
+ * evals/fixtures/captures-bad. It errs high on purpose: the burst sends the
+ * sharpest of five frames, so a moment of motion this line missed is caught by
+ * choosing, and a still moment this line called motion is a wall.
  */
-export const MOTION_STILL_AT_OR_BELOW = 7;
+export const MOTION_STILL_AT_OR_BELOW = 14;
 
 /**
  * How low the middle of the face can sit, as a share of the frame height,
@@ -102,7 +111,33 @@ export type LiveFrameStats = {
    * which is what it did before 2026-09-07.
    */
   readonly pose?: FacePose | null;
+  /**
+   * Face width over the preview's short axis, the ratio the engine gates on
+   * and the one the crop is built to satisfy. Null when nothing face sized was
+   * found.
+   */
+  readonly faceWidthRatio?: number | null;
+  /**
+   * False when the box and pose came from the colour threshold fallback rather
+   * than a detector. Absent reads as true. See faceEstimateTrusted on the gate.
+   */
+  readonly faceEstimateTrusted?: boolean;
 };
+
+/**
+ * The preview width ratio under which the line asks the person to come closer.
+ *
+ * Deliberately far below the engine's own 0.60, because the engine never sees
+ * the preview. autoCropBoxFor composes the uploaded frame to
+ * AUTO_CROP_FACE_WIDTH_TARGET of the width from whatever the sensor gave it, so
+ * a face at 0.40 of the preview width becomes a face at 0.66 of the upload. The
+ * limit is pixels, not framing: the crop of a face this size on a 1920 pixel
+ * sensor frame is well over CAPTURE_MIN_SHORT_EDGE, and under this the crop
+ * starts upscaling into a soft frame. PROVISIONAL, like every number in the
+ * gate, and set to err on letting the tap happen: the burst and the gate are
+ * both measuring behind it.
+ */
+export const LIVE_FACE_WIDTH_RATIO_MIN = 0.4;
 
 export function guidanceKey(stats: LiveFrameStats): GuidanceKey {
   if (stats.meanLuminance < MEAN_LUMINANCE_BORDERLINE_BELOW) {
@@ -125,8 +160,17 @@ export function guidanceKey(stats: LiveFrameStats): GuidanceKey {
    * and it is the axis the engine's own budget is tightest on in the direction a
    * phone at chest height pushes it.
    */
+  /*
+   * Only a pose the gate would REFUSE holds the line. A borderline pose is
+   * offered by the gate, not refused, and the burst picks the squarest of five
+   * frames anyway, so a line that demanded perfection here was demanding more
+   * than the gate does. It also demanded it from an estimator that cannot give
+   * it: pitch off four keypoints is a heuristic with a guessed neutral point
+   * (src/lib/shared/pose.ts), and on 2026-09-14 that guess held a level phone at
+   * "Hold the phone at eye level" for as long as the person cared to wait.
+   */
   const pose = stats.pose ?? null;
-  if (pose !== null && poseVerdictFor(pose) !== "ok") {
+  if (pose !== null && poseVerdictFor(pose) === "reject") {
     const pitchIsTheProblem =
       pose.pitchDegrees > POSE_PITCH_MAX_DEGREES ||
       pose.pitchDegrees < POSE_PITCH_MIN_DEGREES;
@@ -138,23 +182,57 @@ export function guidanceKey(stats: LiveFrameStats): GuidanceKey {
    * inside the frame as well as squaring it to the lens, so answering the
    * distance first would ask for two corrections where one will do.
    */
+  /*
+   * Only when the box came from a detector. The colour threshold's box runs
+   * down the neck and into whatever bare skin is below it, which drags its
+   * middle down the frame, and that is a reading about a neckline, not about
+   * where the phone is. A line that held on it held for as long as the person
+   * stood there.
+   */
   const centerY = stats.faceCenterY ?? null;
-  if (centerY !== null && centerY > FACE_CENTER_TOO_LOW_ABOVE) {
+  if (
+    (stats.faceEstimateTrusted ?? true) &&
+    centerY !== null &&
+    centerY > FACE_CENTER_TOO_LOW_ABOVE
+  ) {
     return "eyeLevel";
   }
-  if (stats.faceCoverage === null || stats.faceCoverage < FACE_COVERAGE_MIN) {
+
+  /*
+   * "Move closer" is asked about the frame the GATE will see, not this one.
+   *
+   * The gate never sees the preview. It sees the frame after autoCropBoxFor has
+   * composed it around the face, which puts the face at AUTO_CROP_FACE_WIDTH_TARGET
+   * of the width whatever the person did, as long as there are enough pixels
+   * to cut from. So the question here is not "does the face fill the oval" but
+   * "is there a face big enough to compose", and the answer is the width ratio
+   * of this preview against LIVE_FACE_WIDTH_RATIO_MIN.
+   *
+   * Until 2026-09-14 this line asked for FACE_COVERAGE_MIN of the frame height,
+   * a number calibrated against the old skin colour box, which was a head. A
+   * detector reports a face, two thirds of that, so a person filling the oval
+   * measured as too far and was told to come closer forever, while the gate,
+   * measuring the composed frame, would have let the tap through.
+   */
+  const widthRatio = stats.faceWidthRatio ?? null;
+  if (
+    widthRatio === null ||
+    widthRatio < LIVE_FACE_WIDTH_RATIO_MIN ||
+    stats.faceCoverage === null ||
+    stats.faceCoverage < FACE_COVERAGE_REJECT_BELOW
+  ) {
     return "closer";
   }
   /*
-   * Motion and softness are one line, because they are one instruction. Motion
-   * is what the person can still fix before the tap; sharpness is what the gate
-   * is about to measure. Saying "Good" over a frame the gate would then call
-   * blurry is the contradiction this whole module exists to not produce.
+   * Motion alone decides "Hold still", since 2026-09-14. Sharpness used to be
+   * asked here as well, with a threshold set from synthetic patterns, and a
+   * smooth face at preview size has every chance of reading under it whatever
+   * the focus: that is a line that never says "Good" and a person who never
+   * finds out why. The gate no longer flags softness either (assessCapture), so
+   * the two still agree, and the burst sends the sharpest of five frames, which
+   * is a better answer to a soft moment than asking the person to wait for one.
    */
-  if (
-    stats.motion > MOTION_STILL_AT_OR_BELOW ||
-    stats.sharpness < SHARPNESS_BORDERLINE_BELOW
-  ) {
+  if (stats.motion > MOTION_STILL_AT_OR_BELOW) {
     return "hold";
   }
   return "ready";

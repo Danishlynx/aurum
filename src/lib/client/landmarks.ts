@@ -155,27 +155,42 @@ async function createDetector(): Promise<Detector | null> {
     const fileset = await vision.FilesetResolver.forVisionTasks(
       MEDIAPIPE_WASM_URL,
     );
-    const detector = await vision.FaceDetector.createFromOptions(fileset, {
-      baseOptions: {
-        modelAssetPath: FACE_DETECTOR_MODEL_URL,
-        /*
-         * GPU where it exists, because this runs on every preview frame. The
-         * library falls back to CPU on its own when a device has no usable
-         * WebGL context, so this is a preference and not a requirement.
-         */
-        delegate: "GPU",
-      },
-      runningMode: "IMAGE",
-      /*
-       * Deliberately low. A second face in the frame is a refusal
-       * (error_multiple_people is a documented provider failure and every face
-       * endpoint we call is single face only), so the detector is asked to be
-       * generous about noticing one rather than confident about it, and the
-       * decision about what to do with two is made in the gate.
-       */
-      minDetectionConfidence: 0.3,
-    });
-    return detector as unknown as Detector;
+    /*
+     * Deliberately low. A second face in the frame is a refusal
+     * (error_multiple_people is a documented provider failure and every face
+     * endpoint we call is single face only), so the detector is asked to be
+     * generous about noticing one rather than confident about it, and the
+     * decision about what to do with two is made in the gate.
+     */
+    const minDetectionConfidence = 0.3;
+
+    /*
+     * GPU first, CPU second, and the second attempt is not optional.
+     *
+     * The GPU delegate is what makes a detection cheap enough to run on every
+     * preview frame, so it is asked for first. But it needs a WebGL context with
+     * the extensions the runtime expects, and on some phones (older Android
+     * WebViews, some iOS builds) createFromOptions throws instead of degrading.
+     * Until 2026-09-14 that throw was caught and the detector was recorded as
+     * unavailable, which sent every frame on that phone to the colour threshold
+     * with no sign anywhere that it had happened. A CPU detector is slower and
+     * still a detector. The colour threshold is not one.
+     */
+    try {
+      const gpu = await vision.FaceDetector.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: FACE_DETECTOR_MODEL_URL, delegate: "GPU" },
+        runningMode: "IMAGE",
+        minDetectionConfidence,
+      });
+      return gpu as unknown as Detector;
+    } catch {
+      const cpu = await vision.FaceDetector.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: FACE_DETECTOR_MODEL_URL, delegate: "CPU" },
+        runningMode: "IMAGE",
+        minDetectionConfidence,
+      });
+      return cpu as unknown as Detector;
+    }
   } catch {
     return null;
   }

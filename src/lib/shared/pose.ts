@@ -196,11 +196,25 @@ export const PITCH_RATIO_TO_DEGREES = 90;
  * Where the nose tip sits between the eye line and the mouth line on a face
  * looking straight into the lens, as a share of that distance.
  *
- * PROVISIONAL, same standing as the two scales above. The nose is not halfway
- * down that span on a real face, so a pitch measured against 0.5 would report
- * every frontal face as looking up.
+ * 0.64, corrected from 0.56 on 2026-09-14. The first number was a guess, and it
+ * was a guess in the expensive direction. On a real face the tip of the nose
+ * sits roughly two thirds of the way from the line between the eyes to the
+ * centre of the mouth: the nose is long, the philtrum is short. Measuring
+ * against 0.56 read every level face as looking up by about eight degrees, and
+ * the pitch window is tightest in exactly that direction (POSE_PITCH_MAX_DEGREES
+ * is 10), so a phone held correctly at eye level sat on the edge of "Hold the
+ * phone at eye level" and any breath of head movement pushed it over. That was
+ * the line a person watched, level phone in hand, waiting for it to change.
+ *
+ * Still PROVISIONAL: it is anthropometry from a textbook, not a measurement
+ * over faces this app has seen. The keypoints it is applied to are BlazeFace's,
+ * whose mouth point is the mouth centre, which is what the two thirds is
+ * relative to. The heuristic is used only when the detector cannot solve for a
+ * head position, and the live line no longer holds on a borderline pitch from
+ * it (src/lib/client/guidance.ts), so a residual error here costs a "Use it
+ * anyway" rather than a wall.
  */
-export const NEUTRAL_NOSE_POSITION = 0.56;
+export const NEUTRAL_NOSE_POSITION = 0.64;
 
 export function poseFromLandmarks(
   landmarks: PoseLandmarks,
