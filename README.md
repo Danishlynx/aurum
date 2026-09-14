@@ -38,7 +38,7 @@ Rename each copied file to the name in the table above, review it against the an
 
 Live URL: https://aurum-danishlynxs-projects.vercel.app
 
-Judge access code: AURUM-FU625S (the plain code, published here and on the project page; only its bcrypt hash is ever stored, in `JUDGE_ACCESS_CODE_HASH`).
+Judge access code: rotated after judging closed and no longer published. Only its bcrypt hash is ever stored, in `JUDGE_ACCESS_CODE_HASH`; ask the maintainer for the current code.
 
 Enter the code at `/judge`, or follow "Judging this build? Enter your access code" from the landing screen. Your session includes 3 full analyses. The app keeps working from a saved demo profile after that. A session lasts 24 hours and carries a hard credit cap, so a capped session falls back to cached and demo data rather than to a dead screen. `/api/health` reports the build sha, the kill switch state, and which providers are configured, as booleans only.
 
