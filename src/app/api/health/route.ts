@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 
+import { globalRemainingToday } from "@/lib/server/credits";
 import {
   buildSha,
   isJudgeCodeConfigured,
@@ -19,14 +20,21 @@ import { getCreditBalance } from "@/lib/server/providers/perfectcorp";
  * boolean. No value, no prefix, no length: a health route that leaked a key
  * shape would be worse than no health route.
  *
- * This route never touches the database, so it answers on a machine with no
- * environment at all, which is what makes it useful during a deploy.
+ * It answers on a machine with no environment at all, which is what makes it
+ * useful during a deploy. Both of the numbers below are therefore best effort
+ * and both report null rather than taking the route down: the one outbound call
+ * and the one database read.
  *
- * The one outbound call it makes is the Perfect Corp credit balance, and only
- * when that key is present. It creates no task and spends nothing, and it is the
- * fastest way to know before a demo whether there are units left to spend. It is
- * strictly best effort: a slow or unhappy provider reports null rather than
- * taking the health route down with it.
+ * The outbound call is the Perfect Corp credit balance, made only when that key
+ * is present. It creates no task and spends nothing, and it is the fastest way
+ * to know before a demo whether there are units left to spend.
+ *
+ * The database read is perfectcorpGlobalRemainingToday: what is left of
+ * GLOBAL_CAP_PERFECTCORP_UNITS_PER_DAY after every owner's spend so far this UTC
+ * day. perfectcorpCredits is what the account has; this is what the deployment
+ * has agreed to spend from it before tomorrow. Watching that one number is how a
+ * run of new sessions is seen while it is happening rather than afterwards, in
+ * the balance.
  */
 
 export const runtime = "nodejs";
@@ -47,23 +55,43 @@ async function perfectCorpCreditsOrNull(configured: boolean): Promise<number | n
   }
 }
 
+/**
+ * The ledger lives in Supabase, so with no project configured there is nothing
+ * to count and null is the honest answer. A failed read is null for the same
+ * reason: a health route that fell over on a database hiccup would be useless in
+ * the moment it is most wanted.
+ */
+async function globalRemainingOrNull(configured: boolean): Promise<number | null> {
+  if (!configured) {
+    return null;
+  }
+  try {
+    return await globalRemainingToday();
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(request: NextRequest): Promise<Response> {
   return handleRoute(request, "/api/health", async () => {
     const providers = providerConfigState();
+    const supabase = isSupabaseConfigured();
     const perfectcorpCredits = await perfectCorpCreditsOrNull(providers.perfectcorp);
+    const perfectcorpGlobalRemainingToday = await globalRemainingOrNull(supabase);
     return ok({
       ok: true,
       sha: buildSha(),
       providerCallsEnabled: providerCallsEnabled(),
       time: new Date().toISOString(),
       configured: {
-        supabase: isSupabaseConfigured(),
+        supabase,
         judgeCode: isJudgeCodeConfigured(),
         perfectcorp: providers.perfectcorp,
         serpapi: providers.serpapi,
         anthropic: providers.anthropic,
       },
       perfectcorpCredits,
+      perfectcorpGlobalRemainingToday,
     });
   });
 }

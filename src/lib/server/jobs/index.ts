@@ -570,6 +570,8 @@ async function startKinds(args: {
     });
 
     if (!outcome.ok) {
+      // daily_cap and global_cap read the same to the person: no units until
+      // tomorrow. Only session_cap is about this session and has its own line.
       const message =
         outcome.reason === "session_cap"
           ? copy.errors.judgeExhausted

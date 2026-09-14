@@ -242,6 +242,8 @@ export type CreateRenderRefusal =
   | "kill_switch"
   | "daily_cap"
   | "session_cap"
+  /** The deployment's Perfect Corp allowance for the UTC day, across everyone. */
+  | "global_cap"
   | "nothing_to_render";
 
 export type CreateRenderOutcome =
@@ -654,9 +656,12 @@ export async function createRender(
     if (existing === null) {
       await deleteRender(ownerId, render.id);
     }
+    // The three cap refusals carry straight through: they are the same three
+    // names, and folding the global ceiling into daily_cap would hide the one
+    // refusal a person cannot fix by waiting for their own day to roll over.
     return {
       ok: false,
-      reason: reservation.reason === "session_cap" ? "session_cap" : "daily_cap",
+      reason: reservation.reason,
       remaining: reservation.remaining,
     };
   }
