@@ -659,6 +659,10 @@ export type AutoCropInput = {
  *      the crop without bound would push the face back under the rule the crop
  *      exists to satisfy. What gets trimmed at that limit is shoulder, not face.
  *
+ *    and then floored at the width of the face box itself, which outranks all
+ *    three: a crop narrower than the face is a face cut down the side, and no
+ *    framing rule is worth that.
+ *
  * 4. Centered on the face box, slid back inside the picture rather than shrunk,
  *    and clamped to the frame.
  *
@@ -673,6 +677,16 @@ export function autoCropBoxFor(input: AutoCropInput): Box | null {
     return null;
   }
   if (faceBox.width <= 0 || faceBox.height <= 0) {
+    return null;
+  }
+  /*
+   * A face box wider than the picture it came from cannot be composed around.
+   * Every crop below is at least as wide as the box, so there is nothing left to
+   * cut that would not be face, and null keeps the caller on the untouched
+   * frame. It is a detection that has gone wrong rather than a framing problem:
+   * the gate answers for the frame, and the engine answers for the photograph.
+   */
+  if (faceBox.width > frame.width) {
     return null;
   }
   /*
@@ -711,17 +725,33 @@ export function autoCropBoxFor(input: AutoCropInput): Box | null {
     faceBox.width / AUTO_CROP_FACE_WIDTH_TARGET / AUTO_CROP_ASPECT,
     frame.height,
   );
-  const width = Math.min(
-    /*
-     * Never landscape, whatever the box says. The provider states that "the use
-     * of a portrait aspect ratio is strongly recommended over landscape", and a
-     * box wider than it is tall is a detection this app should not be reshaping
-     * the picture around: it is the colour threshold fallback reporting a neck
-     * and two shoulders. Capping the width at the height keeps the frame the
-     * shape a face belongs in and trims shoulder rather than face.
-     */
-    Math.min(faceBox.width / AUTO_CROP_FACE_WIDTH_TARGET, height),
-    frame.width,
+  /*
+   * The floor is the face itself, and it outranks every cap above it.
+   *
+   * Each of those caps is there to stop a crop being too loose, and two of them
+   * can take the width below the width of the face box: the picture's own width
+   * on a frame narrower than the crop wants, and the height cap on a landscape
+   * frame with a wide box. A width under faceBox.width is a crop that cuts a
+   * face in half down the side, which is the one framing mistake no retry
+   * recovers and is strictly worse than the thing the caps exist to prevent.
+   * A face left a little too large in the frame is answered by the gate as
+   * too_close and by the engine as a refusal, both of which are free.
+   */
+  const width = Math.max(
+    faceBox.width,
+    Math.min(
+      /*
+       * Never landscape, whatever the box says. The provider states that "the
+       * use of a portrait aspect ratio is strongly recommended over landscape",
+       * and a box wider than it is tall is a detection this app should not be
+       * reshaping the picture around: it is the colour threshold fallback
+       * reporting a neck and two shoulders. Capping the width at the height
+       * keeps the frame the shape a face belongs in and trims shoulder rather
+       * than face.
+       */
+      Math.min(faceBox.width / AUTO_CROP_FACE_WIDTH_TARGET, height),
+      frame.width,
+    ),
   );
 
   const centerX = faceBox.x + faceBox.width / 2;

@@ -324,12 +324,27 @@ export interface DailyCaps {
 /**
  * One capture set, in Perfect Corp units, at the prices in
  * src/lib/server/credits/costs.ts: the tone reading leads at 20, then the skin
- * analysis at 16 and the face shape reading at 10.
+ * analysis at 16, the Fitzpatrick reading at 10 and the face shape reading
+ * at 10.
  *
  * Written down here because the daily cap has to be able to fit one, and until
  * 2026-09-10 it could not.
+ *
+ * It said 46 until now, which left the Fitzpatrick reading out. That was not a
+ * rounding: fitzpatrick is one of the three followers advanceFanOut starts on
+ * every single capture, so the number that was meant to be "what one capture
+ * costs" was ten units short of what one capture costs, and every ceiling
+ * derived from it was short by the same amount five times over. Hair type is
+ * the one analysis kind not counted here, because it needs three photos, never
+ * starts from this flow and never reserves a unit (requiresMorePhotos in
+ * src/lib/server/jobs/analysis.ts). docs/04-integrations.md prices all five at
+ * 58; these four are what a selfie actually buys.
+ *
+ * evals/budget/budget.test.ts derives the same total from planFor over the
+ * runnable kinds and asserts it equals this constant, so the two cannot drift
+ * apart again.
  */
-export const UNITS_PER_CAPTURE_SET = 46;
+export const UNITS_PER_CAPTURE_SET = 56;
 
 /**
  * The Perfect Corp default was 40, which is less than one capture set, and that
@@ -337,18 +352,22 @@ export const UNITS_PER_CAPTURE_SET = 46;
  * capping can never finish.
  *
  * What it did. The fan out starts the 20 unit leader alone and, when it
- * succeeds, starts the 16 unit skin reading and the 10 unit face shape reading.
- * Under a 40 unit ceiling the first two fit at 36 and the third is refused by a
- * cap it can never clear. The person has already been charged 20, and on any
- * capture where the leader landed and the skin reading did not, they were
- * charged 20 for nothing at all. The analyze route's own admission check prices
- * the cheapest kind at 10, so a capture is waved through and then runs into this
- * halfway.
+ * succeeds, starts the 16 unit skin reading, the 10 unit Fitzpatrick reading and
+ * the 10 unit face shape reading. Under a 40 unit ceiling the first two fit at
+ * 36 and the rest are refused by a cap they can never clear. The person has
+ * already been charged 20, and on any capture where the leader landed and the
+ * skin reading did not, they were charged 20 for nothing at all. The analyze
+ * route's admission check used to price the cheapest kind at 10, so a capture
+ * was waved through and then ran into this halfway.
  *
- * 240 is five capture sets and change. It is a real limit, it is per owner per
- * UTC day, and it is above the number that has to fit rather than below it. The
- * discipline against the account balance is JUDGE_CREDITS_CAP and the deployed
- * environment, not a default that breaks the product.
+ * Five capture sets, which is 280 units at the corrected price of a set. It is
+ * a real limit, it is per owner per UTC day, and it is above the number that has
+ * to fit rather than below it. The multiplication is left in the code rather
+ * than flattened to a literal, because the literal is exactly what went stale
+ * here before: the comment said 240 while the code computed 230 and neither was
+ * the price of five capture sets. The discipline against the account balance is
+ * JUDGE_CREDITS_CAP and the deployed environment, not a default that breaks the
+ * product.
  */
 export function dailyCaps(): DailyCaps {
   return {

@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { captureRejectionCopy } from "./copy";
 import type { FacePose } from "./pose";
@@ -486,11 +486,28 @@ describe("autoCropBoxFor", () => {
       { width: 576, height: 1024 },
       { width: 1080, height: 1080 },
       { width: 3024, height: 4032 },
+      /*
+       * A landscape frame, because a photo somebody else took of you is often
+       * one. It is the shape where the crop's own height cap can pull the width
+       * in under the width of the face box, which is how a composed crop came
+       * to cut a face down the side.
+       */
+      { width: 1024, height: 768 },
     ] as const;
-    const COVERAGES = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7] as const;
-    // A face box is taller than it is wide, and how much varies with hair and
-    // head turn, so the sweep covers the range a detector really reports.
-    const ASPECTS = [0.62, 0.72, 0.85] as const;
+    /*
+     * The coverages between 0.5 and 0.6 are where the width rule and the height
+     * rule disagree, which is the band this function exists for: a face that
+     * clears our own coverage minimum and is still too narrow for the engine.
+     */
+    const COVERAGES = [0.2, 0.3, 0.4, 0.5, 0.55, 0.58, 0.59, 0.6, 0.7] as const;
+    /*
+     * A face box is usually taller than it is wide, and how much varies with
+     * hair and head turn. The two values at and above 1 are the colour
+     * threshold in src/lib/client/face.ts reporting a neck and two shoulders,
+     * which is a box the geometry has to survive rather than one it can assume
+     * away.
+     */
+    const ASPECTS = [0.62, 0.72, 0.85, 0.95, 1.1] as const;
 
     function faceIn(frame: { width: number; height: number }, coverage: number, aspect: number): Box {
       const height = frame.height * coverage;
@@ -549,12 +566,25 @@ describe("autoCropBoxFor", () => {
             /*
              * And the room is asymmetric: most of what is spare goes above,
              * because that is where the forehead and the hair are and where a
-             * crop can actually fail. Unless the face was already near the top of
-             * the original picture, in which case there was never that much above
-             * it and the crop cannot invent any.
+             * crop can actually fail. Two frames where it is not, and neither is
+             * a fault:
+             *
+             * A face already near the top of the original picture. There was
+             * never that much above it and the crop cannot invent any.
+             *
+             * A crop with more spare height than the margins asked for, which is
+             * what a wide face box produces: the crop is built from the width,
+             * so a box that is nearly square makes it far taller than 1.61 face
+             * heights, the room above is capped at what was asked for
+             * (AUTO_CROP_HEAD_ROOM_ABOVE), and the remainder falls below the
+             * chin, where it is neck and costs nothing.
              */
             const spareAboveInSource = faceBox.y;
-            if (spareAboveInSource > faceBox.height) {
+            const spare = crop.height - faceBox.height;
+            const wanted =
+              faceBox.height *
+              (AUTO_CROP_HEAD_ROOM_ABOVE + AUTO_CROP_CHIN_ROOM_BELOW);
+            if (spareAboveInSource > faceBox.height && spare <= wanted) {
               expect(above, label).toBeGreaterThan(below);
             }
           }
@@ -574,6 +604,20 @@ describe("autoCropBoxFor", () => {
             const ratio = faceWidthRatio(faceBox, crop);
             const label = `${frame.width}x${frame.height} c=${coverage} a=${aspect} ratio=${ratio.toFixed(3)}`;
             expect(ratio, label).toBeGreaterThanOrEqual(FACE_WIDTH_RATIO_MIN);
+
+            /*
+             * The top of the band is the one side of this that the crop cannot
+             * always reach, and the reason is the picture rather than the
+             * geometry. When the face is already wider than the band allows of
+             * the frame it was shot in, every crop is at least that wide,
+             * because the alternative is cutting the face. The most the
+             * composition can do there is hand back the whole width, and the
+             * gate says too_close about it before anything is sent.
+             */
+            if (faceBox.width / frame.width > FACE_WIDTH_RATIO_MAX) {
+              expect(crop.width, label).toBe(frame.width);
+              continue;
+            }
             expect(ratio, label).toBeLessThanOrEqual(FACE_WIDTH_RATIO_MAX);
           }
         }
@@ -802,6 +846,41 @@ describe("autoCropBoxFor", () => {
     if (crop !== null) {
       expect(crop.width).toBeLessThanOrEqual(crop.height);
     }
+  });
+
+  /**
+   * The crop that cut a face down the side.
+   *
+   * A landscape frame with a wide, shallow box: the height cap is the frame's
+   * own 768 pixels, the width was capped at the height to keep the crop
+   * portrait, and 768 is narrower than the 800 pixel face. The crop was returned
+   * anyway, with 16 pixels of cheek missing from each side. Losing the shape of
+   * the frame is the cheaper mistake, so the face wins.
+   */
+  it("never comes in narrower than the face, even when that means landscape", () => {
+    const frame = { width: 1024, height: 768 };
+    const faceBox = { x: 112, y: 234, width: 800, height: 300 };
+    const crop = autoCropBoxFor({ faceBox, frame }) as Box;
+    expect(crop.width).toBeGreaterThanOrEqual(faceBox.width);
+    expect(crop.x).toBeLessThanOrEqual(faceBox.x);
+    expect(crop.x + crop.width).toBeGreaterThanOrEqual(
+      faceBox.x + faceBox.width,
+    );
+  });
+
+  /**
+   * And a box wider than the picture it was found in is not a framing problem at
+   * all: every crop would be at least that wide, so there is nothing to compose
+   * and the untouched frame goes to the engine, which is the party that can
+   * actually judge it.
+   */
+  it("composes nothing when the face box is wider than the frame", () => {
+    expect(
+      autoCropBoxFor({
+        faceBox: { x: 0, y: 100, width: 1200, height: 400 },
+        frame: { width: 1024, height: 768 },
+      }),
+    ).toBeNull();
   });
 
   it("refuses a box or a frame with nothing in it", () => {
@@ -1412,7 +1491,3 @@ describe("rejection copy", () => {
     );
   });
 });
-
-
-
-
