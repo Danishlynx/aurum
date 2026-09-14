@@ -1,6 +1,7 @@
+import { redirect } from "next/navigation";
+
 import { CaptureScreen } from "@/components/capture/CaptureScreen";
-import { judgeAnalysesCapReached } from "@/lib/server/judge";
-import { readJudgeSessionFromCookie } from "@/lib/server/judge/guard";
+import { readCaptureEntry } from "@/lib/server/capture/entry";
 
 /**
  * D. Capture, docs/01-user-flow.md section D.
@@ -9,27 +10,33 @@ import { readJudgeSessionFromCookie } from "@/lib/server/judge/guard";
  * the hash, and the quality gate all run in the browser so a bad frame never
  * costs a credit and a raw file never leaves the phone unmeasured.
  *
- * The one thing the server decides is whether to offer the camera at all.
- * docs/01-user-flow.md, "Judge mode across the flow": at zero remaining analyses
- * "capture is disabled" and every screen renders from the demo profile. Deciding
- * that here rather than after a photo is taken is the difference between a
- * disabled screen and a screen that lets someone frame a selfie, take it, and
- * only then be told it will not be read.
+ * The server decides two things before offering it, both in
+ * src/lib/server/capture/entry.ts.
  *
+ * Whether there is a consented session to send the photo to. Section C comes
+ * before section D, and with open access on this page sends a device without a
+ * session, or with one that has run out, to the consent screen before a photo
+ * is framed. Until 2026-09-14 that person took the photo first and was told
+ * "Upload did not complete" second.
+ *
+ * Whether to offer the camera at all. docs/01-user-flow.md, "Judge mode across
+ * the flow": at zero remaining analyses "capture is disabled" and every screen
+ * renders from the demo profile. Deciding that here rather than after a photo is
+ * taken is the difference between a disabled screen and a screen that lets
+ * someone frame a selfie, take it, and only then be told it will not be read.
  * That is the answer while JUDGE_PER_SESSION_CAPS is on (src/lib/server/env.ts).
  * With it off the camera is offered to every judge session, whatever its count
  * says, and the deployment wide Perfect Corp ceiling is what stops the spend.
- *
- * A judge session is read from its cookie alone, never through Supabase Auth, so
- * this page still renders on a build with no project configured.
  */
 
-/** The page reads the judge cookie, so it is never statically rendered. */
+/** The page reads the session cookie, so it is never statically rendered. */
 export const dynamic = "force-dynamic";
 
 export default async function CapturePage() {
-  const judge = await readJudgeSessionFromCookie();
-  const exhausted = judge !== null && judgeAnalysesCapReached(judge);
+  const entry = await readCaptureEntry();
+  if (entry.kind === "welcome") {
+    redirect("/welcome");
+  }
 
-  return <CaptureScreen analysesExhausted={exhausted} />;
+  return <CaptureScreen analysesExhausted={entry.analysesExhausted} />;
 }

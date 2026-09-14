@@ -203,6 +203,31 @@ describe("guidanceKey", () => {
   });
 
   /**
+   * The reading off a phone on 2026-09-14: face filling the oval, phone level,
+   * pitch three degrees, box middle at 0.58. The old threshold of 0.55 held
+   * that frame at "Hold the phone at eye level" against a measured pitch the
+   * engine takes. The proxy was only ever a guess at pitch, so it is not asked
+   * once pitch has been measured, and its threshold now sits above where a
+   * correctly framed face reads.
+   */
+  it("does not second guess a measured pitch with the face position", () => {
+    const level = { yawDegrees: 1, pitchDegrees: 3, rollDegrees: 1 };
+    expect(
+      guidanceKey({ ...READY, faceCenterY: 0.58, pose: level }),
+    ).toBe("ready");
+    // Even a middle the proxy would call low is not the proxy's call when the
+    // detector has said the head is level.
+    expect(
+      guidanceKey({ ...READY, faceCenterY: 0.8, pose: level }),
+    ).toBe("ready");
+    // Without a pose the proxy still speaks, and 0.58 is a framed face.
+    expect(guidanceKey({ ...READY, faceCenterY: 0.58 })).toBe("ready");
+    expect(
+      guidanceKey({ ...READY, faceCenterY: FACE_CENTER_TOO_LOW_ABOVE + 0.01 }),
+    ).toBe("eyeLevel");
+  });
+
+  /**
    * The pose lines, added 2026-09-07 with the detector that can measure one.
    *
    * Every refusal this product has read off the live API has been about pose,

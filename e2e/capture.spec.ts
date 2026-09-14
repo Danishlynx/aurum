@@ -278,9 +278,11 @@ test.describe("the camera itself", () => {
    *
    * On 2026-09-03 a founder on a Samsung S26 Ultra was told "Good. Tap to
    * capture." and then, on that same frame, "A little blurry. Hold still and tap
-   * again." Softness no longer refuses a frame (src/lib/shared/quality.ts), so
-   * the words are the same and the way through is on the screen underneath them.
-   * This proves the way through is there, is the documented copy, and is where a
+   * again." Softness no longer flags a frame at all (src/lib/shared/quality.ts,
+   * 2026-09-14), so the borderline this test walks is the one the gate still
+   * offers rather than refuses: a face running into the edge of the picture,
+   * which the engine refuses and a tighter crop cannot fix. What is proved is
+   * unchanged: the way through is there, is the documented copy, and is where a
    * thumb is already looking: directly under Retake, the same full width, the
    * same 52px, both above the fold of a phone.
    *
@@ -301,18 +303,30 @@ test.describe("the camera itself", () => {
       }),
     );
 
+    /*
+     * The face model is kept out of this test on purpose. A painted rectangle
+     * is not a face to a detector, and a detector that has looked and seen
+     * nothing is a refusal, not a borderline. With the model unreachable the
+     * gate reads the frame with the colour threshold, which is the same on every
+     * machine this runs on, and which finds exactly one skin region here.
+     */
+    await page.route("https://cdn.jsdelivr.net/**", (route) => route.abort());
+    await page.route("https://storage.googleapis.com/**", (route) =>
+      route.abort(),
+    );
+
     await page.goto("/capture");
     await expect(
       page.getByRole("button", { name: copy.capture.shutterLabel }),
     ).toBeVisible();
 
     /*
-     * A frame the gate reads as one face, well lit, well framed, and completely
-     * soft. The face region is flat skin chroma; the ground behind it is a
-     * colour with the same luminance and a chroma outside the skin range, so the
-     * grayscale the gate measures is flat everywhere (sharpness zero, the limit
-     * motion blur converges to) while the skin heuristic still finds exactly one
-     * region filling 72 percent of the frame height.
+     * A frame the gate reads as one face, well lit, wide enough to need no
+     * crop, and cut off at the top of the picture. The face region is flat skin
+     * chroma; the ground behind it is a colour with the same luminance and a
+     * chroma outside the skin range, so the skin heuristic finds exactly one
+     * region, 0.66 of the width and 0.7 of the height, touching the top edge.
+     * That is the borderline the gate calls face_out_of_bounds.
      */
     const dataUrl = await page.evaluate(() => {
       const canvas = document.createElement("canvas");
@@ -325,11 +339,11 @@ test.describe("the camera itself", () => {
       context.fillStyle = "rgb(120, 175, 150)";
       context.fillRect(0, 0, canvas.width, canvas.height);
       context.fillStyle = "rgb(205, 150, 120)";
-      const faceHeight = Math.round(canvas.height * 0.72);
-      const faceWidth = Math.round(faceHeight * 0.68);
+      const faceWidth = Math.round(canvas.width * 0.66);
+      const faceHeight = Math.round(canvas.height * 0.7);
       context.fillRect(
         Math.round((canvas.width - faceWidth) / 2),
-        Math.round((canvas.height - faceHeight) / 2),
+        0,
         faceWidth,
         faceHeight,
       );
@@ -339,13 +353,15 @@ test.describe("the camera itself", () => {
     await page
       .locator('main input[type="file"]')
       .setInputFiles({
-        name: "soft.png",
+        name: "clipped.png",
         mimeType: "image/png",
         buffer: Buffer.from(dataUrl.split(",")[1] ?? "", "base64"),
       });
 
     // The words, from src/lib/shared/copy.ts and nowhere else.
-    await expect(page.getByText(copy.capture.rejection.blurry)).toBeVisible();
+    await expect(
+      page.getByText(copy.capture.rejection.face_out_of_bounds),
+    ).toBeVisible();
 
     const retake = page.getByRole("button", { name: copy.capture.retakeAction });
     const useAnyway = page.getByRole("button", {

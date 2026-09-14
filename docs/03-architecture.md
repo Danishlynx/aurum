@@ -231,7 +231,8 @@ The five capture analyses run in parallel from the same uploaded object. Perfect
 - Perfect Corp down: jobs fail with the timed out copy; the report renders whatever succeeded; judge sessions fall back to the demo profile.
 - SerpApi quota exhausted: routine rows show the product type and "No listing found near you yet"; the app never invents a listing.
 - Claude API error: the reading block shows a deterministic fallback built from the ranked concerns ("Main concern: pigmentation on the cheekbones. Skin type: combination.") and the stylist ranks looks by the rules alone with a one line rule based rationale.
-- Supabase storage error on upload: capture screen shows "Upload did not complete. Your photo was not saved. Try again."
+- Supabase storage error on upload: capture screen shows "Upload did not complete. Your photo was not saved. Try again.", with a second line naming the step and the status ("Stopped while saving the photo. The server answered 500.").
+- No session, or no consent, at the register or analyze call (401 or 403): the capture screen goes to /welcome, which records consent and, with open access on, mints the session. It is not an upload failure and is not shown as one. With open access on, /capture itself sends a device without a consented session there before a photo is framed.
 - Credits nearly out during judging: flip the kill switch; the app keeps working from cache and the demo profile.
 
 ## Security boundaries in code
