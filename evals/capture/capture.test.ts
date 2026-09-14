@@ -113,11 +113,18 @@ const bad: readonly {
     reason: "over_exposed",
   },
   {
+    /*
+     * Under FACE_COVERAGE_REJECT_BELOW, which since 2026-09-14 is the only
+     * height the gate refuses on: a face this small at sensor size is one no
+     * crop can rescue without upscaling into a frame the engine refuses anyway.
+     * 24 of 120 is a fifth of the frame. Everything between this and the
+     * engine's width rule is the composition step's job, not a refusal.
+     */
     name: "face far too small in the frame",
     input: {
       image: goodFrame,
       faceCount: 1,
-      faceBox: { x: 45, y: 45, width: 24, height: 30 },
+      faceBox: { x: 48, y: 48, width: 20, height: 24 },
     },
     reason: "too_far",
   },
@@ -154,7 +161,16 @@ describe("eval:capture, gate logic on synthetic frames", () => {
    * (Samsung S26 Ultra, indoors at night, 2026-09-03), so the disagreement is
    * now settled in the person's favour and the engine gets to answer.
    */
-  it("offers a soft frame rather than refusing it, at any sharpness", () => {
+  /**
+   * Softness decides nothing at the gate, since 2026-09-14. It was a borderline
+   * before that, which is a review screen with Retake as the primary answer and
+   * in practice a wall, held against a threshold set from synthetic patterns
+   * that a smooth face could read under at any focus. The engine publishes no
+   * blur code, the burst sends the sharpest of five frames, and the number is
+   * still recorded in the metrics for calibration. So a soft frame is accepted
+   * and the engine, whose input gate is free, judges it.
+   */
+  it("accepts a soft frame at any sharpness, and records the number", () => {
     for (const contrast of [0, 1, 2, 4]) {
       const soft = image((x, y) =>
         (x + y) % 2 === 0 ? 128 - contrast / 2 : 128 + contrast / 2,
@@ -164,25 +180,22 @@ describe("eval:capture, gate logic on synthetic frames", () => {
         faceCount: 1,
         faceBox: GOOD_FACE_BOX,
       });
-      expect(result.verdict).not.toBe("reject");
-      if (result.metrics.sharpness < SHARPNESS_BORDERLINE_BELOW) {
-        expect(result.verdict).toBe("borderline");
-        expect(result.reason).toBe("blurry");
-        expect(result.canUseAnyway).toBe(true);
-      }
+      expect(result.verdict).toBe("accept");
+      expect(
+        result.failures.some((failure) => failure.reason === "blurry"),
+      ).toBe(false);
+      expect(Number.isFinite(result.metrics.sharpness)).toBe(true);
     }
   });
 
-  it("puts the flattest frame there is on borderline, not on reject", () => {
+  it("accepts the flattest frame there is", () => {
     const result = assessCapture({
       image: blurryFrame,
       faceCount: 1,
       faceBox: GOOD_FACE_BOX,
     });
     expect(result.metrics.sharpness).toBe(0);
-    expect(result.verdict).toBe("borderline");
-    expect(result.reason).toBe("blurry");
-    expect(result.canUseAnyway).toBe(true);
+    expect(result.verdict).toBe("accept");
   });
 
   it("keeps reject for the frames a credit cannot survive, and no others", () => {

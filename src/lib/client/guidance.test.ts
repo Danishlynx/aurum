@@ -3,7 +3,11 @@
 import { copy } from "@/lib/shared/copy";
 import {
   FACE_COVERAGE_MIN,
+  FACE_COVERAGE_REJECT_BELOW,
   MEAN_LUMINANCE_BORDERLINE_BELOW,
+  POSE_PITCH_MAX_DEGREES,
+  POSE_SLACK_DEGREES,
+  POSE_YAW_MAX_DEGREES,
   SHARPNESS_BORDERLINE_BELOW,
   SHARPNESS_MEASURE_LONG_EDGE,
   assessCapture,
@@ -14,6 +18,7 @@ import type { Box, GrayscaleImage } from "@/lib/shared/quality";
 import {
   FACE_CENTER_TOO_LOW_ABOVE,
   GUIDANCE_SAMPLE_LONG_EDGE,
+  LIVE_FACE_WIDTH_RATIO_MIN,
   MOTION_STILL_AT_OR_BELOW,
   guidanceKey,
   guidanceLine,
@@ -38,11 +43,20 @@ import {
  * cannot measure directly but which shows up as a face slid low in the frame.
  */
 
-/** A frame with nothing wrong with it: lit, framed, held still, eye level. */
+/**
+ * A frame with nothing wrong with it: lit, framed, held still, eye level.
+ *
+ * faceWidthRatio is the framing number the line reads since 2026-09-14, at a
+ * value a face filling the oval actually produces on a 3 by 4 preview (about
+ * half, before the crop lifts it to the engine's 0.66). faceCoverage stays
+ * because the line still refuses on a face too small to crop at all.
+ */
 const READY: LiveFrameStats = {
   meanLuminance: 140,
-  faceCoverage: 0.7,
+  faceCoverage: 0.5,
+  faceWidthRatio: 0.5,
   faceCenterY: 0.42,
+  faceEstimateTrusted: true,
   motion: 0,
   sharpness: SHARPNESS_BORDERLINE_BELOW * 4,
 };
@@ -94,10 +108,15 @@ describe("guidanceKey", () => {
 
   it("still asks for the distance when the face is where it should be", () => {
     expect(
-      guidanceKey({ ...READY, faceCoverage: FACE_COVERAGE_MIN - 0.1 }),
+      guidanceKey({ ...READY, faceWidthRatio: LIVE_FACE_WIDTH_RATIO_MIN - 0.1 }),
     ).toBe("closer");
     expect(
-      guidanceKey({ ...READY, faceCoverage: null, faceCenterY: null }),
+      guidanceKey({
+        ...READY,
+        faceCoverage: null,
+        faceWidthRatio: null,
+        faceCenterY: null,
+      }),
     ).toBe("closer");
   });
 
@@ -106,32 +125,81 @@ describe("guidanceKey", () => {
     // carried the optional field reads exactly as a good frame would.
     const withoutTheField: LiveFrameStats = {
       meanLuminance: 140,
-      faceCoverage: 0.7,
+      faceCoverage: 0.5,
+      faceWidthRatio: 0.5,
       motion: 0,
       sharpness: READY.sharpness,
     };
     expect(guidanceKey(withoutTheField)).toBe("ready");
   });
 
-  it("says hold still for a moving frame and for a soft one alike", () => {
+  it("says hold still for a moving frame, and for nothing else", () => {
     expect(guidanceKey({ ...READY, motion: MOTION_STILL_AT_OR_BELOW + 1 })).toBe(
       "hold",
     );
-    expect(
-      guidanceKey({ ...READY, sharpness: SHARPNESS_BORDERLINE_BELOW - 1 }),
-    ).toBe("hold");
-    // And at the line itself the frame is good, the same way the gate reads it.
-    expect(guidanceKey({ ...READY, sharpness: SHARPNESS_BORDERLINE_BELOW })).toBe(
+    expect(guidanceKey({ ...READY, motion: MOTION_STILL_AT_OR_BELOW })).toBe(
       "ready",
     );
   });
 
-  it("never promises a frame the gate would then call blurry", () => {
+  /**
+   * Softness never holds the line, since 2026-09-14. The threshold it used to
+   * be held against was set from synthetic stripes, and a smooth face at
+   * preview size can read under it at any focus, which is a line that never
+   * says "Good" and a person who never learns why. The gate no longer flags
+   * softness either (assessCapture), so the promise "Good" makes still holds;
+   * and the burst sends the sharpest of five frames, which answers a soft
+   * moment better than asking a person to wait for a sharp one.
+   */
+  it("says good at any sharpness, because the gate no longer flags it", () => {
     for (const sharpness of [0, 1, 30, 59, 60, 61, 500]) {
-      const said = guidanceKey({ ...READY, sharpness });
-      const flagged = sharpness < SHARPNESS_BORDERLINE_BELOW;
-      expect(said === "ready").toBe(!flagged);
+      expect(guidanceKey({ ...READY, sharpness })).toBe("ready");
     }
+  });
+
+  /**
+   * The framing question is asked about the frame the gate will see, which is
+   * the composed one. The crop lifts a face to 0.66 of the width from almost
+   * anything, so the live line asks only whether there is enough face to crop.
+   */
+  it("asks for closer only under the live width floor", () => {
+    expect(
+      guidanceKey({ ...READY, faceWidthRatio: LIVE_FACE_WIDTH_RATIO_MIN - 0.01 }),
+    ).toBe("closer");
+    expect(
+      guidanceKey({ ...READY, faceWidthRatio: LIVE_FACE_WIDTH_RATIO_MIN }),
+    ).toBe("ready");
+    // A face a detector would report for somebody filling the oval on a 3 by 4
+    // preview is about half the width. The old height rule called that too far.
+    expect(
+      guidanceKey({ ...READY, faceCoverage: 0.45, faceWidthRatio: 0.48 }),
+    ).toBe("ready");
+    // No width at all is no face at all.
+    expect(guidanceKey({ ...READY, faceWidthRatio: null })).toBe("closer");
+  });
+
+  it("still asks for closer on a face too small to crop", () => {
+    expect(
+      guidanceKey({
+        ...READY,
+        faceCoverage: FACE_COVERAGE_REJECT_BELOW - 0.01,
+        faceWidthRatio: 0.45,
+      }),
+    ).toBe("closer");
+  });
+
+  /**
+   * The colour threshold's box runs into the neck, so where its middle sits
+   * says nothing about the phone. Only a detector's box gets the eye level line
+   * from position.
+   */
+  it("does not read the phone height off a colour threshold box", () => {
+    expect(
+      guidanceKey({ ...READY, faceCenterY: 0.7, faceEstimateTrusted: false }),
+    ).toBe("ready");
+    expect(
+      guidanceKey({ ...READY, faceCenterY: 0.7, faceEstimateTrusted: true }),
+    ).toBe("eyeLevel");
   });
 
   /**
@@ -190,6 +258,37 @@ describe("guidanceKey", () => {
         pose: { yawDegrees: 0, pitchDegrees: -40, rollDegrees: 0 },
       }),
     ).toBe("eyeLevel");
+  });
+
+  /**
+   * A pose the gate would merely flag does not hold the line, since 2026-09-14.
+   * The gate offers a borderline pose with "Use it anyway", the burst sends the
+   * squarest of five frames, and the pitch estimate off four keypoints is a
+   * heuristic that held a level phone at "Hold the phone at eye level" for as
+   * long as the person cared to wait. Only a pose the gate would refuse holds.
+   */
+  it("lets a borderline pose through and holds only a refused one", () => {
+    const justOutside = POSE_YAW_MAX_DEGREES + 1;
+    expect(
+      guidanceKey({
+        ...READY,
+        pose: { yawDegrees: justOutside, pitchDegrees: 0, rollDegrees: 0 },
+      }),
+    ).toBe("ready");
+    const pitchJustOver = POSE_PITCH_MAX_DEGREES + 1;
+    expect(
+      guidanceKey({
+        ...READY,
+        pose: { yawDegrees: 0, pitchDegrees: pitchJustOver, rollDegrees: 0 },
+      }),
+    ).toBe("ready");
+    const refused = POSE_YAW_MAX_DEGREES + POSE_SLACK_DEGREES + 1;
+    expect(
+      guidanceKey({
+        ...READY,
+        pose: { yawDegrees: refused, pitchDegrees: 0, rollDegrees: 0 },
+      }),
+    ).toBe("square");
   });
 
   it("answers pose before framing, because framing cannot fix a turned head", () => {
@@ -312,18 +411,23 @@ describe("the live line and the gate, on the same face", () => {
   /**
    * The whole point. "Good. Tap to capture." is a promise about what the next
    * tap will do, so for every frame in the sweep the line and the verdict have
-   * to be the same fact.
+   * to be the same fact. Since 2026-09-14 that fact is: softness flags nothing
+   * on either side. The sweep still runs the full contrast range, on the same
+   * face, through both, and asserts that neither of them ever mentions it.
    */
-  it("says good exactly when the gate would not flag the frame", () => {
+  it("says good at every contrast, and the gate never flags softness either", () => {
     for (const contrast of CONTRASTS) {
+      const previewBox = faceBoxIn(PREVIEW.width, PREVIEW.height);
       const said = guidanceKey({
         meanLuminance: meanLuminanceOf(bands(PREVIEW.width, PREVIEW.height, contrast)),
-        faceCoverage: FACE_COVERAGE_MIN,
+        faceCoverage: previewBox.height / PREVIEW.height,
+        faceWidthRatio: previewBox.width / Math.min(PREVIEW.width, PREVIEW.height),
         faceCenterY: 0.42,
+        faceEstimateTrusted: true,
         motion: 0,
         sharpness: sharpnessOf(
           bands(PREVIEW.width, PREVIEW.height, contrast),
-          faceBoxIn(PREVIEW.width, PREVIEW.height),
+          previewBox,
         ),
       });
 
@@ -334,8 +438,9 @@ describe("the live line and the gate, on the same face", () => {
       });
       const flagged = verdict.failures.some((failure) => failure.reason === "blurry");
 
-      expect(said === "ready").toBe(!flagged);
-      // And whatever it decided, the frame is never refused for softness.
+      expect(said).toBe("ready");
+      expect(flagged).toBe(false);
+      // And whatever else it decided, the frame is never refused for softness.
       expect(verdict.verdict).not.toBe("reject");
     }
   });
