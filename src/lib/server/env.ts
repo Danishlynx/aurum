@@ -392,7 +392,7 @@ export function dailyCaps(): DailyCaps {
  * may this person spend"; they cannot answer "how much may everybody spend",
  * and the account balance is a single shared number.
  *
- * The default, UNITS_PER_CAPTURE_SET * 10, is 460: room for ten full analyses a
+ * The default, UNITS_PER_CAPTURE_SET * 10, is 560: room for ten full analyses a
  * day across everyone put together, which is more than a demo day needs, and
  * small enough that a runaway costs at most one day of that before the ceiling
  * stops it. It is deliberately not sized from the balance, because the code

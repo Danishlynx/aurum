@@ -163,8 +163,9 @@ describe("eval:budget, the deployment wide Perfect Corp ceiling", () => {
   it("defaults to ten capture sets a day", () => {
     // Ten full analyses a day across everyone put together. More than a demo day
     // needs, and small enough that a runaway costs at most one day of it.
+    // Derived, never written down: a literal here drifted the day the capture
+    // set was repriced, and pinned the ceiling to a number that was no longer true.
     expect(globalDailyCap()).toBe(UNITS_PER_CAPTURE_SET * 10);
-    expect(globalDailyCap()).toBe(460);
   });
 
   it("lets the deployed environment set the real number", () => {
