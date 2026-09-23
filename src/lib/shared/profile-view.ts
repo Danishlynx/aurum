@@ -279,6 +279,24 @@ const downloadAnalysisSchema = z.strictObject({
   summary: z.unknown(),
 });
 
+/**
+ * One capture, as the record of what the gate measured on it.
+ *
+ * docs/06-safety-privacy.md, "Retention": the gate's numbers (face width ratio,
+ * pose angles, brightness, blink, frame size) are kept with the capture, and
+ * the same doc promises that what is stored is what "Download my data" shows.
+ * So the numbers are here. The hash, the storage path and the object itself
+ * are not: the first is an identifier for the cache, the other two are the
+ * photo, and the export is text about what is stored, never a copy of it.
+ */
+const downloadCaptureSchema = z.strictObject({
+  createdAt: z.string(),
+  width: z.number().nullable(),
+  height: z.number().nullable(),
+  /** captures.quality as stored, numbers only (migration 0015). */
+  quality: z.unknown(),
+});
+
 const downloadGarmentSchema = z.strictObject({
   id: z.string(),
   type: z.string().nullable(),
@@ -327,6 +345,7 @@ export const profileDownloadSchema = z.strictObject({
   /** One plain sentence saying what the file holds and what it does not. */
   note: z.string(),
   profile: downloadProfileSchema,
+  captures: z.array(downloadCaptureSchema),
   analyses: z.array(downloadAnalysisSchema),
   garments: z.array(downloadGarmentSchema),
   looks: z.array(downloadLookSchema),

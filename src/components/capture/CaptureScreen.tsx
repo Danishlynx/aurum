@@ -8,16 +8,15 @@ import { UploadInstead } from "@/components/capture/UploadInstead";
 import { Column } from "@/components/layout/Column";
 import { Button, ButtonLink } from "@/components/ui/Button";
 import { SkeletonRow } from "@/components/ui/SkeletonRow";
-import {
-  createCapture,
-  startAnalysis,
-  uploadCaptureImage,
-} from "@/lib/client/api";
+import { createCapture, uploadCaptureImage } from "@/lib/client/api";
+import type { CaptureQualityPayload } from "@/lib/client/api";
 import { rememberCapturePreview } from "@/lib/client/capture-handoff";
 import {
   bindCaptureSource,
   rememberCaptureSource,
+  startAnalysisWithOneRetry,
 } from "@/lib/client/capture-source";
+import { currentPlatform } from "@/lib/client/platform";
 import { decrementJudgeRemaining } from "@/lib/client/judge-session";
 import { detectFaces } from "@/lib/client/landmarks";
 import {
@@ -173,6 +172,12 @@ type LiveReadout = {
   readonly stats: LiveFrameStats;
   readonly key: GuidanceKey;
 };
+
+/**
+ * How a frame reached the gate on this screen. The third value, "reframe", is
+ * the reveal's tighter crop and is written by src/lib/client/capture-source.ts.
+ */
+type CapturePath = Extract<CaptureQualityPayload["path"], "camera" | "gallery">;
 
 function fixed(value: number | null | undefined, digits: number): string {
   return value === null || value === undefined ? "-" : value.toFixed(digits);
@@ -397,9 +402,18 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
   const previousSampleRef = useRef<ArrayLike<number> | null>(null);
   /** Stops the interval stacking detections it has not waited for. */
   const sampleInFlightRef = useRef(false);
+  /**
+   * The borderline frame waiting on "Use it anyway", with everything the upload
+   * needs to describe it. faceSource and path travel with it because a row
+   * without them cannot be read later: until 2026-09-23 handleUseAnyway sent
+   * the frame without its estimator, so every borderline row lost its provenance
+   * at the one moment provenance mattered most.
+   */
   const pendingRef = useRef<{
     canvas: HTMLCanvasElement;
     assessment: CaptureAssessment;
+    faceSource: FaceEstimateSource;
+    path: CapturePath;
   } | null>(null);
   /**
    * The still that froze on the screen when the shutter was tapped. It is the
@@ -639,7 +653,9 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
        * fallback are not the same claim, and the thresholds all of this is
        * calibrated against have to be set from the first kind only.
        */
-      faceSource: FaceEstimateSource | null = null,
+      faceSource: FaceEstimateSource,
+      /** The shutter or "Upload instead", for the same column. */
+      path: CapturePath,
     ) => {
       setPhase({ name: "working" });
 
@@ -665,7 +681,18 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
           verdict: assessment.verdict,
           reason: assessment.reason,
           ...assessment.metrics,
-          ...(faceSource === null ? {} : { faceSource }),
+          faceSource,
+          /*
+           * The calibration fields this build can already fill. A frame is
+           * measured when a face model drew its box; the colour threshold
+           * fallback measures skin coloured area and its numbers must never
+           * move a threshold. The frame sizes, the oval luma and the blink land
+           * with the master frame and the landmarker in later PRs.
+           */
+          measured: faceSource !== "skin_region",
+          platform: currentPlatform(),
+          path,
+          attempt: 1,
         },
       });
 
@@ -709,7 +736,15 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         }
       }
 
-      const started = await startAnalysis(created.data.captureId);
+      /*
+       * Asked once more on a transport failure, because the first request may
+       * have landed. POST analyze creates the leader task and charges 20 units
+       * for it before it answers; a response lost on the way back used to leave
+       * that capture paid for and never polled. The route is idempotent for a
+       * capture that already has jobs, so the second ask finds the first one's
+       * work or does it (src/lib/client/capture-source.ts says the rest).
+       */
+      const started = await startAnalysisWithOneRetry(created.data.captureId);
       if (!started.ok) {
         if (started.kind === "capped") {
           setPhase({ name: "capped" });
@@ -755,7 +790,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
   // -------------------------------------------------------------------------
 
   const assess = useCallback(
-    async (canvas: HTMLCanvasElement) => {
+    async (canvas: HTMLCanvasElement, path: CapturePath) => {
       setPhase({ name: "working" });
 
       /*
@@ -785,11 +820,11 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       const { assessment, faceSource } = await readFrame(canvas);
 
       if (assessment.verdict === "accept") {
-        await upload(canvas, assessment, faceSource);
+        await upload(canvas, assessment, faceSource, path);
         return;
       }
 
-      pendingRef.current = { canvas, assessment };
+      pendingRef.current = { canvas, assessment, faceSource, path };
       setPhase({
         name: "review",
         // Non null for every verdict other than accept.
@@ -923,7 +958,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
        * as they were: one detection on one canvas, against a burst that has
        * already run five.
        */
-      await assess(winner.canvas);
+      await assess(winner.canvas, "camera");
     })();
   }
 
@@ -953,7 +988,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       // retry crops tighter.
       rememberCaptureSource(composed.source);
       freeze(composed.canvas);
-      await assess(composed.canvas);
+      await assess(composed.canvas, "gallery");
     })();
   }
 
@@ -1002,7 +1037,12 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     if (pending === null) {
       return;
     }
-    void upload(pending.canvas, pending.assessment);
+    void upload(
+      pending.canvas,
+      pending.assessment,
+      pending.faceSource,
+      pending.path,
+    );
   }
 
   // -------------------------------------------------------------------------

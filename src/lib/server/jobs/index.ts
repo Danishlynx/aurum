@@ -69,9 +69,11 @@ import {
  * retry    one automatic retry for a transient failure, attempts capped at 2
  * idempotency  creating a job for a subject that already has one running
  *          returns the running job
- * timeout  a job running longer than 120 seconds fails with the timeout copy,
- *          and is NOT refunded: the task is still at the provider and will be
- *          charged whether or not we ever read it
+ * timeout  a job running longer than 120 seconds is read one last time; a
+ *          result that landed is stored, a refusal is refunded, and a task
+ *          still running fails with the timeout copy and is NOT refunded: it
+ *          is still at the provider and will be charged whether or not we
+ *          ever read it
  *
  * The order the analyses are started in, and why it is not all at once.
  *
@@ -196,11 +198,19 @@ function viewOf(
  * It is written where the code is known (failJob) and read back with zod like
  * any other stored shape, so a row written by an older build simply has no
  * class rather than breaking a poll.
+ *
+ * elapsed_ms, since 2026-09-23, is how long the job had been open when the
+ * refusal was written (jobs.created_at to now). The calibration report reads it
+ * beside the code so a refusal that arrived at 115 seconds can be told from one
+ * that arrived at 2, which is the difference between a slow engine and a frame
+ * it would not read. The jobs table has no poll counter column (attempts counts
+ * tasks, not reads), so only the elapsed time is recorded.
  */
 const refusalNoteSchema = z.object({
   refusal: z.object({
     reason: z.enum(ANALYSIS_FAILURE_REASONS),
     code: z.string().nullable().optional(),
+    elapsed_ms: z.number().nonnegative().nullable().optional(),
   }),
 });
 
@@ -209,8 +219,23 @@ export interface AnalysisRefusal {
   readonly code: string | null;
 }
 
-function refusalNote(refusal: AnalysisRefusal) {
-  return { refusal: { reason: refusal.reason, code: refusal.code } };
+/** Milliseconds from the job row's creation to now, never negative. */
+function elapsedSince(createdAt: string, now = Date.now()): number {
+  const started = Date.parse(createdAt);
+  if (!Number.isFinite(started)) {
+    return 0;
+  }
+  return Math.max(0, now - started);
+}
+
+function refusalNote(refusal: AnalysisRefusal, elapsedMs: number) {
+  return {
+    refusal: {
+      reason: refusal.reason,
+      code: refusal.code,
+      elapsed_ms: Math.round(elapsedMs),
+    },
+  };
 }
 
 function refusalReasonOf(analysis: Analysis): AnalysisFailureReason | null {
@@ -714,7 +739,9 @@ async function cancelWaitingKinds(args: {
       status: "failed",
       error: args.message,
       credits_used: 0,
-      ...(args.refusal === undefined ? {} : { raw: refusalNote(args.refusal) }),
+      ...(args.refusal === undefined
+        ? {}
+        : { raw: refusalNote(args.refusal, elapsedSince(job.created_at)) }),
     });
     await writeJob({
       ownerId: args.ownerId,
@@ -944,7 +971,9 @@ async function failJob(args: {
     status: "failed",
     error: args.message,
     credits_used: 0,
-    ...(args.refusal === undefined ? {} : { raw: refusalNote(args.refusal) }),
+    ...(args.refusal === undefined
+      ? {}
+      : { raw: refusalNote(args.refusal, elapsedSince(args.job.created_at)) }),
   });
   await updateJob(args.job.id, {
     status: "failed",
@@ -1110,21 +1139,40 @@ export async function pollCaptureJobs(
      * buying a second copy of the reading. That makes this the branch that has
      * to be honest about the money.
      *
+     * Honest about the money cuts both ways, and until 2026-09-23 this branch
+     * was only honest about one of them. It closed the job as charged without
+     * asking the provider once more, so a result that landed at 115 seconds and
+     * was first polled at 125 (a backgrounded tab, a slow phone) was paid for,
+     * present at the provider, and thrown away unread. The task is therefore
+     * read one last time below, on the same path an ordinary poll takes: a
+     * result that is there is stored, a refusal is refunded, and only a task
+     * that is genuinely still running is closed as charged. The lifetime decides
+     * what happens to a task that has not answered; it never decides to ignore
+     * one that has.
+     *
      * A job that never started (a follower still pending, no task, no
-     * reservation) passes through the same call and settles nothing, because
-     * there is nothing to settle.
+     * reservation) has nothing to read: past the lifetime it is closed with the
+     * timeout line and credits_used 0, because nothing was reserved for it. That
+     * is also what becomes of the followers of a leader whose result landed
+     * late. Every job of a capture is written at analyze time, so the followers
+     * are as old as the leader and expire in the same pass; the late leader is
+     * stored and paid for, its followers are closed unstarted and unpaid, and
+     * the profile is not built from that capture. Starting them would be worse:
+     * they would expire on the very next poll and be closed as charged. A
+     * follower lifetime measured from its own start belongs with the reconcile
+     * work (docs/03-architecture.md, Jobs).
      */
-    if (Date.now() - Date.parse(job.created_at) > JOB_LIFETIME_MS) {
-      await failChargedJob({
-        session: input.session,
-        job,
-        analysis,
-        message: copy.errors.providerTimeout,
-      });
-      continue;
-    }
+    const expired = Date.now() - Date.parse(job.created_at) > JOB_LIFETIME_MS;
 
     if (job.provider_task_id === null) {
+      if (expired) {
+        await failChargedJob({
+          session: input.session,
+          job,
+          analysis,
+          message: copy.errors.providerTimeout,
+        });
+      }
       continue;
     }
 
@@ -1235,10 +1283,52 @@ export async function pollCaptureJobs(
             captureId,
           });
         }
+        continue;
       }
-      // Still running: last_polled_at was already stamped by the claim.
+
+      /*
+       * Still running. Inside the lifetime, last_polled_at was already stamped
+       * by the claim and the next poll asks again. Past it, this is the task the
+       * whole branch above is about: not refused, not answered, and going to be
+       * charged, so it is closed as charged and the person reads the timeout
+       * line.
+       */
+      if (expired) {
+        await failChargedJob({
+          session: input.session,
+          job,
+          analysis,
+          message: copy.errors.providerTimeout,
+        });
+      }
     } catch (thrown) {
       const transient = isProviderError(thrown) && thrown.isTransient;
+      /*
+       * The last read past the lifetime did not answer either. Whatever threw
+       * (a 15 second timeout, a 5xx, a 4xx for a task the provider no longer
+       * serves, a key that stopped working, a status envelope that did not
+       * parse), the task's state is unknown, and an unknown task is one the
+       * provider may well have finished and charged for. So it is closed exactly
+       * as it was before the final read existed: as charged, with the timeout
+       * line. The lifetime, not the task, has the final word here.
+       *
+       * This is tested on expired alone, and deliberately not on transient. Until
+       * the review of 2026-09-23 only a transient error took this branch, and
+       * every other throw fell through to failJob below, which refunds. That
+       * refund was new money: before the final read existed an expired job was
+       * closed charged without any read at all, so a rotated key or a 400 on the
+       * status GET had turned "we do not know" into "we were not charged", which
+       * is the same lie failChargedJob exists to stop telling.
+       */
+      if (expired) {
+        await failChargedJob({
+          session: input.session,
+          job,
+          analysis,
+          message: copy.errors.providerTimeout,
+        });
+        continue;
+      }
       /*
        * A transient error here is a failure to READ the task, not a failure of
        * the task.

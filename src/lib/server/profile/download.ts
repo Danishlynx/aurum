@@ -7,8 +7,8 @@ import {
   type ProfileDownload,
 } from "@/lib/shared/profile-view";
 
-import { getProfile, listAllAnalyses } from "../db";
-import type { Analysis, Garment, Look, Profile } from "../db/types";
+import { getProfile, listAllAnalyses, listCaptures } from "../db";
+import type { Analysis, Capture, Garment, Look, Profile } from "../db/types";
 import { listAllLooks } from "../looks/db";
 import { isStoredGarmentMember, readStoredMembers } from "../looks/stored";
 import { listGarments } from "../wardrobe/db";
@@ -67,6 +67,7 @@ export class ProfileDownloadError extends Error {
 export interface ProfileDownloadReads {
   readonly profile: (ownerId: string) => Promise<Profile | null>;
   readonly aesthetic: (ownerId: string) => Promise<AestheticProfile | null>;
+  readonly captures: (ownerId: string) => Promise<Capture[]>;
   readonly analyses: (ownerId: string) => Promise<Analysis[]>;
   readonly garments: (ownerId: string) => Promise<Garment[]>;
   readonly looks: (ownerId: string) => Promise<Look[]>;
@@ -75,6 +76,7 @@ export interface ProfileDownloadReads {
 export const defaultProfileDownloadReads: ProfileDownloadReads = {
   profile: getProfile,
   aesthetic: getAestheticProfile,
+  captures: listCaptures,
   analyses: listAllAnalyses,
   garments: listGarments,
   looks: listAllLooks,
@@ -143,6 +145,25 @@ function toDownloadAesthetic(
     reading: profile.reading,
     readingModel: profile.reading_model,
     updatedAt: profile.updated_at,
+  };
+}
+
+/**
+ * One capture as the numbers the gate kept about it.
+ *
+ * docs/06-safety-privacy.md promises that exactly what is stored is shown, and
+ * since 2026-09-23 what is stored is every number the gate measured (pose,
+ * width ratio, brightness, blink, frame size: migration 0015 lists them). The
+ * sha256, the storage path and the deletion stamp stay behind: the first is a
+ * cache key, the second is the address of the photo, and the third is about
+ * the object rather than about the person.
+ */
+function toDownloadCapture(capture: Capture): ProfileDownload["captures"][number] {
+  return {
+    createdAt: capture.created_at,
+    width: capture.width,
+    height: capture.height,
+    quality: capture.quality,
   };
 }
 
@@ -227,9 +248,10 @@ export async function buildProfileDownload(args: {
   const reads = args.reads ?? defaultProfileDownloadReads;
   const ownerId = args.ownerId;
 
-  const [profile, aesthetic, analyses, garments, looks] = await Promise.all([
+  const [profile, aesthetic, captures, analyses, garments, looks] = await Promise.all([
     reads.profile(ownerId),
     reads.aesthetic(ownerId),
+    reads.captures(ownerId),
     reads.analyses(ownerId),
     reads.garments(ownerId),
     reads.looks(ownerId),
@@ -248,6 +270,7 @@ export async function buildProfileDownload(args: {
       approxLocationCity: approxCity(profile?.approx_location ?? null),
       aesthetic: toDownloadAesthetic(aesthetic),
     },
+    captures: captures.map(toDownloadCapture),
     analyses: analyses.map(toDownloadAnalysis),
     garments: garments.map(toDownloadGarment),
     looks: looks.map(toDownloadLook),
@@ -271,6 +294,7 @@ export async function buildProfileDownload(args: {
     JSON.stringify({
       event: "aurum.profile_downloaded",
       ownerId,
+      captures: parsed.data.captures.length,
       analyses: parsed.data.analyses.length,
       garments: parsed.data.garments.length,
       looks: parsed.data.looks.length,

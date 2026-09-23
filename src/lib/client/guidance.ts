@@ -38,8 +38,8 @@ export type GuidanceKey = keyof typeof copy.capture.guidance;
  * Seven therefore said "Hold still" to a phone on a table in a dim room, and
  * said it for as long as the room stayed dim. A real shake reads in the tens.
  *
- * PROVISIONAL, calibrated by hand on a phone, to be checked against
- * evals/fixtures/captures-bad. It errs high on purpose: the burst sends the
+ * PROVISIONAL, calibrated by hand on a phone, to be checked against the
+ * exported outcome rows (docs/05-evals.md). It errs high on purpose: the burst sends the
  * sharpest of five frames, so a moment of motion this line missed is caught by
  * choosing, and a still moment this line called motion is a wall.
  */

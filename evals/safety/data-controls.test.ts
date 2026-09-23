@@ -225,9 +225,36 @@ const RENDER_ROW: Render = {
   updated_at: "2026-08-02T09:32:00.000Z",
 };
 
+/**
+ * The gate's numbers on the capture, as the route stores them since 2026-09-23
+ * (src/lib/shared/capture-quality-stored.ts). docs/06 promises these are shown
+ * by the download, so the capture row here carries a full set.
+ */
+const STORED_QUALITY = {
+  verdict: "accept",
+  reason: null,
+  sharpness: 41.2,
+  exposure: 122,
+  mean_luminance: 122,
+  blown_fraction: 0.01,
+  crushed_fraction: 0,
+  face_coverage: 0.64,
+  face_width_ratio: 0.71,
+  pose: { yaw_degrees: -2, pitch_degrees: 3, roll_degrees: 1 },
+  face_source: "model",
+  measured: true,
+  platform: "ios",
+  path: "camera",
+  attempt: 1,
+  face_luma: 0.58,
+  blink: { left: 0.1, right: 0.1 },
+  frame: { source_width: 1080, source_height: 1920, master_width: 1080, master_height: 1440 },
+} as const;
+
 const FULL_READS: ProfileDownloadReads = {
   profile: async () => PROFILE_ROW,
   aesthetic: async () => AESTHETIC_ROW,
+  captures: async () => [{ ...CAPTURE_ROW, quality: STORED_QUALITY }],
   analyses: async () => [ANALYSIS_ROW],
   garments: async () => [GARMENT_ROW],
   looks: async () => [LOOK_ROW],
@@ -303,6 +330,17 @@ describe("eval:safety, download my data", () => {
     expect(document.analyses).toHaveLength(1);
     expect(document.analyses[0]?.kind).toBe("skin");
     expect(document.analyses[0]?.summary).toEqual(ANALYSIS_ROW.summary);
+    // 2b. the gate's numbers kept with each capture (docs/06, "Retention"):
+    // exactly what is stored is shown, and nothing that points at the photo.
+    expect(document.captures).toHaveLength(1);
+    expect(document.captures[0]).toEqual({
+      createdAt: CAPTURE_ROW.created_at,
+      width: 1024,
+      height: 1024,
+      quality: STORED_QUALITY,
+    });
+    expect(document.captures[0]).not.toHaveProperty("storagePath");
+    expect(document.captures[0]).not.toHaveProperty("sha256");
     // 3. garments metadata
     expect(document.garments[0]?.type).toBe("blazer");
     expect(document.garments[0]?.colors).toEqual([
@@ -372,6 +410,7 @@ describe("eval:safety, download my data", () => {
     const empty: ProfileDownloadReads = {
       profile: async () => null,
       aesthetic: async () => null,
+      captures: async () => [],
       analyses: async () => [],
       garments: async () => [],
       looks: async () => [],
@@ -379,6 +418,7 @@ describe("eval:safety, download my data", () => {
     const document = await buildProfileDownload({ ownerId: OWNER, reads: empty });
     expect(document.profile.aesthetic).toBeNull();
     expect(document.profile.isAdultConfirmed).toBe(false);
+    expect(document.captures).toEqual([]);
     expect(document.analyses).toEqual([]);
     expect(document.looks).toEqual([]);
   });
@@ -432,11 +472,21 @@ describe("eval:safety, download my data", () => {
         approxLocationCity: null,
         aesthetic: null,
       },
+      captures: [],
       analyses: [],
       garments: [],
       looks: [],
     };
     expect(profileDownloadSchema.safeParse(document).success).toBe(true);
+    // A capture entry is as strict as the rest: the photo's address is refused.
+    expect(
+      profileDownloadSchema.safeParse({
+        ...document,
+        captures: [
+          { createdAt: "2026-09-01T08:00:00.000Z", width: 1, height: 1, quality: null, storagePath: CAPTURE_PATH },
+        ],
+      }).success,
+    ).toBe(false);
     expect(
       profileDownloadSchema.safeParse({
         ...document,

@@ -325,6 +325,15 @@ export const copy = {
      * refusal is what shows.
      */
     reframing: "Framing your face and trying again",
+    /**
+     * In house. The reveal stops polling after three polls in a row that never
+     * reached the server, and until 2026-09-23 the only way forward from there
+     * was a new photo. The readings behind that screen are paid for and very
+     * often finished; a phone that lost its connection for ten seconds should
+     * be able to ask for them again rather than buy them twice. Plain verb,
+     * says what happens (docs/02-design-system.md).
+     */
+    checkAgainAction: "Check again",
   },
 
   /** F. Skin report (/report) */
@@ -1023,6 +1032,7 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "capture.uploadSteps.store",
   "capture.uploadSteps.analyze",
   "analyzing.reframing",
+  "analyzing.checkAgainAction",
   "judge.exploreDemoAction",
   "productCard.distanceTemplate",
   "report.maskTogglesLabel",

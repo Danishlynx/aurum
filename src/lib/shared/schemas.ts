@@ -127,6 +127,81 @@ export const captureQualitySchema = z.object({
    * whole point of the 2026-09-07 change, so a stored row says which one it was.
    */
   faceSource: z.enum(["model", "detector", "skin_region"]).optional(),
+
+  /*
+   * The calibration fields, added 2026-09-23. Every one of them is optional so a
+   * row written by any earlier build still parses; a later build fills more of
+   * them as the camera learns to measure them (frame sizes, face luma over the
+   * oval, blink, the burst's losers). What a field means is fixed here once, and
+   * the same names are read back by the capture_outcomes view (migration 0015),
+   * the calibration export (scripts/export-capture-outcomes.ts) and the fixture
+   * half of eval:capture. Nothing here is a pixel or a landmark: numbers only.
+   */
+
+  /**
+   * True when a face model measured the frame. False when the numbers came from
+   * the colour threshold fallback, which measures skin coloured area and not a
+   * face, so a row with measured false must never move a threshold.
+   */
+  measured: z.boolean().optional(),
+  /** Which kind of device took the frame, from the user agent and nothing else. */
+  platform: z.enum(["ios", "android", "desktop"]).optional(),
+  /**
+   * How the frame reached the gate: the shutter, "Upload instead", or the
+   * tighter crop the reveal sends back after a framing refusal.
+   */
+  path: z.enum(["camera", "gallery", "reframe"]).optional(),
+  /** 1 for the frame the person sent, 2 and 3 for the reframes of it. */
+  attempt: z.number().int().min(1).max(3).optional(),
+  /** The sensor frame the still was cut from, and the master frame it became. */
+  frame: z
+    .object({
+      sourceWidth: z.number().int().min(1),
+      sourceHeight: z.number().int().min(1),
+      masterWidth: z.number().int().min(1),
+      masterHeight: z.number().int().min(1),
+    })
+    .optional(),
+  /** The face box area over the frame area. */
+  faceBboxRatio: z.number().min(0).max(1).nullable().optional(),
+  /** Where the middle of the face sits in the frame, both axes 0 to 1. */
+  faceCenter: z
+    .object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) })
+    .nullable()
+    .optional(),
+  /** Mean luma over the face oval on a 0 to 1 scale. */
+  faceLuma: z.number().min(0).max(1).nullable().optional(),
+  /** The luma difference between the two eyes, 0 to 1. */
+  faceLumaUneven: z.number().min(0).max(1).nullable().optional(),
+  /** The eye blink blendshapes, 0 open to 1 closed. */
+  blink: z
+    .object({ left: z.number().min(0).max(1), right: z.number().min(0).max(1) })
+    .nullable()
+    .optional(),
+  /**
+   * The frames of the burst that were not sent, as numbers only, so a threshold
+   * can be checked against the frames the scoring passed over as well as the one
+   * it chose.
+   */
+  burstLosers: z
+    .array(
+      z.object({
+        yaw: z.number().nullable(),
+        pitch: z.number().nullable(),
+        roll: z.number().nullable(),
+        faceWidthRatio: z.number().nullable(),
+        faceLuma: z.number().nullable(),
+        blinkMax: z.number().nullable(),
+        sharpness: z.number().nullable(),
+        score: z.number().nullable(),
+      }),
+    )
+    .max(8)
+    .optional(),
+  /** How long the face model took on the frame that was sent. */
+  landmarkerMs: z.number().nonnegative().optional(),
+  /** Which frame geometry the numbers above were measured in. */
+  frameGeometryVersion: z.literal(1).optional(),
 });
 
 export type CaptureQuality = z.infer<typeof captureQualitySchema>;

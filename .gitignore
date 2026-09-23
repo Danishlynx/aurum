@@ -65,6 +65,8 @@ photo_asset/
 evals/fixtures/faces/*
 !evals/fixtures/faces/.gitkeep
 evals/fixtures/golden/
+# Exported capture outcomes and the founder's private selfies (docs/05)
+evals/fixtures/private/
 .vercel
 .env*
 

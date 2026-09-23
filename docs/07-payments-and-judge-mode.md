@@ -33,7 +33,7 @@ Kill switch
 
 Observability for judging
 
-- Log judge session creation and each cap event. A tiny /api/judge/stats route (protected by the same code) shows sessions created, analyses used, credits used, so the human can watch the balance during judging.
+- Log judge session creation and each cap event. A tiny /api/judge/stats route (protected by the same code) shows sessions created, analyses used, credits used, so the human can watch the balance during judging. It also shows oneGo, the one go reading rate over the last seven days ({window7d: {n, ok, rate}}, docs/05-evals.md), read from the capture_outcomes view; null when the view cannot be read.
 
 ## Monetization (document now, build later)
 

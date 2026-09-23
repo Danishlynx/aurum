@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RevealMask } from "@/components/analyzing/RevealMask";
 import { revealStateFor, type StatusKey } from "@/components/analyzing/reveal";
 import { Column } from "@/components/layout/Column";
-import { ButtonLink } from "@/components/ui/Button";
+import { Button, ButtonLink } from "@/components/ui/Button";
 import { fetchJobs } from "@/lib/client/api";
 import {
   forgetCapturePreview,
@@ -79,6 +79,12 @@ export function AnalyzingScreen() {
   const [masksBloom, setMasksBloom] = useState(false);
   const [maskUrl, setMaskUrl] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  /**
+   * True when the poll stopped because the server could not be reached, which
+   * is the one stopped state the readings may still be waiting behind. A
+   * refusal is final and offers the camera; this offers the poll again.
+   */
+  const [gaveUp, setGaveUp] = useState(false);
   const failuresRef = useRef(0);
   const finishedRef = useRef(false);
   /**
@@ -122,6 +128,7 @@ export function AnalyzingScreen() {
     failuresRef.current = 0;
     stragglerPollsRef.current = 0;
     setProblem(null);
+    setGaveUp(false);
     setPreview(readCapturePreview(captureId));
   }, [captureId, router]);
 
@@ -153,6 +160,7 @@ export function AnalyzingScreen() {
       failuresRef.current += 1;
       if (failuresRef.current >= FAILURES_BEFORE_GIVING_UP) {
         finishedRef.current = true;
+        setGaveUp(true);
         setProblem(copy.errors.requestFailed);
       }
       return;
@@ -248,6 +256,44 @@ export function AnalyzingScreen() {
     };
   }, [captureId, poll]);
 
+  /*
+   * A tab that comes back polls at once.
+   *
+   * This poll is the only thing that advances the provider tasks (docs/03,
+   * "Jobs"): nothing on the server moves a reading without it. A phone that was
+   * locked or switched to another app has its timers throttled or paused, so a
+   * capture whose readings finished at 20 seconds sits there unread until the
+   * next tick happens to fire, and a task left unpolled past its lifetime is
+   * charged for a result nobody stored. Polling on the way back in is the
+   * cheapest thing that can be done about it, and the in flight guard makes it
+   * safe to fire on top of a tick that is already running.
+   */
+  useEffect(() => {
+    function handleVisibility(): void {
+      if (document.visibilityState === "visible") {
+        void poll();
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [poll]);
+
+  /**
+   * The poll again, after it gave up. The readings behind this screen are paid
+   * for and may well have landed while the connection was gone, so the first
+   * thing offered is to look, not to buy them again. Everything counted per
+   * capture starts over; the interval is still ticking and picks the poll up.
+   */
+  function handleCheckAgain(): void {
+    failuresRef.current = 0;
+    finishedRef.current = false;
+    setGaveUp(false);
+    setProblem(null);
+    void poll();
+  }
+
   return (
     <main className="flex min-h-[100svh] flex-col items-center bg-canvas">
       {/*
@@ -282,7 +328,24 @@ export function AnalyzingScreen() {
             <p aria-live="polite" className="font-body text-body text-text">
               {problem ?? copy.analyzing[status]}
             </p>
-            {problem !== null ? (
+            {problem !== null && gaveUp ? (
+              /*
+               * The poll gave up, docs/01-user-flow.md section E: the readings
+               * may still be there, so asking again is the primary answer and
+               * a new photo sits under it. One gold fill per screen
+               * (docs/02-design-system.md), and here it is the one that costs
+               * nothing.
+               */
+              <div className="flex flex-col gap-3">
+                <Button variant="primary" onClick={handleCheckAgain}>
+                  {copy.analyzing.checkAgainAction}
+                </Button>
+                <ButtonLink variant="secondary" href="/capture">
+                  {copy.report.retakePhotoAction}
+                </ButtonLink>
+              </div>
+            ) : null}
+            {problem !== null && !gaveUp ? (
               /*
                * Primary, because a stopped reveal has exactly one thing to do
                * and this is it: docs/02-design-system.md allows one gold fill

@@ -179,6 +179,39 @@ export const renderResultSchema = z.union([
 export type RenderResult = z.infer<typeof renderResultSchema>;
 
 /* ------------------------------------------------------------------ */
+/* The engine's own reading of the frame                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How the face family reports the frame it worked from.
+ *
+ * Every field is a word, not a score ("good" on the one face we have read). It
+ * is kept because it is the only thing that tells a "Unknown" face shape from a
+ * face shape the engine declined to read: an Unknown on a frame whose faceangle
+ * is not good is a retake, and an Unknown on a good frame is a face the model
+ * genuinely could not place. Stored on every result that carries it, because it
+ * is the engine's own verdict on our framing and it costs nothing
+ * (docs/05-evals.md, eval:capture).
+ *
+ * Tolerant on purpose: each field is optional and nullable, has_face accepts a
+ * word as well as a boolean, and a block of a shape nobody has seen reads as
+ * null through faceQualityField below. A charged result is never thrown away
+ * over a free field.
+ */
+export const faceQualitySchema = z.object({
+  has_face: z.union([z.boolean(), z.string()]).nullish(),
+  area: z.string().nullish(),
+  frontal: z.string().nullish(),
+  lighting: z.string().nullish(),
+  faceangle: z.string().nullish(),
+});
+
+export type FaceQuality = z.infer<typeof faceQualitySchema>;
+
+/** The block as a result field: absent, null, or unreadable all arrive as null. */
+const faceQualityField = () => faceQualitySchema.nullish().catch(null);
+
+/* ------------------------------------------------------------------ */
 /* Skin analysis                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -234,6 +267,13 @@ export const skinAnalysisResultSchema = z.object({
   output: z.array(skinConcernOutputSchema).min(1),
   skin_age: z.number().nullish(),
   all: z.object({ score: z.number() }).nullish(),
+  /**
+   * The engine's own reading of the frame, if this endpoint ever sends one.
+   * UNVERIFIED for the skin analyzer (the recorded body carries none), kept
+   * because z.object strips what it does not declare and a free frame verdict
+   * is worth more stored than dropped. See faceQualitySchema.
+   */
+  face_quality: faceQualityField(),
 });
 
 export type SkinAnalysisResult = z.infer<typeof skinAnalysisResultSchema>;
@@ -479,6 +519,15 @@ export const facialColorTonesResultSchema = z.object({
     hair_color: optionalColor(),
     hair_color_name: optionalColor(),
   }),
+  /**
+   * The engine's free reading of the frame it worked from, kept since
+   * 2026-09-23. This is the leader of the fan out and the strictest reading
+   * about pose, so its verdict on the frame is the one that decides whether a
+   * capture becomes a report; until now z.object stripped the block before
+   * analyses.raw was written, and the only engine side calibration signal the
+   * app gets for free was thrown away on every capture.
+   */
+  face_quality: faceQualityField(),
 });
 
 export type FacialColorTonesResult = z.infer<typeof facialColorTonesResultSchema>;
@@ -593,23 +642,6 @@ export const FACE_ATTRIBUTE_NAMES = [
 export type FaceAttributeName = (typeof FACE_ATTRIBUTE_NAMES)[number];
 
 /**
- * How this call reports the frame it worked from.
- *
- * Every field is a word, not a score ("good" on the one face we have read). It
- * is kept because it is the only thing that tells a "Unknown" face shape from a
- * face shape the engine declined to read: an Unknown on a frame whose faceangle
- * is not good is a retake, and an Unknown on a good frame is a face the model
- * genuinely could not place.
- */
-export const faceQualitySchema = z.object({
-  has_face: z.boolean().nullish(),
-  area: z.string().nullish(),
-  frontal: z.string().nullish(),
-  lighting: z.string().nullish(),
-  faceangle: z.string().nullish(),
-});
-
-/**
  * data.results for a face attribute analysis task.
  *
  * Confirmed live on 2026-09-03 against one real task over the golden selfie.
@@ -630,7 +662,8 @@ export const faceQualitySchema = z.object({
  */
 export const faceAttributesResultSchema = z.object({
   faceshape: z.string().nullish(),
-  face_quality: faceQualitySchema.nullish(),
+  /** Confirmed live on 2026-09-03: the recorded body carries the block. */
+  face_quality: faceQualityField(),
 });
 
 export type FaceAttributesResult = z.infer<typeof faceAttributesResultSchema>;

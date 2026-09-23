@@ -259,6 +259,26 @@ type AestheticProfileRow = {
   updated_at: string;
 };
 
+/**
+ * One row of the capture_outcomes view, migration 0015. Numbers and category
+ * words only: the one go reading rate is computed from these and nothing else.
+ */
+type CaptureOutcomeRow = {
+  capture_id: string;
+  created_at: string;
+  platform: string | null;
+  path: string | null;
+  attempt: number | null;
+  verdict: string | null;
+  measured: boolean | null;
+  all_runnable_succeeded: boolean;
+  provider_failed: boolean;
+  profile_points_at_capture: boolean;
+  readings_within_120s: boolean;
+  one_go: boolean;
+  units_charged: number;
+};
+
 /** Columns a writer may omit because the database fills them. */
 type Generated = "id" | "created_at" | "updated_at";
 
@@ -411,7 +431,12 @@ export type Database = {
         Relationships: [];
       };
     };
-    Views: { [_ in never]: never };
+    Views: {
+      capture_outcomes: {
+        Row: CaptureOutcomeRow;
+        Relationships: [];
+      };
+    };
     Functions: { [_ in never]: never };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
@@ -435,6 +460,7 @@ export type Look = Row<"looks">;
 export type Render = Row<"renders">;
 export type ProductCacheEntry = Row<"product_cache">;
 export type RateLimitBucketRow = Row<"rate_limits">;
+export type CaptureOutcome = Database["public"]["Views"]["capture_outcomes"]["Row"];
 
 /** The five analyses that fan out from one capture, in reveal order. */
 export const ANALYSIS_KINDS: readonly AnalysisKind[] = [

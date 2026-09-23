@@ -26,10 +26,14 @@ import {
   createCapture,
   startAnalysis,
   uploadCaptureImage,
+  type ApiResult,
   type CaptureQualityPayload,
+  type ClientJob,
 } from "@/lib/client/api";
 import { rememberCapturePreview } from "@/lib/client/capture-handoff";
 import { estimateFaceForCapture, SKIN_SAMPLE_LONG_EDGE } from "@/lib/client/face";
+import type { FaceEstimateSource } from "@/lib/client/face";
+import { currentPlatform } from "@/lib/client/platform";
 import {
   CAPTURE_JPEG_QUALITY,
   CAPTURE_LONG_EDGE,
@@ -170,12 +174,12 @@ async function runResubmit(
       CAPTURE_LONG_EDGE,
       CAPTURE_MIN_SHORT_EDGE,
     );
-    const assessment = await assess(canvas);
+    const { assessment, faceSource } = await assess(canvas);
     if (assessment.verdict === "reject") {
       continue;
     }
 
-    const sent = await submit(canvas, assessment);
+    const sent = await submit(canvas, assessment, faceSource, attempt);
     if (sent === null) {
       return { ok: false, reason: "request" };
     }
@@ -199,8 +203,14 @@ async function runResubmit(
   return { ok: false, reason: "gate" };
 }
 
-/** The same gate the capture screen runs, on the reframed crop. */
-async function assess(canvas: HTMLCanvasElement): Promise<CaptureAssessment> {
+/**
+ * The same gate the capture screen runs, on the reframed crop, and which
+ * estimator measured it, so the stored row says so.
+ */
+async function assess(canvas: HTMLCanvasElement): Promise<{
+  readonly assessment: CaptureAssessment;
+  readonly faceSource: FaceEstimateSource;
+}> {
   const full = readImageData(canvas);
   const sample = readImageData(
     drawToCanvas(
@@ -210,13 +220,16 @@ async function assess(canvas: HTMLCanvasElement): Promise<CaptureAssessment> {
     ),
   );
   const estimate = await estimateFaceForCapture(canvas, full, sample);
-  return assessCapture({
-    image: toGrayscale(full),
-    faceCount: estimate.faceCount,
-    faceBox: estimate.faceBox,
-    pose: estimate.pose ?? null,
-    faceEstimateTrusted: estimate.source !== "skin_region",
-  });
+  return {
+    assessment: assessCapture({
+      image: toGrayscale(full),
+      faceCount: estimate.faceCount,
+      faceBox: estimate.faceBox,
+      pose: estimate.pose ?? null,
+      faceEstimateTrusted: estimate.source !== "skin_region",
+    }),
+    faceSource: estimate.source,
+  };
 }
 
 /**
@@ -232,6 +245,8 @@ async function assess(canvas: HTMLCanvasElement): Promise<CaptureAssessment> {
 async function submit(
   canvas: HTMLCanvasElement,
   assessment: CaptureAssessment,
+  faceSource: FaceEstimateSource,
+  attempt: number,
 ): Promise<string | null> {
   let blob: Blob;
   let sha256: string;
@@ -242,10 +257,21 @@ async function submit(
     return null;
   }
 
+  /*
+   * The calibration fields, written so a reframed row can be told from the
+   * frame the person sent: path "reframe" with its attempt number, and whether a
+   * face model or the colour threshold measured the crop (docs/03, data model).
+   */
   const quality: CaptureQualityPayload = {
     verdict: assessment.verdict,
     reason: assessment.reason,
     ...assessment.metrics,
+    faceSource,
+    measured: faceSource !== "skin_region",
+    platform: currentPlatform(),
+    path: "reframe",
+    // Bounded by hasReframeLeft already; the clamp keeps the schema's 1 to 3.
+    attempt: Math.min(3, Math.max(1, attempt)),
   };
   const created = await createCapture({
     sha256,
@@ -264,7 +290,7 @@ async function submit(
     }
   }
 
-  if (!(await startAnalysisWithOneRetry(created.data.captureId))) {
+  if (!(await startAnalysisWithOneRetry(created.data.captureId)).ok) {
     return null;
   }
   return created.data.captureId;
@@ -292,16 +318,19 @@ async function submit(
  * the server gave them before it spent anything; repeating those buys a second
  * identical refusal and nothing else. status 0 is the only case where the
  * request may have landed and the answer may not have come back.
+ *
+ * Exported since 2026-09-23 because the capture screen has the same exposure on
+ * the same request and was asking exactly once. The result of the last attempt
+ * is returned whole, not reduced to a boolean, so that screen can still tell a
+ * cap from a missing session from a server error.
  */
-async function startAnalysisWithOneRetry(captureId: string): Promise<boolean> {
+export async function startAnalysisWithOneRetry(
+  captureId: string,
+): Promise<ApiResult<{ jobs: ClientJob[] }>> {
   const first = await startAnalysis(captureId);
-  if (first.ok) {
-    return true;
+  if (first.ok || first.kind !== "network") {
+    return first;
   }
-  if (first.kind !== "network") {
-    return false;
-  }
-  const second = await startAnalysis(captureId);
-  return second.ok;
+  return startAnalysis(captureId);
 }
 

@@ -62,7 +62,7 @@ All tables have id (uuid), created_at, updated_at. All tables with user_id have 
       sha256             text not null
       storage_path       text             (null after deletion)
       width, height      int
-      quality            jsonb            (sharpness, exposure, face_coverage)
+      quality            jsonb            (every number the client gate measured, snake case: verdict, reason, sharpness, exposure, mean_luminance, blown_fraction, crushed_fraction, face_coverage, face_width_ratio, pose {yaw_degrees, pitch_degrees, roll_degrees}, face_source, measured, platform, path, attempt, frame sizes, face_bbox_ratio, face_center, face_luma, face_luma_uneven, blink, burst_losers, landmarker_ms, frame_geometry_version; older rows carry fewer keys; never a pixel, never a landmark. Written by src/lib/shared/capture-quality-stored.ts, read back by the capture_outcomes view in migration 0015 and by the calibration export.)
       deleted_at         timestamptz
       unique (user_id, sha256)
 
@@ -73,7 +73,7 @@ All tables have id (uuid), created_at, updated_at. All tables with user_id have 
       kind               text check in (skin, fitzpatrick, attributes, face_shape, hair_type)
       status             text check in (pending, running, succeeded, failed)
       provider_task_id   text
-      raw                jsonb            (validated provider response, no image bytes)
+      raw                jsonb            (validated provider response, no image bytes; keeps the engine's free face_quality block on the face family; for a refused task it holds {refusal: {reason, code, elapsed_ms}} instead)
       summary            jsonb            (normalized: scores, labels)
       mask_paths         jsonb            (storage paths of mask images)
       credits_used       int not null default 0
@@ -185,7 +185,9 @@ A job wraps one provider task.
 - poll: called from GET /api/jobs. For each running job whose last_polled_at is older than 1 second, query the provider. On success, validate with zod, store the normalized result and any mask or render files, mark succeeded, reconcile credits. On provider failure, mark failed with a human readable error and refund reserved credits.
 - retry: a failed job can be retried once automatically if the error is transient (timeout, 5xx). Attempts are capped at 2. Beyond that the UI shows the partial state.
 - idempotency: creating a job for the same subject while one is running returns the running job.
-- timeout: a job running longer than 120 seconds is marked failed with "Perfect Corp did not respond in time. Your photo is safe. Try again in a moment."
+- timeout: a job running longer than 120 seconds is read one last time. A result that landed is stored and reconciled exactly as an ordinary poll stores it; a refusal is refunded; only a task still running at the provider is marked failed with "Perfect Corp did not respond in time. Your photo is safe. Try again in a moment.", and that one is not refunded, because the provider charges for it whether or not the answer is ever read.
+- reconcile pass: the poll is the only thing that advances a task. The report page runs one catch up pass on its way in, and the reveal polls at once when a backgrounded tab comes back to the foreground. A scheduled reconcile with no client behind it is planned (docs/05, one go rate) and not built.
+- one go rate: the capture_outcomes view (migration 0015) gives one row per capture with the client verdict, whether all four runnable readings succeeded, whether a provider failure touched it, whether the profile points at the capture, whether the last reading landed within 120 seconds, and the units charged. one_go is the conjunction of the three: all readings succeeded, profile points at the capture, last reading within 120 seconds. Rows a provider failure touched are excluded by the reader, not by the view. /api/judge/stats reports the rate over the last seven days from it, leaving out captures younger than 120 seconds, which are still being read.
 
 ## Caching
 
@@ -229,6 +231,9 @@ The five capture analyses run in parallel from the same uploaded object. Perfect
 ## Failure modes and what the person sees
 
 - Perfect Corp down: jobs fail with the timed out copy; the report renders whatever succeeded; judge sessions fall back to the demo profile.
+- A reading that lands after the 120 second job lifetime: stored, not dropped. The lifetime branch reads the task once more before closing it, so a result that arrived at 115 seconds and was first polled at 125 is stored and reconciled as the reading it was paid for; a refusal found at that read is refunded. A task still running at that read, or a read that fails for any reason (the task's state is then unknown), is closed as charged with the timeout line and never refunded. A late leader does not become a report on its own: every job of a capture is created at analyze time, so its followers are as old as it is, and in the same pass they are closed unstarted with the timeout line and credits_used 0. The person keeps the leader's reading and takes a new photo for the rest.
+- A tab backgrounded on /analyzing: its timers are throttled or paused by the browser, and nothing on the server moves a reading without a poll. On return to the foreground the screen polls immediately. If the poll gave up because the server could not be reached, the screen offers "Check again", which resumes polling the same capture, beside "Retake photo". The readings are never bought twice for a connection that dropped.
+- The analyze request's answer is lost in transit: the client asks once more. The route is idempotent for a capture that already has jobs, so the second ask finds the first one's work or does it, and nothing is charged twice. That holds once the first request has written its jobs; a retry that arrives while the first request is still creating them can race it up to the unique index on open jobs per subject, which is the same window the reframe path has always had. Closing it belongs with the scheduled reconcile work.
 - SerpApi quota exhausted: routine rows show the product type and "No listing found near you yet"; the app never invents a listing.
 - Claude API error: the reading block shows a deterministic fallback built from the ranked concerns ("Main concern: pigmentation on the cheekbones. Skin type: combination.") and the stylist ranks looks by the rules alone with a one line rule based rationale.
 - Supabase storage error on upload: capture screen shows "Upload did not complete. Your photo was not saved. Try again.", with a second line naming the step and the status ("Stopped while saving the photo. The server answered 500.").
