@@ -210,7 +210,7 @@ export function guidanceKey(stats: LiveFrameStats): GuidanceKey {
    */
   if (
     reading.widthRatio > FACE_WIDTH_BORDERLINE_ABOVE ||
-    ovalTouchesEdge(reading.ovalBox, { width: 1, height: 1 })
+    ovalTouchesEdge(reading.faceBox, { width: 1, height: 1 })
   ) {
     return "back";
   }

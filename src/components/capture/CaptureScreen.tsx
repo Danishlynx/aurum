@@ -295,6 +295,7 @@ function formatLiveReadout(readout: LiveReadout): string {
     }`,
     `${d.source} ${readout.source}`,
     `${d.widthRatio} ${fixed(reading?.widthRatio, 2)}`,
+    `${d.mesh} ${fixed(reading?.meshWidthRatio, 2)}`,
     `${d.bbox} ${fixed(reading?.bboxRatio, 2)}`,
     `${d.centerX} ${fixed(reading?.center.x, 2)}`,
     `${d.centerY} ${fixed(reading?.center.y, 2)}`,
@@ -402,7 +403,9 @@ async function frameForUpload(decoded: DecodedImage): Promise<HTMLCanvasElement>
     if (face !== undefined) {
       // The reading is normalized, so the oval lands on the file's own pixels
       // without going through the probe's size.
-      crop = masterCropFor(facePixelsIn(face, decoded.size).ovalBox, decoded.size);
+      // The visible face box, not the mesh oval: the composer puts the face the
+      // engine sees at the oval's width (MESH_FACE_WIDTH_SHARE, face-reading.ts).
+      crop = masterCropFor(facePixelsIn(face, decoded.size).faceBox, decoded.size);
     }
   } finally {
     // The probe was only ever the thing the face was found in.

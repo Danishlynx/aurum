@@ -14,9 +14,15 @@
  *
  * The matrix is COLUMN major, as MediaPipe's Matrix.data is, and is built so
  * that poseFromLandmarkerMatrix reads back the yaw, pitch and roll it was
- * built from under the convention src/lib/shared/pose.ts documents. That holds
- * exactly for a rotation about one axis and to within the small angle cross
- * terms for a combined one, which is the range the gate ever reads.
+ * built from under the convention src/lib/shared/pose.ts documents. Since the
+ * phone check of 2026-09-23 that decoder negates every angle, because the
+ * landmarker's matrix carries each turn with the opposite sign, so this builder
+ * writes the negated angles the way the landmarker would.
+ *
+ * The cheek landmarks sit at MESH_FACE_WIDTH_SHARE of the width asked for, as
+ * they do on a real face (the mesh's oval stops short of the visible edge), so
+ * widthRatio here means what it means everywhere else: the visible face width
+ * the oval is drawn for and the engine's rule is about.
  *
  * Landmarks are normalized to the frame, as the landmarker reports them: x
  * over the frame width, y over the frame height. The oval's height is given
@@ -42,6 +48,7 @@ import {
   FRAME_FACE_CENTER_Y,
   FRAME_OVAL_HEIGHT_RATIO,
   FRAME_OVAL_WIDTH,
+  MESH_FACE_WIDTH_SHARE,
   type Point,
   type Size,
 } from "@/lib/shared/frame-geometry";
@@ -50,7 +57,12 @@ import {
 export const LANDMARK_COUNT = 478;
 
 export type SyntheticFaceOptions = {
-  /** Cheek to cheek over the frame width. Default FRAME_OVAL_WIDTH. */
+  /**
+   * The visible face width over the frame width, in the engine's terms, which
+   * is what faceReadingFrom reads back as widthRatio. The mesh's cheek points
+   * are placed at MESH_FACE_WIDTH_SHARE of it, as the landmarker places them
+   * on a real face. Default FRAME_OVAL_WIDTH.
+   */
   readonly widthRatio?: number;
   /** The oval's centre, normalized. Default the frame's target centre. */
   readonly center?: Point;
@@ -203,8 +215,10 @@ export function syntheticFace(options: SyntheticFaceOptions = {}): SyntheticFace
   const jawOpen = options.jawOpen ?? 0;
 
   const aspect = frame.width / frame.height;
-  const semiWidth = widthRatio / 2;
-  const semiHeight = ((widthRatio * FRAME_OVAL_HEIGHT_RATIO) / 2) * aspect;
+  /* The mesh oval: its cheeks sit inside the visible face edge by the share. */
+  const meshWidth = widthRatio * MESH_FACE_WIDTH_SHARE;
+  const semiWidth = meshWidth / 2;
+  const semiHeight = ((meshWidth * FRAME_OVAL_HEIGHT_RATIO) / 2) * aspect;
 
   const landmarks: Landmark[] = new Array<Landmark>(LANDMARK_COUNT);
 
@@ -249,7 +263,14 @@ export function syntheticFace(options: SyntheticFaceOptions = {}): SyntheticFace
     });
   }
 
-  const rowMajor = rotationRowMajorFor(yaw, pitch, roll);
+  /*
+   * Built for the negated angles, because poseFromLandmarkerMatrix negates
+   * every angle it decodes since the phone check of 2026-09-23 (pose.ts,
+   * "Calibration, one time"): the landmarker's own matrix carries each turn
+   * with the opposite sign to the convention, and this builder imitates the
+   * landmarker, so the round trip reads back the angles asked for.
+   */
+  const rowMajor = rotationRowMajorFor(-yaw, -pitch, -roll);
   /* A translation in centimetres, as the landmarker reports one. Decoders ignore it. */
   rowMajor[11] = -45;
   const matrix = toColumnMajor(rowMajor);

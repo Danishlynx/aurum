@@ -270,6 +270,8 @@ export const copy = {
       master: "master",
       source: "src",
       widthRatio: "w",
+      /** The raw cheek to cheek span, before MESH_FACE_WIDTH_SHARE. */
+      mesh: "mesh",
       bbox: "bbox",
       centerX: "cx",
       centerY: "cy",

@@ -66,6 +66,7 @@ export const storedCaptureQualitySchema = z.object({
     .nullable()
     .optional(),
   face_bbox_ratio: storedNumber(),
+  mesh_width_ratio: storedNumber(),
   face_center: z.object({ x: z.number(), y: z.number() }).nullable().optional(),
   face_luma: storedNumber(),
   face_luma_uneven: storedNumber(),
@@ -129,6 +130,7 @@ export const STORED_QUALITY_CALIBRATION_KEYS = [
   "attempt",
   "frame",
   "face_bbox_ratio",
+  "mesh_width_ratio",
   "face_center",
   "face_luma",
   "face_luma_uneven",
@@ -205,6 +207,9 @@ export function storedCaptureQualityFrom(
   }
   if (present(quality.faceBboxRatio)) {
     stored.face_bbox_ratio = quality.faceBboxRatio;
+  }
+  if (present(quality.meshWidthRatio)) {
+    stored.mesh_width_ratio = quality.meshWidthRatio;
   }
   if (present(quality.faceCenter)) {
     stored.face_center =

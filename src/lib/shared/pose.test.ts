@@ -146,30 +146,37 @@ describe("poseFromTransformationMatrix", () => {
 
 describe("poseFromLandmarkerMatrix", () => {
   /**
-   * MediaPipe's Matrix.data is column major. The same rotation laid out that
-   * way has to read the SAME signed value the row major test above reads,
-   * which is what the transpose inside poseFromLandmarkerMatrix is for.
+   * MediaPipe's Matrix.data is column major, and the phone check of
+   * 2026-09-23 found the landmarker carries every turn with the opposite sign
+   * to the convention in pose.ts (turned toward the person's own right read
+   * +44 with the transpose alone). So the same rotation laid out column major
+   * reads the NEGATED value of what the row major decoder reads: the
+   * transpose inside poseFromLandmarkerMatrix undoes the layout, and the
+   * negation after it undoes the landmarker's sign.
    */
-  it("reads a column major yaw matrix as the same signed yaw", () => {
+  it("reads a column major yaw matrix with the sign the phone check settled", () => {
     const pose = poseFromLandmarkerMatrix(transposed(YAW_20_ROW_MAJOR));
-    expect(pose?.yawDegrees ?? 0).toBeCloseTo(-20, 4);
+    expect(pose?.yawDegrees ?? 0).toBeCloseTo(20, 4);
     expect(pose?.pitchDegrees ?? 99).toBeCloseTo(0, 4);
     expect(pose?.rollDegrees ?? 99).toBeCloseTo(0, 4);
   });
 
-  it("reads column major pitch and roll as the same signed values too", () => {
+  it("negates column major pitch and roll on the same basis", () => {
     expect(
       poseFromLandmarkerMatrix(transposed(PITCH_20_ROW_MAJOR))?.pitchDegrees ?? 0,
-    ).toBeCloseTo(20, 4);
+    ).toBeCloseTo(-20, 4);
     expect(
       poseFromLandmarkerMatrix(transposed(ROLL_20_ROW_MAJOR))?.rollDegrees ?? 0,
-    ).toBeCloseTo(20, 4);
+    ).toBeCloseTo(-20, 4);
   });
 
   /**
-   * The failure the on phone calibration is written to catch: feeding the
-   * column major data straight to the row major decoder reads the transpose,
-   * which for a rotation is its inverse, so every angle comes out negated.
+   * What reading the column major data straight through the row major
+   * decoder does: it reads the transpose, which for a rotation is its inverse,
+   * so every single axis angle comes out negated relative to the decoder's
+   * own convention. Pinned so the two steps inside poseFromLandmarkerMatrix
+   * (transpose, then negate) stay distinguishable from one accidental
+   * negation.
    */
   it("would negate all three angles if the major order were read wrong", () => {
     const wrongYaw = poseFromTransformationMatrix(transposed(YAW_20_ROW_MAJOR));
