@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   NEUTRAL_NOSE_POSITION,
   normalizeDegrees,
+  poseFromLandmarkerMatrix,
   poseFromLandmarks,
   poseFromTransformationMatrix,
   type PoseLandmarks,
@@ -127,6 +128,44 @@ describe("poseFromLandmarks", () => {
   });
 });
 
+const COS_20 = Math.cos((20 * Math.PI) / 180);
+const SIN_20 = Math.sin((20 * Math.PI) / 180);
+
+/** The standard right handed rotation about y by 20 degrees, row major. */
+const YAW_20_ROW_MAJOR = [
+  COS_20, 0, SIN_20, 0,
+  0, 1, 0, 0,
+  -SIN_20, 0, COS_20, 0,
+  0, 0, 0, 1,
+];
+
+/** The standard right handed rotation about x by 20 degrees, row major. */
+const PITCH_20_ROW_MAJOR = [
+  1, 0, 0, 0,
+  0, COS_20, -SIN_20, 0,
+  0, SIN_20, COS_20, 0,
+  0, 0, 0, 1,
+];
+
+/** The standard right handed rotation about z by 20 degrees, row major. */
+const ROLL_20_ROW_MAJOR = [
+  COS_20, -SIN_20, 0, 0,
+  SIN_20, COS_20, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+];
+
+/** The same 16 values laid out column major, as MediaPipe hands them over. */
+function transposed(rowMajor: readonly number[]): number[] {
+  const out = new Array<number>(16).fill(0);
+  for (let row = 0; row < 4; row += 1) {
+    for (let column = 0; column < 4; column += 1) {
+      out[column * 4 + row] = rowMajor[row * 4 + column] ?? 0;
+    }
+  }
+  return out;
+}
+
 describe("poseFromTransformationMatrix", () => {
   const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
@@ -144,21 +183,91 @@ describe("poseFromTransformationMatrix", () => {
     expect(poseFromTransformationMatrix(withNaN)).toBeNull();
   });
 
-  it("reads a rotation about the vertical axis as yaw", () => {
-    const radians = (20 * Math.PI) / 180;
-    const cos = Math.cos(radians);
-    const sin = Math.sin(radians);
-    // A yaw only rotation matrix, row major.
-    const matrix = [
-      cos, 0, sin, 0,
-      0, 1, 0, 0,
-      -sin, 0, cos, 0,
-      0, 0, 0, 1,
-    ];
-    const pose = poseFromTransformationMatrix(matrix);
-    expect(Math.abs(pose?.yawDegrees ?? 0)).toBeCloseTo(20, 4);
+  /**
+   * Signed, since 2026-09-23. These used to assert Math.abs, which let a
+   * decoder with every sign backwards pass, and a sign is the whole question
+   * the pitch window asks (looking up is tolerated half as far as looking
+   * down). The expectations below are what the decoder reads under the
+   * convention at the top of pose.ts: the standard right handed rotation
+   * matrices about y, x and z, row major, read as yaw minus 20, pitch plus 20
+   * and roll plus 20. The one time calibration in that file is what ties
+   * these signs to a head on a phone.
+   */
+  it("reads a rotation about the vertical axis as signed yaw", () => {
+    const pose = poseFromTransformationMatrix(YAW_20_ROW_MAJOR);
+    expect(pose?.yawDegrees ?? 0).toBeCloseTo(-20, 4);
     expect(pose?.pitchDegrees ?? 99).toBeCloseTo(0, 4);
     expect(pose?.rollDegrees ?? 99).toBeCloseTo(0, 4);
+  });
+
+  it("reads a rotation about the horizontal axis as signed pitch", () => {
+    const pose = poseFromTransformationMatrix(PITCH_20_ROW_MAJOR);
+    expect(pose?.pitchDegrees ?? 0).toBeCloseTo(20, 4);
+    expect(pose?.yawDegrees ?? 99).toBeCloseTo(0, 4);
+    expect(pose?.rollDegrees ?? 99).toBeCloseTo(0, 4);
+  });
+
+  it("reads a rotation about the lens axis as signed roll", () => {
+    const pose = poseFromTransformationMatrix(ROLL_20_ROW_MAJOR);
+    expect(pose?.rollDegrees ?? 0).toBeCloseTo(20, 4);
+    expect(pose?.yawDegrees ?? 99).toBeCloseTo(0, 4);
+    expect(pose?.pitchDegrees ?? 99).toBeCloseTo(0, 4);
+  });
+});
+
+describe("poseFromLandmarkerMatrix", () => {
+  /**
+   * MediaPipe's Matrix.data is column major. The same rotation laid out that
+   * way has to read the SAME signed value the row major test above reads,
+   * which is what the transpose inside poseFromLandmarkerMatrix is for.
+   */
+  it("reads a column major yaw matrix as the same signed yaw", () => {
+    const pose = poseFromLandmarkerMatrix(transposed(YAW_20_ROW_MAJOR));
+    expect(pose?.yawDegrees ?? 0).toBeCloseTo(-20, 4);
+    expect(pose?.pitchDegrees ?? 99).toBeCloseTo(0, 4);
+    expect(pose?.rollDegrees ?? 99).toBeCloseTo(0, 4);
+  });
+
+  it("reads column major pitch and roll as the same signed values too", () => {
+    expect(
+      poseFromLandmarkerMatrix(transposed(PITCH_20_ROW_MAJOR))?.pitchDegrees ?? 0,
+    ).toBeCloseTo(20, 4);
+    expect(
+      poseFromLandmarkerMatrix(transposed(ROLL_20_ROW_MAJOR))?.rollDegrees ?? 0,
+    ).toBeCloseTo(20, 4);
+  });
+
+  /**
+   * The failure the on phone calibration is written to catch: feeding the
+   * column major data straight to the row major decoder reads the transpose,
+   * which for a rotation is its inverse, so every angle comes out negated.
+   */
+  it("would negate all three angles if the major order were read wrong", () => {
+    const wrongYaw = poseFromTransformationMatrix(transposed(YAW_20_ROW_MAJOR));
+    const wrongPitch = poseFromTransformationMatrix(transposed(PITCH_20_ROW_MAJOR));
+    const wrongRoll = poseFromTransformationMatrix(transposed(ROLL_20_ROW_MAJOR));
+    expect(wrongYaw?.yawDegrees ?? 0).toBeCloseTo(20, 4);
+    expect(wrongPitch?.pitchDegrees ?? 0).toBeCloseTo(-20, 4);
+    expect(wrongRoll?.rollDegrees ?? 0).toBeCloseTo(-20, 4);
+  });
+
+  it("reads the identity as square and refuses the wrong shape", () => {
+    const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    expect(poseFromLandmarkerMatrix(IDENTITY)).toEqual({
+      yawDegrees: 0,
+      pitchDegrees: 0,
+      rollDegrees: 0,
+    });
+    expect(poseFromLandmarkerMatrix(null)).toBeNull();
+    expect(poseFromLandmarkerMatrix([1, 2, 3])).toBeNull();
+    // A typed array reads the same numbers as a plain array. The identity is
+    // used rather than a zero filled buffer, because zeros are not a rotation
+    // and would decode to "square to the lens" for the wrong reason.
+    expect(
+      poseFromLandmarkerMatrix(
+        Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+      ),
+    ).toEqual({ yawDegrees: 0, pitchDegrees: 0, rollDegrees: 0 });
   });
 });
 

@@ -98,6 +98,8 @@ Purpose: get one photo that Perfect Corp can read well, so we never waste a cred
 
 Layout: full screen camera. A soft oval frame in antique gold hairline marks where the face should be. Below the frame, one line of live guidance. A single shutter control. A small "Upload instead" text link for people without a working camera.
 
+The master frame contract, decided 2026-09-23 and implemented by the capture PRs that follow this one. There is one portrait 3:4 frame with fixed geometry, identical on every device: it is what the person sees on the stage, it is what the live line and the gate measure, and it is what is uploaded. The oval is the target face inside that frame, 0.70 of the frame's width cheek to cheek, 1.35 times as tall as it is wide, centred at 0.50 of the width and 0.47 of the height, and it is defined in the frame's own coordinates rather than drawn over whatever the camera granted. A phone track keeps its full width as a centred 3:4 crop; a laptop track keeps its full height. The upload path composes a gallery photo into the same geometry around the face it finds, and the one reframe retry is a concentric crop of that frame that cannot cut inside the oval. Every number lives in src/lib/shared/frame-geometry.ts and is derived from the engine's four gate families and the Camera Kit presets in docs/04-integrations.md, so a face that fills the oval is the same face, at the same share of the picture, on an iPhone, an Android and a webcam alike.
+
 Live guidance (one line at a time, replaced as conditions change, never stacked):
 
 - "Face the light. A window works best."
