@@ -30,6 +30,34 @@
  *
  * Pure: no DOM, no MediaPipe types, no I/O, so both estimators can be tested
  * against known geometry with no device and no model file.
+ *
+ * Calibration, one time
+ *
+ * MediaPipe documents that facialTransformationMatrixes is a 4 by 4 matrix
+ * with column major data and documents nothing about its Euler convention, so
+ * the signs above are a claim about geometry that has to be checked once on a
+ * phone before any threshold trusts them. The check, on /capture?debug=1 with
+ * a frame sent through "Upload instead" so the picture is un mirrored and the
+ * signs are in image terms:
+ *
+ *     turn toward the person's own right    yaw reads negative
+ *                                           (the person's right is the
+ *                                           image's left)
+ *     lift the chin                         pitch reads positive
+ *     tip the head toward the image's right roll reads positive
+ *
+ * Facing the lens all three read within 3 degrees of zero. The free field
+ * check is the same two turned frames sent with "Use it anyway": both come
+ * back refused for 0 units with leftward and rightward in the engine's own
+ * image terms, and those must agree with our sign.
+ *
+ * What the check catches. poseFromLandmarkerMatrix transposes the column major
+ * data before decoding it. Reading a column major matrix as row major is
+ * reading the transpose, which for a rotation is the inverse, so a wrong major
+ * order negates all three angles at once, and a single turned frame shows it.
+ * Until the check is written into this file as done, with the phones and the
+ * date, the signs here are the convention the code is written to, not a
+ * measurement.
  */
 
 export type FacePose = {
@@ -148,6 +176,34 @@ export function poseFromTransformationMatrix(
     pitchDegrees: normalizeDegrees(-pitch),
     rollDegrees: normalizeDegrees(roll),
   };
+}
+
+/**
+ * Pose from the matrix a MediaPipe FaceLandmarker hands back, which is the
+ * same 4 by 4 as above with its 16 values laid out COLUMN major: data[c * 4 + r]
+ * is the element in row r, column c. This transposes into the row major layout
+ * poseFromTransformationMatrix reads and decodes it there.
+ *
+ * Kept as its own entry point rather than a flag, so the one place that knows
+ * the landmarker's layout is the one place that reads it. The calibration
+ * block at the top of this file is what proves the transpose is right: read
+ * without it, every angle comes out negated.
+ *
+ * Null for anything that is not 16 numbers, like the decoder it wraps.
+ */
+export function poseFromLandmarkerMatrix(
+  data: ArrayLike<number> | null | undefined,
+): FacePose | null {
+  if (data === null || data === undefined || data.length !== 16) {
+    return null;
+  }
+  const rowMajor = new Array<number>(16);
+  for (let row = 0; row < 4; row += 1) {
+    for (let column = 0; column < 4; column += 1) {
+      rowMajor[row * 4 + column] = data[column * 4 + row] ?? Number.NaN;
+    }
+  }
+  return poseFromTransformationMatrix(rowMajor);
 }
 
 /** Wraps an angle into -180 to 180 so a threshold comparison is meaningful. */

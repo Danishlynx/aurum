@@ -142,6 +142,21 @@ The 60 percent face rule is measured against the short axis, not the width as su
 
 Two things worth carrying: the pitch window is asymmetric, so looking down is tolerated twice as far as looking up, and a phone held below the face pushes pitch into the tight half. And lighting has an upper bound, so an over lit frame fails the same way a dark one does, with no error code of its own to say so.
 
+The rest of the Camera Kit configuration, read from the same page on 2026-09-23: lighting_uneven, the maximum luma difference between the two eyes, is 0.2 RELAXED, 0.15 MODERATE, 0.1 STRICT; the face boundaries are 0 to 1 of the image with no margin; and the SDK auto captures after 800 ms of continuously good quality. face_ratio is face width over frame width in portrait. Note that RELAXED 0.55 sits below the server's own 0.60 rule, and that "face width" is never defined on either side. Lighting is on an undefined 0 to 1 scale.
+
+The four face gate families, read from the raw OpenAPI bundles on 2026-09-23. There is not one input gate but four, and a frame has to clear all four to be read in one go.
+
+| Family | Endpoints | Face rule | Angle rule | Light | Size | Format |
+|---|---|---|---|---|---|---|
+| A skincare | skin-analysis SD (16 units at 13 to 16 concerns) | width greater than 60 percent of the image width (hard); target 60 to 80 percent | none published; "front facing, neutral, mouth closed, eyes open" | error_lighting_dark | short side at least 480 (HD at least 1080); long side auto resized to 2560 | jpg or png |
+| B face attributes | skin-tone-analysis (the leader, 20 units), face-attr-analysis (face shape, 10 units) | width greater than 60 percent of the image width; single person | face_angle_strictness_level: strict 4/6/4, high 10 (the default), medium 15, low 20, flexible 30; 11 codes including upward, downward, leftward, rightward, left_tilt, right_tilt | face_quality words | any side at least 320; sides above 1080 downscaled anyway | jpg only |
+| C fitzpatrick | fitzpatrick-scale-analyzer (10 units) | too_small or out_of_boundary | hard "within 10 degrees of straight", no override | error_insufficient_lighting | short side at least 320 | jpg only |
+| D hairstyle | hair-transfer (2 units) | face width at least 128 px, single face, shoulders visible (error_no_shoulder) | pitch within 10, yaw within 45, roll within 15 | none published | long side at most 1024 | jpg only |
+
+Two consequences. The one go promise is bounded by family C's hard 10 degrees, which no strictness level relaxes, so the accept tier has to sit inside 10 on all three axes with margin, and that needs a solved head pose rather than a keypoint heuristic. And family D wants shoulders, which is geometrically incompatible with a face at 60 to 80 percent of the width, so the hairstyle input has to be a derivative of the widest frame rather than the master frame itself. Leftward and rightward are in image terms; mirroring is undocumented; a refused task costs 0 units on every family; no blur code exists on any of them.
+
+The master frame geometry in src/lib/shared/frame-geometry.ts is derived from these rows and the Camera Kit presets: the 3:4 frame and its 1440 and 480 edges from the size columns, the 0.70 oval from the face rules and the MODERATE preset with margin on both sides, the width bands from the RELAXED floor, and the hold and countdown from the 800 ms rule.
+
 The face attribute request, confirmed on 2026-09-03
 
 The selection field is features, not dst_actions. dst_actions is the skin analyzer's word, this endpoint has no such field, and the app was sending it on every capture, so every face shape task was rejected 400 before it existed and /hair told every person their face shape was not read from their photo. The same free oracle settled it: { dst_actions: ["faceShape"] } and a body with no selection both answer "features is required but wasn't included in your request.", { features: ["faceShape"] } answers the generic "One or more parameters in this request are invalid.", and the snake case { features: ["face_shape"] } answers "0 is not one of the accepted values.", naming the index in the array. Balance 408 before those probes and 408 after. face_angle_strictness_level is accepted alongside and defaults to high.
