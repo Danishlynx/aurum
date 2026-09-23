@@ -76,8 +76,11 @@ export const captureRejectionReasonSchema = z.enum(CAPTURE_REASON_PRECEDENCE);
  * the sharpness, exposure, and face coverage the doc names, because assessCapture
  * already produces the rest and the eval suite wants the raw numbers.
  *
- * The server recomputes the gate on the uploaded object. These values are for
- * the record and for eval:capture, never the sole basis for spending a credit.
+ * The server does not recompute the gate. It validates the uploaded bytes at
+ * analyze (src/lib/server/capture/validate.ts: JPEG, the registered size, the
+ * engine's pixel limits, the digest) before any unit is reserved. These values
+ * are for the record and for eval:capture, never the sole basis for spending a
+ * credit.
  */
 export const captureQualitySchema = z.object({
   verdict: captureVerdictSchema,

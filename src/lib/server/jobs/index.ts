@@ -15,6 +15,7 @@ import {
   reachedChargedSuccess,
 } from "@/lib/shared/fan-out";
 
+import { validateCaptureObject } from "../capture/validate";
 import {
   ensureAnalysis,
   findJobForSubject,
@@ -529,6 +530,15 @@ export async function createAnalysisJobs(
  *
  * Read before anything is reserved, so a capture whose upload never landed costs
  * nothing and gets the upload copy rather than a 500.
+ *
+ * Read and checked, too. This is the one place the bytes are in hand before a
+ * reservation, so it is where the server proves the stored object is the JPEG
+ * the client registered, at the registered size, inside the engine's limits,
+ * with the registered digest (src/lib/server/capture/validate.ts). Nothing
+ * else ever looked: the captures route receives no bytes, and the analyze
+ * route reads only the row. An object that fails is a 409 capture_unreadable,
+ * thrown as an HttpError so the route answers with that status and sentence
+ * rather than a 500, and no unit is reserved for it.
  */
 async function providerFileFor(args: {
   readonly capture: Capture;
@@ -555,6 +565,8 @@ async function providerFileFor(args: {
       code: "capture_not_uploaded",
     });
   }
+
+  validateCaptureObject(object, args.capture);
 
   const fileId = await uploadCapture({
     bytes: object.bytes,

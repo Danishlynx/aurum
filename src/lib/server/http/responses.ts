@@ -133,6 +133,25 @@ export function capReached(args: {
   });
 }
 
+/**
+ * The stored photo failed the server's read of it at analyze: not a JPEG, a
+ * size other than the one registered, outside the engine's limits, or a digest
+ * other than the row's (src/lib/server/capture/validate.ts). A 409 rather than
+ * a 400 because the request itself was fine; it is the stored object that does
+ * not agree with the row it was registered under, the same class as
+ * capture_missing_original and capture_not_uploaded beside it.
+ */
+export function captureUnreadable(
+  message: string = messages.captureUnreadable,
+): HttpError {
+  return new HttpError({
+    status: 409,
+    message,
+    outcome: "invalid_request",
+    code: "capture_unreadable",
+  });
+}
+
 export function serverError(message: string = messages.serverError): HttpError {
   return new HttpError({
     status: 500,
