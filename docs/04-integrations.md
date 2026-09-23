@@ -64,7 +64,7 @@ Implementation rules
 - Poll from our own GET /api/jobs handler, never from a long running server loop. Respect any polling interval the docs specify.
 - Parse every response with zod. If a field we depend on is missing, fail the job with a clear error and keep the raw payload (minus any image data) for debugging.
 - Map provider concern keys to our internal keys in one place: src/lib/shared/concerns.ts. The tone first ranking lives there too and is unit tested.
-- Never send a photo that failed our quality gate. Never send a photo of anyone but the signed in person.
+- Never send a photo that failed our quality gate. Never send a photo of anyone but the signed in person. The gate runs on the client; the server does not recompute it. What the server does, at analyze and before any task is created or any unit reserved, is validate the uploaded bytes from their header and digest alone (src/lib/server/capture/validate.ts): JPEG only, header dimensions equal to the ones the client registered, at least 480 px on the short side, at most 2560 px on the long side, at most 10 MB, and a sha256 equal to the captures row. An object that fails is answered 409 capture_unreadable and logged as aurum.capture_unreadable with the capture id, the failing check and the numbers, never the bytes.
 
 Credit table
 
@@ -141,6 +141,27 @@ The 60 percent face rule is measured against the short axis, not the width as su
     lighting upper         0.90     0.85       0.80
 
 Two things worth carrying: the pitch window is asymmetric, so looking down is tolerated twice as far as looking up, and a phone held below the face pushes pitch into the tight half. And lighting has an upper bound, so an over lit frame fails the same way a dark one does, with no error code of its own to say so.
+
+The rest of the Camera Kit configuration, read from the same page on 2026-09-23: lighting_uneven, the maximum luma difference between the two eyes, is 0.2 RELAXED, 0.15 MODERATE, 0.1 STRICT; the face boundaries are 0 to 1 of the image with no margin; and the SDK auto captures after 800 ms of continuously good quality. face_ratio is face width over frame width in portrait. Note that RELAXED 0.55 sits below the server's own 0.60 rule, and that "face width" is never defined on either side. Lighting is on an undefined 0 to 1 scale.
+
+The four face gate families, read from the raw OpenAPI bundles on 2026-09-23. There is not one input gate but four, and a frame has to clear all four to be read in one go.
+
+| Family | Endpoints | Face rule | Angle rule | Light | Size | Format |
+|---|---|---|---|---|---|---|
+| A skincare | skin-analysis SD (16 units at 13 to 16 concerns) | width greater than 60 percent of the image width (hard); target 60 to 80 percent | none published; "front facing, neutral, mouth closed, eyes open" | error_lighting_dark | short side at least 480 (HD at least 1080); long side auto resized to 2560 | jpg or png |
+| B face attributes | skin-tone-analysis (the leader, 20 units), face-attr-analysis (face shape, 10 units) | width greater than 60 percent of the image width; single person | face_angle_strictness_level: strict 4/6/4, high 10 (the default), medium 15, low 20, flexible 30; 11 codes including upward, downward, leftward, rightward, left_tilt, right_tilt | face_quality words | any side at least 320; sides above 1080 downscaled anyway | jpg only |
+| C fitzpatrick | fitzpatrick-scale-analyzer (10 units) | too_small or out_of_boundary | hard "within 10 degrees of straight", no override | error_insufficient_lighting | short side at least 320 | jpg only |
+| D hairstyle | hair-transfer (2 units) | face width at least 128 px, single face, shoulders visible (error_no_shoulder) | pitch within 10, yaw within 45, roll within 15 | none published | long side at most 1024 | jpg only |
+
+The table says image width and the paragraph above says short axis, and both name the same number: on a portrait frame the short axis is the width, which is one more reason the master frame is portrait.
+
+Two consequences. The one go promise is bounded by family C's hard 10 degrees, which no strictness level relaxes, so the accept tier has to sit inside 10 on all three axes with margin, and that needs a solved head pose rather than a keypoint heuristic. And family D wants shoulders, which is geometrically incompatible with a face at 60 to 80 percent of the width, so the hairstyle input has to be a derivative of the widest frame rather than the master frame itself. Leftward and rightward are in image terms; mirroring is undocumented; a refused task costs 0 units on every family; no blur code exists on any of them.
+
+Calibrated on the founder's Android phone (Chrome, the landmarker on the GPU at about 37 ms a frame) on 2026-09-23, on the develop preview with /capture?debug=1. Two things the phone settled that no test could. The pose signs: facing the lens the readout was yaw -1, pitch 5, roll 1; turned toward the person's own right, yaw read +44 with the column major transpose alone, and the convention in src/lib/shared/pose.ts wants that negative, so poseFromLandmarkerMatrix negates all three decoded angles (pitch and roll on the same basis; the free field check against the engine's leftward and rightward codes is still to come with the first refused turned frame). The width: with the face filling the 0.70 oval the landmarker's cheek to cheek span read 0.55, so MESH_FACE_WIDTH_SHARE is 0.79 and every width the gate reads is the span divided by it; the raw span is stored as mesh_width_ratio beside face_width_ratio so the report can move the share when the engine's face_quality words say its own box is wider or narrower than the visible face.
+
+The master frame geometry in src/lib/shared/frame-geometry.ts is derived from these rows and the Camera Kit presets: the 3:4 frame and its 1440 and 480 edges from the size columns, the 0.70 oval from the face rules and the MODERATE preset with margin on both sides, the width bands from the RELAXED floor, and the hold and countdown from the 800 ms rule.
+
+The face model that measures the frame against those rules is MediaPipe's FaceLandmarker (tasks-vision 1.0.1, the float16 model), and it is self hosted. scripts/prepare-face-model.ts runs on postinstall, copies the WASM runtime out of node_modules into public/mediapipe/wasm and downloads the .task model into public/models, keeping it only when its sha256 equals the pin in src/lib/shared/face-model.ts; both folders are gitignored. The capture screen asks this deployment for the model first and falls back to jsDelivr and Google's model host at the same pinned version only when the local model is missing or will not create, so a phone on the capture path depends on no third party CDN, and a model swapped under the same URL can never reach public/. Nothing about the model leaves the device: the inference is local and no frame, landmark or measurement is sent anywhere by it.
 
 The face attribute request, confirmed on 2026-09-03
 
@@ -237,6 +258,7 @@ General rules
 - RLS: enabled on every table. Policies: select, insert, update, delete where user_id = auth.uid(). Service role is used only from server modules for judge sessions, seeding, and scheduled purges.
 - Storage: four private buckets (captures, masks, renders, garments). Uploads and reads go through signed URLs created on the server. Bucket policies deny public access.
 - Scheduled jobs (Supabase cron or a Vercel cron route): purge expired judge session data after 7 days; delete original captures older than 24 hours where keep_originals is false and processing is complete (belt and braces for the in flow deletion).
+- Reconcile schedule (pg_cron and pg_net, migration 0016): every minute the job aurum_reconcile runs public.reconcile_open_jobs(), which returns at once when no analysis job is pending or running and otherwise POSTs /api/jobs/reconcile with a bearer, so a reading finishes whether or not the tab is still polling (docs/03-architecture.md, "Jobs", reconcile). The route's URL and the bearer are the Vault secrets aurum_reconcile_url and aurum_reconcile_secret, created once by the human with vault.create_secret and read by the function at call time; the bearer is the same value as JOBS_RECONCILE_SECRET on Vercel, and neither is ever a literal in a migration. Three human steps, written out in supabase/README.md, "Reconcile schedule": enable pg_cron and pg_net, create the two Vault secrets, run the cron.schedule statement. Vercel's own cron runs once a day on the Hobby plan and is not a driver for a job with a 120 second lifetime, which is why this lives in the database.
 
 ## Environment variables
 
@@ -257,6 +279,9 @@ See .env.example at the repo root. Never commit .env. Vercel holds production va
     PROVIDER_CALLS_ENABLED
     DAILY_CAP_PERFECTCORP_UNITS
     DAILY_CAP_SERPAPI_SEARCHES
+    JOBS_RECONCILE_SECRET
+
+JOBS_RECONCILE_SECRET is the bearer POST /api/jobs/reconcile expects from the scheduled driver, and the same value as the Vault secret aurum_reconcile_secret in the Supabase project (the Supabase section above). Optional: unset, the route answers 503 and the app runs as it did before the driver existed, with the guarantee off.
 
 Two more exist for the judge path, both optional and both explained in .env.example.
 

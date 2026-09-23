@@ -31,6 +31,12 @@ export const messages = {
    */
   providerRefused: copy.errors.readingRefused,
   /**
+   * The stored bytes are not the photo the client registered, found at analyze
+   * before anything is reserved (src/lib/server/capture/validate.ts). Lives in
+   * copy.ts like the other capture lines; this is the re export.
+   */
+  captureUnreadable: copy.errors.captureUnreadable,
+  /**
    * The try on failed state, docs/01-user-flow.md section H. Used whenever a
    * render cannot be produced, so the body carries the same sentence the screen
    * shows and no substitute image is ever implied.
@@ -62,6 +68,13 @@ export const messages = {
   /** In house. A missing environment value. */
   notConfigured:
     "This build is missing a server setting, so that step cannot run yet.",
+  /**
+   * In house. POST /api/jobs/reconcile called without the bearer the scheduled
+   * driver holds (docs/03-architecture.md, "Jobs", reconcile). Read by a log,
+   * never by a person, and still a plain sentence like every other body.
+   */
+  reconcileUnauthorized:
+    "That call did not carry the reconcile secret, so nothing was polled.",
   /** In house. An endpoint this build cannot call yet, or one not configured. */
   analysisUnavailable:
     "This part of the reading is not available yet. The rest of your profile is unaffected.",
@@ -139,6 +152,7 @@ export const SERVER_MESSAGES_NOT_IN_FLOW_DOC = [
   "providerCallsDisabled",
   "serverError",
   "notConfigured",
+  "reconcileUnauthorized",
   "analysisUnavailable",
   "hairTypeNeedsThreePhotos",
   "renderInProgress",

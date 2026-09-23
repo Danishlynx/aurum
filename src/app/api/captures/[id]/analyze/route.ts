@@ -60,6 +60,18 @@ import { copy } from "@/lib/shared/copy";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/*
+ * Vercel ends a function at its plan default (10 seconds on Hobby) unless the
+ * route declares its own budget, and this route waits on providers twice: it
+ * downloads the stored selfie, uploads it to Perfect Corp, and then creates the
+ * leader task, each under a 15 second provider timeout. The jobs route and the
+ * captures route declare theirs (60 and 30); until 2026-09-23 this one did not,
+ * so a slow upload could be cut off after the provider had accepted the task
+ * and before the row recorded it, which is a charged reading nothing polls. The
+ * same 60 as the poll route, because both wait on the same provider.
+ */
+export const maxDuration = 60;
+
 const paramsSchema = z.object({ id: z.uuid() });
 
 interface AnalyzeResponse extends CaptureJobsView {

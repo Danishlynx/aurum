@@ -15,6 +15,7 @@ import {
   reachedChargedSuccess,
 } from "@/lib/shared/fan-out";
 
+import { validateCaptureObject } from "../capture/validate";
 import {
   ensureAnalysis,
   findJobForSubject,
@@ -60,18 +61,22 @@ import {
 /**
  * The job lifecycle from docs/03-architecture.md, "Jobs".
  *
- * create   reserve credits, start the provider task, store provider_task_id,
- *          status running
+ * create   reserve credits, start the provider task, store provider_task_id
+ *          on the job row first and the analysis row second, status running
  * poll     for each running job last polled more than a second ago, ask the
  *          provider, validate with zod, store the normalized result, mark
  *          succeeded and reconcile; on failure mark failed with a human
- *          readable error and refund
+ *          readable error and refund. Driven by GET /api/jobs while a tab is
+ *          watching, and by POST /api/jobs/reconcile every minute for every
+ *          open job nobody is watching (./reconcile.ts)
  * retry    one automatic retry for a transient failure, attempts capped at 2
  * idempotency  creating a job for a subject that already has one running
  *          returns the running job
- * timeout  a job running longer than 120 seconds fails with the timeout copy,
- *          and is NOT refunded: the task is still at the provider and will be
- *          charged whether or not we ever read it
+ * timeout  a job running longer than 120 seconds is read one last time; a
+ *          result that landed is stored, a refusal is refunded, and a task
+ *          still running fails with the timeout copy and is NOT refunded: it
+ *          is still at the provider and will be charged whether or not we
+ *          ever read it
  *
  * The order the analyses are started in, and why it is not all at once.
  *
@@ -196,11 +201,19 @@ function viewOf(
  * It is written where the code is known (failJob) and read back with zod like
  * any other stored shape, so a row written by an older build simply has no
  * class rather than breaking a poll.
+ *
+ * elapsed_ms, since 2026-09-23, is how long the job had been open when the
+ * refusal was written (jobs.created_at to now). The calibration report reads it
+ * beside the code so a refusal that arrived at 115 seconds can be told from one
+ * that arrived at 2, which is the difference between a slow engine and a frame
+ * it would not read. The jobs table has no poll counter column (attempts counts
+ * tasks, not reads), so only the elapsed time is recorded.
  */
 const refusalNoteSchema = z.object({
   refusal: z.object({
     reason: z.enum(ANALYSIS_FAILURE_REASONS),
     code: z.string().nullable().optional(),
+    elapsed_ms: z.number().nonnegative().nullable().optional(),
   }),
 });
 
@@ -209,8 +222,23 @@ export interface AnalysisRefusal {
   readonly code: string | null;
 }
 
-function refusalNote(refusal: AnalysisRefusal) {
-  return { refusal: { reason: refusal.reason, code: refusal.code } };
+/** Milliseconds from the job row's creation to now, never negative. */
+function elapsedSince(createdAt: string, now = Date.now()): number {
+  const started = Date.parse(createdAt);
+  if (!Number.isFinite(started)) {
+    return 0;
+  }
+  return Math.max(0, now - started);
+}
+
+function refusalNote(refusal: AnalysisRefusal, elapsedMs: number) {
+  return {
+    refusal: {
+      reason: refusal.reason,
+      code: refusal.code,
+      elapsed_ms: Math.round(elapsedMs),
+    },
+  };
 }
 
 function refusalReasonOf(analysis: Analysis): AnalysisFailureReason | null {
@@ -504,6 +532,15 @@ export async function createAnalysisJobs(
  *
  * Read before anything is reserved, so a capture whose upload never landed costs
  * nothing and gets the upload copy rather than a 500.
+ *
+ * Read and checked, too. This is the one place the bytes are in hand before a
+ * reservation, so it is where the server proves the stored object is the JPEG
+ * the client registered, at the registered size, inside the engine's limits,
+ * with the registered digest (src/lib/server/capture/validate.ts). Nothing
+ * else ever looked: the captures route receives no bytes, and the analyze
+ * route reads only the row. An object that fails is a 409 capture_unreadable,
+ * thrown as an HttpError so the route answers with that status and sentence
+ * rather than a 500, and no unit is reserved for it.
  */
 async function providerFileFor(args: {
   readonly capture: Capture;
@@ -530,6 +567,8 @@ async function providerFileFor(args: {
       code: "capture_not_uploaded",
     });
   }
+
+  validateCaptureObject(object, args.capture);
 
   const fileId = await uploadCapture({
     bytes: object.bytes,
@@ -647,12 +686,32 @@ async function startKinds(args: {
       try {
         const task = await startTask({ kind: entry.kind, fileId: args.fileId });
         args.onProviderCall?.(1);
-        await updateAnalysis(entry.analysis.id, {
-          status: "running",
-          provider_task_id: task.taskId,
-          credits_used: entry.reservationUnits,
-          error: null,
-        });
+        /*
+         * The job row first, then the analysis row, and the order is the point.
+         *
+         * The task exists at the provider from this line on, charged whether or
+         * not anything ever reads it, and the only thing that makes it readable
+         * is jobs.provider_task_id: pollCaptureJobs and the scheduled reconcile
+         * pass (src/lib/server/jobs/reconcile.ts) both start from the job row.
+         * Until 2026-09-23 the analysis row was written first, so a process
+         * killed between the two writes left an analysis that said running with
+         * a task id and no job row at all. Nothing listed it, nothing polled it,
+         * and a second analyze call found no job and started the reading again
+         * at full price. With the job row written first the same kill leaves a
+         * running job pointing at the task and an analysis still pending, which
+         * is exactly the shape the next poll, or the reconcile pass a minute
+         * later, settles by reading the task and storing what it finds. The
+         * window that remains is between the provider's answer and this write,
+         * and no ordering can close it (docs/03-architecture.md, "Failure modes").
+         *
+         * The analysis write is guarded on updated_at because the job row is
+         * now visible to a poll before the analysis row records the start. A
+         * poll that reads the task and settles it in that gap writes the result
+         * to the analysis; an unconditional write here would then put "running"
+         * back over it. The guard makes this write lose that race rather than
+         * win it, and the loss is logged rather than treated as a failure: the
+         * reading is stored and paid for, which is what a start is for.
+         */
         await writeJob({
           ownerId,
           subjectId: entry.analysis.id,
@@ -661,6 +720,26 @@ async function startKinds(args: {
           attempts,
           error: null,
         });
+        const recorded = await updateAnalysis(
+          entry.analysis.id,
+          {
+            status: "running",
+            provider_task_id: task.taskId,
+            credits_used: entry.reservationUnits,
+            error: null,
+          },
+          { unchangedSince: entry.analysis.updated_at },
+        );
+        if (recorded === false) {
+          console.warn(
+            JSON.stringify({
+              event: "aurum.analysis_start_superseded",
+              captureId: entry.analysis.capture_id,
+              kind: entry.kind,
+              note: "a poll settled the task before the start was recorded",
+            }),
+          );
+        }
       } catch (thrown) {
         await refundFor(args.session, entry.analysis.id);
         const message = messageForFailure(thrown);
@@ -714,7 +793,9 @@ async function cancelWaitingKinds(args: {
       status: "failed",
       error: args.message,
       credits_used: 0,
-      ...(args.refusal === undefined ? {} : { raw: refusalNote(args.refusal) }),
+      ...(args.refusal === undefined
+        ? {}
+        : { raw: refusalNote(args.refusal, elapsedSince(job.created_at)) }),
     });
     await writeJob({
       ownerId: args.ownerId,
@@ -944,7 +1025,9 @@ async function failJob(args: {
     status: "failed",
     error: args.message,
     credits_used: 0,
-    ...(args.refusal === undefined ? {} : { raw: refusalNote(args.refusal) }),
+    ...(args.refusal === undefined
+      ? {}
+      : { raw: refusalNote(args.refusal, elapsedSince(args.job.created_at)) }),
   });
   await updateJob(args.job.id, {
     status: "failed",
@@ -1110,21 +1193,40 @@ export async function pollCaptureJobs(
      * buying a second copy of the reading. That makes this the branch that has
      * to be honest about the money.
      *
+     * Honest about the money cuts both ways, and until 2026-09-23 this branch
+     * was only honest about one of them. It closed the job as charged without
+     * asking the provider once more, so a result that landed at 115 seconds and
+     * was first polled at 125 (a backgrounded tab, a slow phone) was paid for,
+     * present at the provider, and thrown away unread. The task is therefore
+     * read one last time below, on the same path an ordinary poll takes: a
+     * result that is there is stored, a refusal is refunded, and only a task
+     * that is genuinely still running is closed as charged. The lifetime decides
+     * what happens to a task that has not answered; it never decides to ignore
+     * one that has.
+     *
      * A job that never started (a follower still pending, no task, no
-     * reservation) passes through the same call and settles nothing, because
-     * there is nothing to settle.
+     * reservation) has nothing to read: past the lifetime it is closed with the
+     * timeout line and credits_used 0, because nothing was reserved for it. That
+     * is also what becomes of the followers of a leader whose result landed
+     * late. Every job of a capture is written at analyze time, so the followers
+     * are as old as the leader and expire in the same pass; the late leader is
+     * stored and paid for, its followers are closed unstarted and unpaid, and
+     * the profile is not built from that capture. Starting them would be worse:
+     * they would expire on the very next poll and be closed as charged. A
+     * follower lifetime measured from its own start belongs with the reconcile
+     * work (docs/03-architecture.md, Jobs).
      */
-    if (Date.now() - Date.parse(job.created_at) > JOB_LIFETIME_MS) {
-      await failChargedJob({
-        session: input.session,
-        job,
-        analysis,
-        message: copy.errors.providerTimeout,
-      });
-      continue;
-    }
+    const expired = Date.now() - Date.parse(job.created_at) > JOB_LIFETIME_MS;
 
     if (job.provider_task_id === null) {
+      if (expired) {
+        await failChargedJob({
+          session: input.session,
+          job,
+          analysis,
+          message: copy.errors.providerTimeout,
+        });
+      }
       continue;
     }
 
@@ -1235,10 +1337,52 @@ export async function pollCaptureJobs(
             captureId,
           });
         }
+        continue;
       }
-      // Still running: last_polled_at was already stamped by the claim.
+
+      /*
+       * Still running. Inside the lifetime, last_polled_at was already stamped
+       * by the claim and the next poll asks again. Past it, this is the task the
+       * whole branch above is about: not refused, not answered, and going to be
+       * charged, so it is closed as charged and the person reads the timeout
+       * line.
+       */
+      if (expired) {
+        await failChargedJob({
+          session: input.session,
+          job,
+          analysis,
+          message: copy.errors.providerTimeout,
+        });
+      }
     } catch (thrown) {
       const transient = isProviderError(thrown) && thrown.isTransient;
+      /*
+       * The last read past the lifetime did not answer either. Whatever threw
+       * (a 15 second timeout, a 5xx, a 4xx for a task the provider no longer
+       * serves, a key that stopped working, a status envelope that did not
+       * parse), the task's state is unknown, and an unknown task is one the
+       * provider may well have finished and charged for. So it is closed exactly
+       * as it was before the final read existed: as charged, with the timeout
+       * line. The lifetime, not the task, has the final word here.
+       *
+       * This is tested on expired alone, and deliberately not on transient. Until
+       * the review of 2026-09-23 only a transient error took this branch, and
+       * every other throw fell through to failJob below, which refunds. That
+       * refund was new money: before the final read existed an expired job was
+       * closed charged without any read at all, so a rotated key or a 400 on the
+       * status GET had turned "we do not know" into "we were not charged", which
+       * is the same lie failChargedJob exists to stop telling.
+       */
+      if (expired) {
+        await failChargedJob({
+          session: input.session,
+          job,
+          analysis,
+          message: copy.errors.providerTimeout,
+        });
+        continue;
+      }
       /*
        * A transient error here is a failure to READ the task, not a failure of
        * the task.

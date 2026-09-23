@@ -257,6 +257,7 @@ test.describe("the reveal when the engine refuses the photo", () => {
         height: element.offsetHeight,
       });
       const style = getComputedStyle(layer);
+      const wrapper = photo.parentElement;
       return {
         image: style.maskImage,
         mode: style.maskMode,
@@ -264,6 +265,11 @@ test.describe("the reveal when the engine refuses the photo", () => {
         layer: boxOf(layer),
         photo: boxOf(photo),
         sameParent: layer.offsetParent === photo.offsetParent,
+        wrapperTransform:
+          wrapper === null ? null : getComputedStyle(wrapper).transform,
+        wrapperHoldsLayer: wrapper !== null && wrapper.contains(layer),
+        photoTransform: getComputedStyle(photo).transform,
+        layerTransform: style.transform,
       };
     });
 
@@ -275,6 +281,65 @@ test.describe("the reveal when the engine refuses the photo", () => {
     // picture the mask was measured on.
     expect(geometry?.sameParent).toBe(true);
     expect(geometry?.layer).toEqual(geometry?.photo);
+
+    /*
+     * Mirrored together, docs/01-user-flow.md section E: the person sees the
+     * mirror image they framed, and the mask, aligned to the un mirrored
+     * upload, is mirrored with the still so the pair stays aligned. One
+     * wrapper carries the flip; the still carries none of its own, and the
+     * mask layer's only transform is its bloom.
+     */
+    expect(geometry?.wrapperHoldsLayer).toBe(true);
+    expect(geometry?.wrapperTransform).toBe("matrix(-1, 0, 0, 1, 0, 0)");
+    expect(geometry?.photoTransform).toBe("none");
+  });
+
+  /**
+   * The poll gave up, docs/01-user-flow.md section E "Gave up": three polls in
+   * a row that never reached the server. The readings behind the screen are
+   * paid for and may well have landed, so the primary answer is to ask again,
+   * not to take a new photo. "Check again" resumes polling the same capture,
+   * and once the server answers the reveal carries on to the report.
+   */
+  test("offers to check again after the poll gave up, and resumes on the same capture", async ({
+    page,
+  }) => {
+    let calls = 0;
+    await page.route("**/api/jobs**", (route) => {
+      calls += 1;
+      if (calls <= 3) {
+        return route.abort("connectionfailed");
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          jobs: [
+            { id: "job-skin", kind: "skin", status: "succeeded" },
+            { id: "job-tone", kind: "attributes", status: "succeeded" },
+            { id: "job-fitz", kind: "fitzpatrick", status: "succeeded" },
+          ],
+          complete: true,
+        }),
+      });
+    });
+    await page.goto("/analyzing?capture=e2e-gave-up");
+
+    await expect(page.getByText(copy.errors.requestFailed)).toBeVisible();
+    const checkAgain = page.getByRole("button", {
+      name: copy.analyzing.checkAgainAction,
+    });
+    await expect(checkAgain).toBeVisible();
+    // The camera is still offered, under it, and still goes to /capture.
+    await expect(
+      page.getByRole("link", { name: copy.report.retakePhotoAction }),
+    ).toHaveAttribute("href", "/capture");
+    // Nothing polls while it is stopped: the count holds at the three failures.
+    await page.waitForTimeout(2_000);
+    expect(calls).toBe(3);
+
+    await checkAgain.click();
+    await page.waitForURL("**/report");
   });
 
   test("holds the status line while a core reading can still land", async ({

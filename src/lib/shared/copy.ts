@@ -165,6 +165,22 @@ export const copy = {
     guidance: {
       light: "Face the light. A window works best.",
       /**
+       * In house, added 2026-09-23 with the light measured over the face
+       * itself. The engine's own capture SDK has an upper lighting bound as
+       * well as a lower one (docs/04-integrations.md, the Camera Kit rows), so
+       * a face in direct sun fails the same way a dark one does, and the fix
+       * is the opposite of "Face the light".
+       */
+      bright: "Too bright. Move out of direct light.",
+      /**
+       * In house, added 2026-09-23. A phone held landscape hands the camera a
+       * landscape track, and the master frame is portrait: the face the
+       * person sees in the oval is a small share of the frame that is sent.
+       * Said only on a touch device, since a laptop webcam is landscape by
+       * construction and cannot be turned.
+       */
+      upright: "Hold the phone upright.",
+      /**
        * In house, and the sixth line of the same list, added 2026-09-07 when the
        * capture screen gained a detector that can actually measure a head's
        * angle rather than infer it from where a blob sits in the frame.
@@ -198,8 +214,36 @@ export const copy = {
        */
       eyeLevel: "Hold the phone at eye level and look into the lens.",
       closer: "Move closer until your face fills the oval.",
+      /**
+       * In house, added 2026-09-23. The other side of "Move closer": a face
+       * wider than the band the engine reads, or running into the edge of the
+       * frame, is refused by the engine as out of boundary and no crop fixes
+       * it, so the line asks for the one thing that does.
+       */
+      back: "Move back a little so your whole face fits.",
       hold: "Hold still.",
+      /**
+       * docs/01 section D. The tap still works at any time; after
+       * READY_HOLD_MS of this line the oval turns solid, the line below takes
+       * over and the photo takes itself (src/lib/shared/frame-geometry.ts).
+       */
       ready: "Good. Tap to capture.",
+      /**
+       * In house, added 2026-09-23 with the auto capture. Shown, with the oval
+       * solid, for the AUTO_CAPTURE_COUNTDOWN_MS between the ready hold and
+       * the shutter firing itself, so the person knows the photo is about to
+       * be taken and holds the frame rather than reaching for the button.
+       * Never returned by guidanceKey: the capture screen sets it from the
+       * hold timer, and it cancels the moment the line leaves "ready".
+       */
+      taking: "Good. Hold still.",
+      /**
+       * In house, added 2026-09-23. Said in place of "Good" when the face model
+       * has not loaded, so the person knows the tap is theirs to take and that
+       * nothing on this screen has checked the frame: the engine's own input
+       * gate does that for free (docs/03-architecture.md, failure modes).
+       */
+      unmeasured: "The face check did not load. You can still take the photo.",
     },
     uploadInstead: "Upload instead",
     /**
@@ -221,16 +265,26 @@ export const copy = {
      * Not a screen a person is meant to see, and not in docs/01 for that reason.
      */
     debug: {
+      /** The size the camera granted, and the master rect cut from it. */
+      track: "track",
+      master: "master",
       source: "src",
-      coverage: "cov",
       widthRatio: "w",
+      /** The raw cheek to cheek span, before MESH_FACE_WIDTH_SHARE. */
+      mesh: "mesh",
+      bbox: "bbox",
+      centerX: "cx",
       centerY: "cy",
       yaw: "yaw",
       pitch: "pitch",
       roll: "roll",
       luminance: "lum",
+      uneven: "uneven",
+      blinkLeft: "blinkL",
+      blinkRight: "blinkR",
       sharpness: "sharp",
       motion: "motion",
+      ms: "ms",
       line: "line",
     },
     /**
@@ -250,7 +304,6 @@ export const copy = {
      */
     rejection: {
       too_dark: "Too dark to read your skin. Turn toward the light and try again.",
-      blurry: "A little blurry. Hold still and tap again.",
       too_far: "Move closer so your face fills the oval.",
       // docs/06-safety-privacy.md, "Purpose limitation".
       multiple_faces:
@@ -273,6 +326,14 @@ export const copy = {
       // taken rather than after the engine has refused it.
       facing_away:
         "Look straight into the lens and hold the phone level, then try again.",
+      // In house. Recorded by the gate and applied by a later build; the line
+      // exists so the reason has words the moment it is applied.
+      eyes_closed: "Your eyes were closed. Look into the lens and try again.",
+      // In house. The face model did not load, so nothing here checked the
+      // frame. It is offered rather than refused: the engine's own input gate
+      // reads it for free (docs/03-architecture.md, failure modes).
+      unmeasured:
+        "The face check did not load on this device, so the photo was not checked.",
     },
     /**
      * In house. docs/01 section D gates a frame on the face being "roughly
@@ -325,6 +386,15 @@ export const copy = {
      * refusal is what shows.
      */
     reframing: "Framing your face and trying again",
+    /**
+     * In house. The reveal stops polling after three polls in a row that never
+     * reached the server, and until 2026-09-23 the only way forward from there
+     * was a new photo. The readings behind that screen are paid for and very
+     * often finished; a phone that lost its connection for ten seconds should
+     * be able to ask for them again rather than buy them twice. Plain verb,
+     * says what happens (docs/02-design-system.md).
+     */
+    checkAgainAction: "Check again",
   },
 
   /** F. Skin report (/report) */
@@ -933,6 +1003,16 @@ export const copy = {
     uploadFailed:
       "Upload did not complete. Your photo was not saved. Try again.",
     /**
+     * In house, added 2026-09-23. A picked file the browser cannot decode
+     * whose header says HEIC or HEIF (src/lib/shared/image-format.ts). Nothing
+     * was uploaded, so uploadFailed would be untrue; the line says what the
+     * problem is and the two ways out. iOS converts to JPEG on its own when
+     * the file input accepts image/* (src/components/capture/UploadInstead.tsx),
+     * so this is the desktop browser handed an iPhone original.
+     */
+    unsupportedImageFormat:
+      "This photo format cannot be read here. Pick a JPEG or take a new one.",
+    /**
      * In house. The second line under uploadFailed and requestFailed on the
      * capture screen: which step stopped and what the server said. Added
      * 2026-09-14 after a phone showed "Upload did not complete" with nothing
@@ -946,6 +1026,16 @@ export const copy = {
     /** In house. The same line when no answer came back at all. */
     uploadFailedNoAnswerTemplate:
       "Stopped while {step}. No answer came back from the server.",
+    /**
+     * In house. The body of the 409 the analyze route answers when the stored
+     * bytes are not the photo the client registered: not a JPEG, a different
+     * size from the row, outside the engine's size limits, or a different
+     * digest (src/lib/server/capture/validate.ts). The capture screen shows
+     * uploadFailed with the step and status under it, so the person retakes;
+     * this sentence is what the response carries.
+     */
+    captureUnreadable:
+      "The saved photo could not be read as a picture. Take a new one.",
     /**
      * In house. The engine refused the photo for a reason we have no specific
      * line for. It lived in src/lib/server/http/messages.ts as providerRefused,
@@ -993,13 +1083,19 @@ export const copy = {
 export type Copy = typeof copy;
 
 /**
- * Copy written in house because docs/01-user-flow.md specifies the state but
+ * Copy written in house because docs/01-user-flow.md specified the state but
  * not its words. Each path is dotted from the copy root. The safety eval checks
  * that every path still resolves, so a string cannot be quietly promoted to
  * "from the doc" or deleted without updating this list.
  *
- * Open item for the human: approve or replace every line in this list, then move
- * the approved wording into docs/01-user-flow.md so this list can shrink.
+ * This is the approval queue, not a mirror of the doc. A line written in house
+ * stays listed after docs/01 quotes it (the guidance lines of 2026-09-07 and
+ * 2026-09-23 are quoted there because the doc describes the screen, not
+ * because the wording was approved), and leaves the list only when the human
+ * has approved or replaced it.
+ *
+ * Open item for the human: approve or replace every line in this list, then
+ * remove it here once the approved wording is in docs/01-user-flow.md.
  */
 export const COPY_NOT_IN_FLOW_DOC = [
   "nav.back",
@@ -1013,8 +1109,15 @@ export const COPY_NOT_IN_FLOW_DOC = [
   // the retention rule the app actually follows. See the comment at the string.
   "welcome.section1Body",
   "capture.guidance.eyeLevel",
+  "capture.guidance.bright",
+  "capture.guidance.upright",
+  "capture.guidance.back",
+  "capture.guidance.taking",
+  "capture.guidance.unmeasured",
   "capture.rejection.over_exposed",
   "capture.rejection.no_face",
+  "capture.rejection.eyes_closed",
+  "capture.rejection.unmeasured",
   "capture.cameraUnavailable",
   "capture.shutterLabel",
   "capture.facingAway",
@@ -1023,6 +1126,7 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "capture.uploadSteps.store",
   "capture.uploadSteps.analyze",
   "analyzing.reframing",
+  "analyzing.checkAgainAction",
   "judge.exploreDemoAction",
   "productCard.distanceTemplate",
   "report.maskTogglesLabel",
@@ -1105,6 +1209,8 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "errors.sessionMissing",
   "errors.uploadFailedDetailTemplate",
   "errors.uploadFailedNoAnswerTemplate",
+  "errors.unsupportedImageFormat",
+  "errors.captureUnreadable",
   "common.close",
   "privacy.points.0",
   "privacy.points.1",

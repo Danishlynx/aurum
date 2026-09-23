@@ -44,16 +44,19 @@ vi.mock("@/lib/client/capture-handoff", () => ({
 }));
 
 /** One face, found every time, so the gate never refuses the crop under test. */
-vi.mock("@/lib/client/face", () => ({
-  SKIN_SAMPLE_LONG_EDGE: 96,
-  estimateFaceForCapture: () =>
-    Promise.resolve({
-      faceCount: 1,
-      faceBox: { x: 10, y: 10, width: 80, height: 80 },
-      source: "model",
-      pose: { yawDegrees: 0, pitchDegrees: 0, rollDegrees: 0 },
-    }),
-}));
+vi.mock("@/lib/client/landmarks", async () => {
+  const { syntheticFace } = await import("../support/synthetic-face");
+  const { faceReadingFrom } = await import("@/lib/shared/face-reading");
+  const reading = faceReadingFrom(syntheticFace());
+  return {
+    readFaces: () =>
+      Promise.resolve({
+        faces: reading === null ? [] : [reading],
+        inferMs: 12,
+        delegate: "cpu",
+      }),
+  };
+});
 
 /**
  * The image layer is canvas work and there is no canvas here. Every function is
@@ -63,8 +66,6 @@ vi.mock("@/lib/client/image", () => {
   const canvas = { width: 800, height: 1000 } as unknown as HTMLCanvasElement;
   return {
     CAPTURE_JPEG_QUALITY: 0.92,
-    CAPTURE_LONG_EDGE: 1024,
-    CAPTURE_MIN_SHORT_EDGE: 480,
     PREVIEW_JPEG_QUALITY: 0.72,
     PREVIEW_LONG_EDGE: 720,
     drawCropToCanvas: () => canvas,
@@ -92,10 +93,13 @@ vi.mock("@/lib/shared/quality", async (importOriginal) => {
         sharpness: 100,
         blownFraction: 0,
         crushedFraction: 0,
-        meanLuminance: 128,
-        faceCoverage: 0.7,
+        faceLuma: 0.5,
+        faceLumaUneven: 0.02,
         faceWidthRatio: 0.7,
+        faceBboxRatio: 0.7,
+        faceCenter: { x: 0.5, y: 0.47 },
         pose: null,
+        blink: { left: 0, right: 0 },
       },
     }),
   };
@@ -162,7 +166,14 @@ describe("resubmitReframedCapture, called twice at once", () => {
     expect(createCapture).toHaveBeenCalledTimes(1);
   });
 
-  it("lets a later, separate retry through once the first has finished", async () => {
+  /**
+   * The guard is held for the duration of a call, never latched. Since the
+   * master frame there is one reframe per photo (MAX_CAPTURE_ATTEMPTS is 2),
+   * so what proves the release is a later retry for a NEW photo: a second
+   * call on the reframed capture itself is refused because its one reframe
+   * is spent, and a call for the next photo the person sends runs.
+   */
+  it("releases the guard once the first has finished, and spends one reframe per photo", async () => {
     const mod = await loadModule();
     const canvas = { width: 800, height: 1000 } as unknown as HTMLCanvasElement;
     mod.rememberCaptureSource(canvas);
@@ -171,12 +182,20 @@ describe("resubmitReframedCapture, called twice at once", () => {
     const first = await mod.resubmitReframedCapture(CAPTURE_ID);
     expect(first.ok).toBe(true);
 
-    // The guard is held for the duration of a call, never latched: the second
-    // attempt of a genuine retry ladder still runs.
+    // The reframe is spent: the reframed capture has no attempt left.
     if (first.ok) {
-      const second = await mod.resubmitReframedCapture(first.captureId);
-      expect(second.ok).toBe(true);
+      expect(mod.canReframeCapture(first.captureId)).toBe(false);
+      const again = await mod.resubmitReframedCapture(first.captureId);
+      expect(again.ok).toBe(false);
     }
+    expect(startAnalysis).toHaveBeenCalledTimes(1);
+
+    // A new photo, a new capture: the guard was released, so this one runs.
+    const nextCaptureId = "22222222-2222-4222-8222-222222222222";
+    mod.rememberCaptureSource(canvas, { x: 400, y: 470 });
+    mod.bindCaptureSource(nextCaptureId);
+    const next = await mod.resubmitReframedCapture(nextCaptureId);
+    expect(next.ok).toBe(true);
     expect(startAnalysis).toHaveBeenCalledTimes(2);
   });
 });

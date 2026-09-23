@@ -31,8 +31,10 @@ export const sha256HexSchema = z
   .regex(/^[0-9a-f]{64}$/u, "Expected a 64 character lowercase sha256 digest.");
 
 /**
- * An image edge in pixels. The client downscales to a 1024px long edge before
- * upload, so the ceiling is generous rather than tight.
+ * An image edge in pixels. The client sends the master frame, whose long edge
+ * is capped at 1440 (src/lib/shared/frame-geometry.ts), so the ceiling is
+ * generous rather than tight; the analyze route enforces the engine's own
+ * limits on the stored bytes.
  */
 export const imageDimensionSchema = z
   .number()
@@ -76,8 +78,11 @@ export const captureRejectionReasonSchema = z.enum(CAPTURE_REASON_PRECEDENCE);
  * the sharpness, exposure, and face coverage the doc names, because assessCapture
  * already produces the rest and the eval suite wants the raw numbers.
  *
- * The server recomputes the gate on the uploaded object. These values are for
- * the record and for eval:capture, never the sole basis for spending a credit.
+ * The server does not recompute the gate. It validates the uploaded bytes at
+ * analyze (src/lib/server/capture/validate.ts: JPEG, the registered size, the
+ * engine's pixel limits, the digest) before any unit is reserved. These values
+ * are for the record and for eval:capture, never the sole basis for spending a
+ * credit.
  */
 export const captureQualitySchema = z.object({
   verdict: captureVerdictSchema,
@@ -86,23 +91,36 @@ export const captureQualitySchema = z.object({
    * Laplacian variance over the face, divided by that region's own intensity
    * variance and scaled (SHARPNESS_SCALE). Not bounded above. Since 2026-09-07
    * this is a ratio rather than raw edge energy, so it no longer moves with the
-   * contrast of the face it was measured on: see SHARPNESS_BORDERLINE_BELOW in
+   * contrast of the face it was measured on: see SHARPNESS_SCALE in
    * src/lib/shared/quality.ts for why that mattered enough to change.
    */
   sharpness: z.number().nonnegative(),
   blownFraction: z.number().min(0).max(1),
   crushedFraction: z.number().min(0).max(1),
-  meanLuminance: z.number().min(0).max(255),
-  /** Null when no face box was available. */
-  faceCoverage: z.number().min(0).max(1).nullable(),
   /**
-   * Face width over the frame's short axis, which is the ratio the engine gates
-   * on rather than the height one above it (FACE_WIDTH_RATIO_MIN).
+   * Two measurements the gate stopped making on 2026-09-23, kept optional so a
+   * stored row from an earlier build still parses. The mean luminance over the
+   * face box (0 to 255) became faceLuma below, over the oval on a 0 to 1 scale;
+   * the face box height over the frame height was a rule about a detector box
+   * that no longer exists. The client sends neither.
+   */
+  meanLuminance: z.number().min(0).max(255).optional(),
+  faceCoverage: z.number().min(0).max(1).nullable().optional(),
+  /**
+   * Cheek to cheek over the frame width, which is the ratio the engine gates
+   * on (FACE_WIDTH_ENGINE_MIN). Null when there was no face.
    *
    * Optional because a capture row written by a build from before 2026-09-07 does
    * not carry it, and a stored row has to keep parsing.
    */
   faceWidthRatio: z.number().min(0).nullable().optional(),
+  /**
+   * The landmarker's raw cheek to cheek span over the frame width, before it
+   * is divided by MESH_FACE_WIDTH_SHARE to become faceWidthRatio. Stored
+   * beside it so the calibration report can compare both against the engine's
+   * own face_quality words and move the share from data. Added 2026-09-23.
+   */
+  meshWidthRatio: z.number().min(0).nullable().optional(),
   /**
    * The head position the detector solved for, in degrees, or null when the
    * frame was measured by something that cannot report one.
@@ -122,11 +140,90 @@ export const captureQualitySchema = z.object({
     .nullable()
     .optional(),
   /**
-   * Which estimator produced the box and the pose. "model" is the real detector,
-   * "skin_region" is the colour threshold fallback, and the difference is the
-   * whole point of the 2026-09-07 change, so a stored row says which one it was.
+   * Which estimator produced the box and the pose in builds before 2026-09-23,
+   * when a colour threshold could stand in for the detector. Kept so those rows
+   * parse; the client no longer sends it, because there is one estimator now
+   * and `measured` says whether it ran.
    */
   faceSource: z.enum(["model", "detector", "skin_region"]).optional(),
+
+  /*
+   * The calibration fields, added 2026-09-23. Every one of them is optional so a
+   * row written by any earlier build still parses; a later build fills more of
+   * them as the camera learns to measure them (frame sizes, face luma over the
+   * oval, blink, the burst's losers). What a field means is fixed here once, and
+   * the same names are read back by the capture_outcomes view (migration 0015),
+   * the calibration export (scripts/export-capture-outcomes.ts) and the fixture
+   * half of eval:capture. Nothing here is a pixel or a landmark: numbers only.
+   */
+
+  /**
+   * True when the face model measured the frame. False when it had not loaded
+   * and the frame was sent unmeasured with "Use it anyway", so a row with
+   * measured false carries no face numbers and must never move a threshold.
+   */
+  measured: z.boolean().optional(),
+  /** Which kind of device took the frame, from the user agent and nothing else. */
+  platform: z.enum(["ios", "android", "desktop"]).optional(),
+  /**
+   * How the frame reached the gate: the shutter, "Upload instead", or the
+   * tighter crop the reveal sends back after a framing refusal.
+   */
+  path: z.enum(["camera", "gallery", "reframe"]).optional(),
+  /**
+   * 1 for the frame the person sent, 2 for the one reframe of it. 3 is kept
+   * so a row from the two step ladder of builds before 2026-09-23 still parses.
+   */
+  attempt: z.number().int().min(1).max(3).optional(),
+  /** The sensor frame the still was cut from, and the master frame it became. */
+  frame: z
+    .object({
+      sourceWidth: z.number().int().min(1),
+      sourceHeight: z.number().int().min(1),
+      masterWidth: z.number().int().min(1),
+      masterHeight: z.number().int().min(1),
+    })
+    .optional(),
+  /** The face oval's bounding box width over the frame width, 0 to 1. */
+  faceBboxRatio: z.number().min(0).max(1).nullable().optional(),
+  /** Where the middle of the face sits in the frame, both axes 0 to 1. */
+  faceCenter: z
+    .object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) })
+    .nullable()
+    .optional(),
+  /** Mean luma over the face oval on a 0 to 1 scale. */
+  faceLuma: z.number().min(0).max(1).nullable().optional(),
+  /** The luma difference between the two eyes, 0 to 1. */
+  faceLumaUneven: z.number().min(0).max(1).nullable().optional(),
+  /** The eye blink blendshapes, 0 open to 1 closed. */
+  blink: z
+    .object({ left: z.number().min(0).max(1), right: z.number().min(0).max(1) })
+    .nullable()
+    .optional(),
+  /**
+   * The frames of the burst that were not sent, as numbers only, so a threshold
+   * can be checked against the frames the scoring passed over as well as the one
+   * it chose.
+   */
+  burstLosers: z
+    .array(
+      z.object({
+        yaw: z.number().nullable(),
+        pitch: z.number().nullable(),
+        roll: z.number().nullable(),
+        faceWidthRatio: z.number().nullable(),
+        faceLuma: z.number().nullable(),
+        blinkMax: z.number().nullable(),
+        sharpness: z.number().nullable(),
+        score: z.number().nullable(),
+      }),
+    )
+    .max(8)
+    .optional(),
+  /** How long the face model took on the frame that was sent. */
+  landmarkerMs: z.number().nonnegative().optional(),
+  /** Which frame geometry the numbers above were measured in. */
+  frameGeometryVersion: z.literal(1).optional(),
 });
 
 export type CaptureQuality = z.infer<typeof captureQualitySchema>;

@@ -17,6 +17,7 @@ Applied in filename order.
 | `0005_row_level_security.sql` | RLS on all eleven tables, plus the policies |
 | `0006_storage_buckets.sql` | the four private buckets and the `storage.objects` policies |
 | `0007_scheduled_purges.sql` | `purge_stale_originals()` and `purge_expired_judge_data()` |
+| `0016_jobs_reconcile_schedule.sql` | pg_cron and pg_net, and `reconcile_open_jobs()`, the minute schedule that calls `POST /api/jobs/reconcile` (see "Reconcile schedule" below) |
 
 ## Create the project
 
@@ -75,6 +76,7 @@ Set these in `.env.local` for development and in the Vercel project settings for
 | `JUDGE_ACCESS_CODE_HASH` | `node scripts/hash-code.js "your-code"` | `POST /api/judge/session` compares the submitted code against it |
 | `JUDGE_CREDITS_CAP` | your credit budget | written to `judge_sessions.credits_cap` when a session is created |
 | `JUDGE_ANALYSES_ALLOWED` | default 3 | written to `judge_sessions.analyses_allowed` |
+| `JOBS_RECONCILE_SECRET` | `openssl rand -base64 48`, and the same value as the Vault secret `aurum_reconcile_secret` | `POST /api/jobs/reconcile` compares the scheduled caller's bearer against it |
 
 The anon key is safe in the browser only because RLS is on for every table. If a table is ever created without `enable row level security`, the anon key reads it.
 
@@ -124,6 +126,24 @@ Two functions, both `security definer`, both callable only by the service role.
 Both return the storage object paths they orphaned, as `(capture_id, object_path)` and `(bucket_id, object_path)`. Postgres cannot reach object storage, so the caller must pass each returned path to `storage.from(bucket).remove([...])` in the same run. Ignoring the return value leaves files behind, which is a retention bug.
 
 Ship this as a daily Vercel cron route that calls both functions with the service role client and then deletes the objects. `0007_scheduled_purges.sql` also carries the `cron.schedule` statements for pg_cron, commented out, for the rows only case.
+
+## Reconcile schedule
+
+`0016_jobs_reconcile_schedule.sql` is the scheduled driver for readings nobody is polling. Nothing on the server advanced a reading without the client poll until 2026-09-23, and a tab backgrounded on the reveal stranded a task Perfect Corp charges for whether or not it is read (`docs/03-architecture.md`, "Jobs", reconcile). Every minute `public.reconcile_open_jobs()` checks whether any analysis job is pending or running, and only then reads the deployment URL and a bearer from Vault and asks pg_net to `POST /api/jobs/reconcile`, which polls every open analysis job no tab is watching. Vercel's own cron on the Hobby plan runs once a day and is not a driver for a job with a 120 second lifetime, which is why the schedule lives in the database.
+
+Three human steps, after the migration is pushed. Nothing secret is in the migration: the URL and the bearer are Vault secrets, read at call time.
+
+1. Enable `pg_cron` and `pg_net` in the dashboard (Database, Extensions). The migration carries `create extension if not exists` for both, which is what the toggle runs; if the push fails on either, turn it on in the dashboard and push again.
+2. Create the two Vault secrets in the SQL editor. The second is the same value as `JOBS_RECONCILE_SECRET` in the Vercel project settings, a long random string (`openssl rand -base64 48`).
+
+        select vault.create_secret('https://<your deployment>/api/jobs/reconcile', 'aurum_reconcile_url');
+        select vault.create_secret('<the value of JOBS_RECONCILE_SECRET>', 'aurum_reconcile_secret');
+
+3. Schedule it, once. The statement is left in the migration as a comment rather than run by it, for the same reason `0007` leaves its schedules: it needs the extension and the secrets to exist first.
+
+        select cron.schedule('aurum_reconcile', '* * * * *', $$select public.reconcile_open_jobs()$$);
+
+To watch it: `select * from cron.job_run_details order by start_time desc limit 20;` on the database side, and the `aurum.reconcile_pass` log line on the Vercel side, one per call, with the counts (captures, polled, settled, providerCalls, errors). To stop it: `select cron.unschedule('aurum_reconcile');`. The route answers 503 while `JOBS_RECONCILE_SECRET` is unset and 401 to any call without the bearer, and touches nothing in either case.
 
 ## Seed the demo profile
 

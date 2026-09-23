@@ -27,10 +27,10 @@
  * It lands on "frame" through the markers below and was refunded correctly, but
  * a refusal was never the right answer to it: the face in that photo was fine,
  * it was just small in the picture. The upload path now composes the frame
- * around the face before anything is sent (autoCropBoxFor in
- * src/lib/shared/quality.ts), and when the engine refuses it anyway the client
- * reframes the same photo and sends it back (src/lib/shared/reframe.ts). This
- * line stays for the photo no crop can save.
+ * around the face before anything is sent (masterCropFor in
+ * src/lib/shared/frame-geometry.ts), and when the engine refuses it anyway the
+ * client reframes the same photo once and sends it back
+ * (src/lib/shared/reframe.ts). This line stays for the photo no crop can save.
  *
  * A fifth was read on 2026-09-03, off a phone held below the face:
  *

@@ -12,8 +12,14 @@ import { copy } from "@/lib/shared/copy";
  *
  * docs/06-safety-privacy.md, "Accessibility as safety": the capture screen works
  * with an uploaded photo for people who cannot use the camera. The uploaded file
- * goes through the same downscale, the same EXIF strip, and the same gate as a
- * live frame; there is no second path into the analysis.
+ * is composed into the same master frame, goes through the same EXIF strip and
+ * the same gate as a live frame; there is no second path into the analysis.
+ *
+ * accept="image/*" and nothing narrower, on purpose: without image/heic in the
+ * list iOS converts an iPhone original to JPEG before handing it over, which is
+ * the one HEIC path that works everywhere. A HEIC that still arrives (a desktop
+ * browser given the original) is answered by the capture screen with the
+ * format line rather than an upload failure.
  *
  * The input carries the semantics and the keyboard focus, the label carries the
  * look, so a keyboard person still sees the gold hairline.

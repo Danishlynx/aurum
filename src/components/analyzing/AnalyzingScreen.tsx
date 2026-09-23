@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RevealMask } from "@/components/analyzing/RevealMask";
 import { revealStateFor, type StatusKey } from "@/components/analyzing/reveal";
 import { Column } from "@/components/layout/Column";
-import { ButtonLink } from "@/components/ui/Button";
+import { Button, ButtonLink } from "@/components/ui/Button";
 import { fetchJobs } from "@/lib/client/api";
 import {
   forgetCapturePreview,
@@ -18,6 +18,10 @@ import {
   resubmitReframedCapture,
 } from "@/lib/client/capture-source";
 import { copy } from "@/lib/shared/copy";
+import {
+  FRAME_FACE_CENTER_X,
+  FRAME_FACE_CENTER_Y,
+} from "@/lib/shared/frame-geometry";
 
 /**
  * E. Analyzing, docs/01-user-flow.md section E.
@@ -26,6 +30,14 @@ import { copy } from "@/lib/shared/copy";
  * vignette, which is the one gradient the design system allows. As the skin
  * analysis returns, its mask blooms over the face in translucent Leaf gold and
  * settles. Below it, one line of status.
+ *
+ * Mirrored, the way the person framed it. The still is the master frame the
+ * capture screen uploaded, un mirrored, and the mask the engine returns is
+ * aligned to that same un mirrored frame. One wrapper carries scale-x-[-1]
+ * around both, so the person sees the mirror image they framed in the oval and
+ * the mask stays on the pixels it was measured on. The vignette is centred on
+ * the oval's centre in the master frame (FRAME_FACE_CENTER_X and _Y,
+ * src/lib/shared/frame-geometry.ts), which is where the face is.
  *
  * Every step is driven by job completion, never by a timer: the poll is the only
  * clock, the status line for a set of jobs is a pure function of that set
@@ -45,8 +57,8 @@ import { copy } from "@/lib/shared/copy";
  * fails: the step is skipped and the report says what is missing.
  *
  * One thing happens before a refusal is shown: a capture every core reading of
- * which was refused over its framing is sent back cropped tighter, up to twice,
- * and this screen follows it. See the poll below. It costs nothing (a refused
+ * which was refused over its framing is sent back cropped tighter, once, and
+ * this screen follows it. See the poll below. It costs nothing (a refused
  * task is charged nothing) and it is the difference between a person being told
  * their photo was no good and a person getting their reading.
  *
@@ -69,6 +81,13 @@ const FAILURES_BEFORE_GIVING_UP = 3;
  */
 const STRAGGLER_POLLS_AFTER_CORE = 20;
 
+/**
+ * The vignette, centred where the oval puts the face in the master frame. The
+ * still fills the box by object-cover with its height, so a share of the
+ * frame's height is a share of the box's, and the centre lands on the face.
+ */
+const VIGNETTE = `radial-gradient(circle at ${String(FRAME_FACE_CENTER_X * 100)}% ${String(FRAME_FACE_CENTER_Y * 100)}%, transparent 30%, var(--canvas) 100%)`;
+
 export function AnalyzingScreen() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -79,6 +98,12 @@ export function AnalyzingScreen() {
   const [masksBloom, setMasksBloom] = useState(false);
   const [maskUrl, setMaskUrl] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  /**
+   * True when the poll stopped because the server could not be reached, which
+   * is the one stopped state the readings may still be waiting behind. A
+   * refusal is final and offers the camera; this offers the poll again.
+   */
+  const [gaveUp, setGaveUp] = useState(false);
   const failuresRef = useRef(0);
   const finishedRef = useRef(false);
   /**
@@ -122,6 +147,7 @@ export function AnalyzingScreen() {
     failuresRef.current = 0;
     stragglerPollsRef.current = 0;
     setProblem(null);
+    setGaveUp(false);
     setPreview(readCapturePreview(captureId));
   }, [captureId, router]);
 
@@ -153,6 +179,7 @@ export function AnalyzingScreen() {
       failuresRef.current += 1;
       if (failuresRef.current >= FAILURES_BEFORE_GIVING_UP) {
         finishedRef.current = true;
+        setGaveUp(true);
         setProblem(copy.errors.requestFailed);
       }
       return;
@@ -248,6 +275,44 @@ export function AnalyzingScreen() {
     };
   }, [captureId, poll]);
 
+  /*
+   * A tab that comes back polls at once.
+   *
+   * This poll is the only thing that advances the provider tasks (docs/03,
+   * "Jobs"): nothing on the server moves a reading without it. A phone that was
+   * locked or switched to another app has its timers throttled or paused, so a
+   * capture whose readings finished at 20 seconds sits there unread until the
+   * next tick happens to fire, and a task left unpolled past its lifetime is
+   * charged for a result nobody stored. Polling on the way back in is the
+   * cheapest thing that can be done about it, and the in flight guard makes it
+   * safe to fire on top of a tick that is already running.
+   */
+  useEffect(() => {
+    function handleVisibility(): void {
+      if (document.visibilityState === "visible") {
+        void poll();
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [poll]);
+
+  /**
+   * The poll again, after it gave up. The readings behind this screen are paid
+   * for and may well have landed while the connection was gone, so the first
+   * thing offered is to look, not to buy them again. Everything counted per
+   * capture starts over; the interval is still ticking and picks the poll up.
+   */
+  function handleCheckAgain(): void {
+    failuresRef.current = 0;
+    finishedRef.current = false;
+    setGaveUp(false);
+    setProblem(null);
+    void poll();
+  }
+
   return (
     <main className="flex min-h-[100svh] flex-col items-center bg-canvas">
       {/*
@@ -258,31 +323,53 @@ export function AnalyzingScreen() {
         is aligned to the picture, so the picture has to keep its shape.
       */}
       <div className="relative flex w-full max-w-[var(--column-max)] flex-1 flex-col justify-end overflow-hidden bg-surface">
-        {preview !== null ? (
-          // The person's own frame. Every word that describes it is on the
-          // screen already, so an alt text would only repeat the status line.
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={preview}
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover"
-          />
-        ) : null}
-        {masksBloom ? <RevealMask maskUrl={maskUrl} /> : null}
+        {/*
+          The one mirrored wrapper: the still and the mask together, so the
+          pair the person sees is the mirror image they framed and the mask
+          stays aligned to the still it was measured on. The still and the
+          mask layer share this box, and only this box, as their offset parent.
+        */}
+        <div className="absolute inset-0 scale-x-[-1]">
+          {preview !== null ? (
+            // The person's own frame. Every word that describes it is on the
+            // screen already, so an alt text would only repeat the status line.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={preview}
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          ) : null}
+          {masksBloom ? <RevealMask maskUrl={maskUrl} /> : null}
+        </div>
         <div
           aria-hidden="true"
           className="absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(circle at 50% 42%, transparent 30%, var(--canvas) 100%)",
-          }}
+          style={{ background: VIGNETTE }}
         />
         <div className="relative pb-12 pt-8">
           <Column className="flex flex-col gap-6">
             <p aria-live="polite" className="font-body text-body text-text">
               {problem ?? copy.analyzing[status]}
             </p>
-            {problem !== null ? (
+            {problem !== null && gaveUp ? (
+              /*
+               * The poll gave up, docs/01-user-flow.md section E: the readings
+               * may still be there, so asking again is the primary answer and
+               * a new photo sits under it. One gold fill per screen
+               * (docs/02-design-system.md), and here it is the one that costs
+               * nothing.
+               */
+              <div className="flex flex-col gap-3">
+                <Button variant="primary" onClick={handleCheckAgain}>
+                  {copy.analyzing.checkAgainAction}
+                </Button>
+                <ButtonLink variant="secondary" href="/capture">
+                  {copy.report.retakePhotoAction}
+                </ButtonLink>
+              </div>
+            ) : null}
+            {problem !== null && !gaveUp ? (
               /*
                * Primary, because a stopped reveal has exactly one thing to do
                * and this is it: docs/02-design-system.md allows one gold fill

@@ -660,6 +660,131 @@ describe("a skin tone result with fields the engine could not fill", () => {
   });
 });
 
+/* ------------------------------------------------------------------ */
+/* The engine's free reading of the frame, kept on every result        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * face_quality is the block the face family returns beside its answer
+ * ({has_face, area, frontal, lighting, faceangle}), whether or not it was asked
+ * for. It is the engine's own verdict on our framing and it costs nothing, and
+ * until 2026-09-23 facialColorTonesResultSchema was a plain z.object with no
+ * field for it, so the leader of the fan out stripped it before analyses.raw
+ * was written. Every threshold in the capture gate is set against what the
+ * engine did with the frames we let through, and the one signal that says so
+ * for free was dropped on every capture.
+ *
+ * The recorded attributes body carries the block byte for byte as it came back
+ * (evals/fixtures/perfectcorp/face-attr-status.json). No tone body has been
+ * recorded, so the tone round trip below is the recorded block placed on the
+ * colour shape the tone schema has always parsed: the block is real, the
+ * pairing is assembled here and says so.
+ */
+describe("face_quality survives the schema and reaches analyses.raw", () => {
+  function recordedFaceQuality(): unknown {
+    const parsed = taskStatusResponseSchema.parse(loadFaceAttrStatus());
+    return (parsed.data.results as { face_quality: unknown }).face_quality;
+  }
+
+  const TONE_COLOR = {
+    skin_color: "#997357",
+    eye_color: "#0f0b0f",
+    eye_color_name: "Brown",
+  } as const;
+
+  it("is on the recorded attributes body in the documented shape", () => {
+    expect(recordedFaceQuality()).toEqual({
+      has_face: true,
+      area: "good",
+      frontal: "good",
+      lighting: "good",
+      faceangle: "good",
+    });
+  });
+
+  it("round trips through normalize for the face shape reading", () => {
+    const parsed = taskStatusResponseSchema.parse(loadFaceAttrStatus());
+    const normalized = normalize("face_shape", {
+      endpointKey: "faceAttributes",
+      taskId: "recorded-response",
+      state: "succeeded",
+      results: parsed.data.results,
+      errorCode: null,
+      pollingIntervalSeconds: null,
+    });
+    expect(normalized.raw).toMatchObject({
+      faceshape: "InvTriangle",
+      face_quality: recordedFaceQuality(),
+    });
+  });
+
+  it("is kept by the tone schema, which used to strip it", () => {
+    const parsed = facialColorTonesResultSchema.parse({
+      color: TONE_COLOR,
+      face_quality: recordedFaceQuality(),
+    });
+    expect(parsed.face_quality).toEqual(recordedFaceQuality());
+  });
+
+  it("round trips through normalize for the tone reading into raw", () => {
+    const normalized = normalize("attributes", {
+      endpointKey: "facialColorTones",
+      taskId: "assembled-from-recorded-block",
+      state: "succeeded",
+      results: { color: TONE_COLOR, face_quality: recordedFaceQuality() },
+      errorCode: null,
+      pollingIntervalSeconds: null,
+    });
+    expect(normalized.raw).toEqual({
+      color: { ...TONE_COLOR },
+      face_quality: recordedFaceQuality(),
+    });
+    // The summary is untouched: the block is evidence, not a reading.
+    expect(Object.keys(normalized.summary as object)).not.toContain("face_quality");
+  });
+
+  it("is kept by the skin schema as well, should that endpoint ever send it", () => {
+    const parsed = taskStatusResponseSchema.parse(loadSkinAnalysisStatus());
+    const withBlock = skinAnalysisResultSchema.parse({
+      ...(parsed.data.results as object),
+      face_quality: recordedFaceQuality(),
+    });
+    expect(withBlock.face_quality).toEqual(recordedFaceQuality());
+    // And the recorded skin body, which carries none, still parses.
+    expect(realResult().face_quality ?? null).toBeNull();
+  });
+
+  it("never throws a charged result away over the block", () => {
+    for (const block of [
+      undefined,
+      null,
+      "good",
+      7,
+      { has_face: "yes", faceangle: null, extra: "dropped" },
+      { has_face: 1 },
+    ]) {
+      const parsed = facialColorTonesResultSchema.safeParse({
+        color: TONE_COLOR,
+        face_quality: block,
+      });
+      expect(parsed.success, `block ${JSON.stringify(block)}`).toBe(true);
+    }
+    // A word for has_face is kept; a shape nobody has seen becomes null.
+    expect(
+      facialColorTonesResultSchema.parse({
+        color: TONE_COLOR,
+        face_quality: { has_face: "yes", faceangle: null },
+      }).face_quality,
+    ).toEqual({ has_face: "yes", faceangle: null });
+    expect(
+      facialColorTonesResultSchema.parse({
+        color: TONE_COLOR,
+        face_quality: { has_face: 1 },
+      }).face_quality,
+    ).toBeNull();
+  });
+});
+
 describe("the skin tone analysis cost", () => {
   it("is the 20 units the discarded result was charged", () => {
     expect(PERFECTCORP_ENDPOINTS.facialColorTones.unitCost).toEqual({

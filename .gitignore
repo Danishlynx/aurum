@@ -40,6 +40,11 @@ evals/results/*
 # vercel
 .vercel
 
+# The face model runtime and the model file, put under public/ by
+# scripts/prepare-face-model.ts on postinstall (src/lib/shared/face-model.ts)
+public/mediapipe/
+public/models/
+
 # typescript
 *.tsbuildinfo
 
@@ -65,6 +70,8 @@ photo_asset/
 evals/fixtures/faces/*
 !evals/fixtures/faces/.gitkeep
 evals/fixtures/golden/
+# Exported capture outcomes and the founder's private selfies (docs/05)
+evals/fixtures/private/
 .vercel
 .env*
 

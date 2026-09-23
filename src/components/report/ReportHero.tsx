@@ -33,8 +33,9 @@ import {
  * have faded every mark by its own color and dropped a dark one entirely.
  *
  * Alignment: the mask is the same frame as the capture (both 767 by 1024 in the
- * golden run, the uploaded 1024px long edge), so cover and center place the two
- * identically inside the square hero and no offset is needed.
+ * golden run, which was uploaded at the 1024px long edge of that time; a
+ * capture today is the 3:4 master frame at up to 1440), so cover and center
+ * place the two identically inside the square hero and no offset is needed.
  *
  * The face is never covered by a spinner and nothing here animates on its own:
  * switching a toggle is a tap, so the mask crossfades over --duration-toggle,

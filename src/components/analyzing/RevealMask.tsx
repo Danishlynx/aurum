@@ -1,6 +1,7 @@
 "use client";
 
 import { cssImageUrl } from "@/components/ui/remote-image";
+import { ovalStageStyle } from "@/lib/shared/frame-geometry";
 
 /**
  * The bloom, docs/01-user-flow.md section E step 2 and docs/02-design-system.md
@@ -19,11 +20,14 @@ import { cssImageUrl } from "@/components/ui/remote-image";
  * opens on as well, so the reveal and the report show one result.
  *
  * Alignment. A mask is a full frame PNG the size of the picture that was
- * uploaded (the golden run masks are 767 by 1024, the capture at a 1024px long
- * edge), and the still on this screen is that same frame at a 720px long edge.
- * Same aspect ratio, so cover and center place the two identically inside one
- * box, and this layer only has to be that box: an absolute layer over the
- * still, no second crop, no offset.
+ * uploaded (the master frame, 3:4, up to 1440 on its long edge; the golden run
+ * masks are 767 by 1024 from an earlier upload size), and the still on this
+ * screen is that same frame at a 720px long edge. Same aspect ratio, so cover
+ * and center place the two identically inside one box, and this layer only
+ * has to be that box: an absolute layer over the still, no second crop, no
+ * offset. The box is mirrored by its parent on /analyzing, still and mask
+ * together, so the pair stays aligned while showing the person the mirror
+ * image they framed.
  *
  * How a mask is read: the engine returns its marks in the alpha channel of a
  * transparent PNG (verified against evals/fixtures/golden/raw/skin, which is 32
@@ -62,9 +66,19 @@ const ANIMATION = [
 
 /**
  * The oval the capture frame asked the person to fill, which is where the face
- * is. Centred with the vignette on the screen behind it.
+ * is: the same percentages of the 3:4 frame the capture stage draws it at
+ * (ovalStageStyle, src/lib/shared/frame-geometry.ts), so the fallback shape
+ * sits on the face the vignette is centred on. clip-path's ellipse takes the
+ * two radii as shares of the box's width and height respectively.
  */
-const FACE_OVAL = "ellipse(33% 20% at 50% 42%)";
+const FACE_OVAL = (() => {
+  const oval = ovalStageStyle();
+  const radiusX = oval.widthPercent / 2;
+  const radiusY = oval.heightPercent / 2;
+  const centerX = oval.leftPercent + radiusX;
+  const centerY = oval.topPercent + radiusY;
+  return `ellipse(${String(radiusX)}% ${String(radiusY)}% at ${String(centerX)}% ${String(centerY)}%)`;
+})();
 
 type RevealMaskProps = {
   /** A signed URL for the stored mask, or null for the oval. */

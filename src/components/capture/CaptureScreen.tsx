@@ -8,40 +8,51 @@ import { UploadInstead } from "@/components/capture/UploadInstead";
 import { Column } from "@/components/layout/Column";
 import { Button, ButtonLink } from "@/components/ui/Button";
 import { SkeletonRow } from "@/components/ui/SkeletonRow";
-import {
-  createCapture,
-  startAnalysis,
-  uploadCaptureImage,
-} from "@/lib/client/api";
+import { createCapture, uploadCaptureImage } from "@/lib/client/api";
+import type { CaptureQualityPayload } from "@/lib/client/api";
 import { rememberCapturePreview } from "@/lib/client/capture-handoff";
 import {
   bindCaptureSource,
   rememberCaptureSource,
+  startAnalysisWithOneRetry,
 } from "@/lib/client/capture-source";
+import { currentPlatform } from "@/lib/client/platform";
 import { decrementJudgeRemaining } from "@/lib/client/judge-session";
-import { detectFaces } from "@/lib/client/landmarks";
+import { readFaces } from "@/lib/client/landmarks";
+import type { LandmarkerDelegate } from "@/lib/client/landmarks";
 import {
-  estimateFaceForCapture,
-  estimateFaceFromSkin,
-  SKIN_SAMPLE_LONG_EDGE,
-} from "@/lib/client/face";
-import type { FaceEstimate, FaceEstimateSource } from "@/lib/client/face";
-import {
-  GUIDANCE_SAMPLE_LONG_EDGE,
   guidanceKey,
   meanLuminanceOf,
   motionBetween,
 } from "@/lib/client/guidance";
 import type { GuidanceKey, LiveFrameStats } from "@/lib/client/guidance";
 import {
+  evenness,
+  facePixelsIn,
+  meanLumaInside,
+} from "@/lib/shared/face-reading";
+import type { FaceReading } from "@/lib/shared/face-reading";
+import {
+  AUTO_CAPTURE_COUNTDOWN_MS,
+  BURST_MEASURE_LONG_EDGE,
+  FRAME_GEOMETRY_VERSION,
+  GUIDANCE_SAMPLE_LONG_EDGE,
+  MASTER_MAX_LONG_EDGE,
+  MASTER_MIN_SHORT_EDGE,
+  READY_HOLD_MS,
+  masterCropFor,
+  masterRectFor,
+  ovalStageStyle,
+} from "@/lib/shared/frame-geometry";
+import type { Point, Size } from "@/lib/shared/frame-geometry";
+import {
   CAPTURE_JPEG_QUALITY,
-  CAPTURE_LONG_EDGE,
-  CAPTURE_SOURCE_LONG_EDGE,
   PREVIEW_JPEG_QUALITY,
   PREVIEW_LONG_EDGE,
   decodeImageFile,
   type DecodedImage,
   drawCropToCanvas,
+  drawMasterCrop,
   drawToCanvas,
   readImageData,
   sha256Hex,
@@ -49,19 +60,20 @@ import {
   toGrayscale,
   toJpegBlob,
 } from "@/lib/client/image";
+import { HEIC_SNIFF_BYTES, looksLikeHeic } from "@/lib/shared/image-format";
 import { uploadFailureDetail } from "@/lib/client/upload-failure";
 import type { UploadFailure } from "@/lib/client/upload-failure";
 import { captureRejectionCopy, copy } from "@/lib/shared/copy";
 import { backTargetFor } from "@/lib/shared/navigation";
 import {
+  EYES_CLOSED_AT_OR_ABOVE,
   assessCapture,
-  autoCropBoxFor,
-  faceWidthRatio,
+  frameScore,
   pickBestFrame,
-  scaleBox,
   sharpnessOf,
 } from "@/lib/shared/quality";
 import type {
+  Box,
   CaptureAssessment,
   CaptureRejectionReason,
   FrameCandidate,
@@ -70,39 +82,48 @@ import type {
 /**
  * D. Capture, docs/01-user-flow.md section D.
  *
- * Full screen camera, a soft oval frame in antique gold hairline, one line of
+ * A 3:4 camera stage, a soft oval frame in antique gold hairline, one line of
  * live guidance below it, a single shutter, and "Upload instead" for people
  * without a working camera.
  *
+ * The frame is the contract (src/lib/shared/frame-geometry.ts). The stage is a
+ * 3:4 box and the video fills it by object-cover, so what the stage shows is
+ * the largest centred 3:4 crop of whatever track the camera granted: exactly
+ * masterRectFor(track), the master frame. The oval is drawn from the same
+ * geometry as percentages of that stage, the live line measures a sample of
+ * that crop, the shutter draws that crop straight from the video at native
+ * size, and that canvas is what is uploaded. One frame, on every device.
+ *
+ * The geometry is read from a delivered frame, never from a timer. iOS reports
+ * the landscape sensor size for the first few hundred milliseconds of a track
+ * and then the portrait size, so the master rect is computed inside the first
+ * requestVideoFrameCallback, again on any tick whose dimensions changed, and
+ * on the element's resize event. The shutter is disabled until a rect exists.
+ *
+ * Mirrored once. One wrapper carries scale-x-[-1] and holds the video, the
+ * frozen still and the oval, so the still is the same mirror image the person
+ * framed and does not flip at the tap. The canvas that is uploaded is drawn
+ * from the video, which getUserMedia never mirrors, so the picture the analysis
+ * reads is un mirrored and a mole stays on its own cheek. /analyzing mirrors
+ * the still and the mask together the same way.
+ *
  * Composition, docs/02-design-system.md "Layout": mobile first at 390px, and on
- * desktop "a 480px column centered on the Obsidian canvas". The camera stage is
- * inside that column with the guidance, the shutter, and the upload link, so a
- * laptop webcam shows the same portrait frame a phone does rather than a wide
- * strip with the controls floating under it. The feed is center cropped into
- * the stage by object-cover, which crops the sides of a landscape webcam frame
- * and leaves the vertical framing untouched: the gate and the guidance both
- * measure the face against the frame height, so what the oval promises and what
- * is measured stay the same picture.
+ * desktop "a 480px column centered on the Obsidian canvas". The stage is the
+ * column's full width at 3:4, and on a viewport too short to hold that under
+ * the header and above the controls it shrinks its width, centred, rather than
+ * cropping the frame: cropping would make the stage show something other than
+ * the master frame.
  *
- * The preview is mirrored, as a person expects of a camera pointed at them. The
- * frame that is taken is not: it is the picture the analysis reads and the one
- * /report shows back, and mirroring it would put a mole on the wrong cheek.
+ * One tap, or the auto capture, takes a burst of BURST_FRAMES master crops and
+ * the best of them is sent. See BURST_FRAMES for why, frameScore in
+ * src/lib/shared/quality.ts for what "best" means, and READY_HOLD_MS for the
+ * auto capture. Every frame is measured once, on a BURST_MEASURE_LONG_EDGE
+ * copy; the winner's reading is the reading the upload carries.
  *
- * One tap takes a short burst rather than one frame, and the best of it is sent.
- * See BURST_FRAMES for why, and frameScore in src/lib/shared/quality.ts for what
- * "best" means. There is still one shutter and it still fires only when it is
- * tapped.
- *
- * On capture the frame is drawn to a canvas at a 1024px long edge, which strips
- * EXIF, hashed with SHA 256, and put through the shared quality gate before
- * anything is sent. docs/04-integrations.md: never send a photo that failed the
- * gate. "Use it anyway" exists for borderline frames only, and never for a frame
- * with no face.
- *
- * An uploaded photo goes through the same canvas, the same hash, and the same
- * gate, with one step in front of them: it is composed around its own face
- * first. See frameForUpload below. The oval does that job for a live frame and
- * there is nothing to point an oval at in a photo that was taken last week.
+ * An uploaded photo goes through the same gate with one step in front of it:
+ * it is composed into the master geometry around its own face
+ * (frameForUpload). The oval does that job for a live frame and there is
+ * nothing to point an oval at in a photo that was taken last week.
  *
  * analysesExhausted is the server's answer to "may this session take a photo at
  * all" (src/app/(onboarding)/capture/page.tsx). With it true the screen opens in
@@ -126,26 +147,51 @@ const SAMPLE_INTERVAL_MS = 400;
  * nobody retakes. Sending the frame from the moment of the tap is therefore
  * sending the worst frame available on purpose.
  *
- * Five, because that is enough to have the shake over by the end of it and
- * cheap enough to be over before anybody notices. Each frame costs a canvas at
- * sensor size, a composition, and a detection, and the still from the first one
- * is already frozen on the screen while the rest are taken, so the wait is spent
- * looking at the photograph rather than at a camera that kept moving.
- *
- * This is not auto capture. There is still exactly one shutter and it still
- * fires only when it is tapped (docs/01-user-flow.md section D).
+ * Three, since the master frame. Each frame is one master crop drawn straight
+ * from the video and one detection on a 512px copy of it, so three detections
+ * per tap instead of the eleven the sensor snapshot and the composition step
+ * used to cost, and about 19 MB of canvases on a phone instead of five sensor
+ * frames plus their 2048px sources. The still from the first one is already
+ * frozen on the screen while the rest are taken.
  */
-const BURST_FRAMES = 5;
+const BURST_FRAMES = 3;
 
 /**
  * How far apart the frames of a burst are taken.
  *
- * 90ms, so the five of them span 360ms. Long enough that consecutive frames are
- * genuinely different moments rather than the same shake sampled twice, and
+ * 90ms, so the three of them span 180ms. Long enough that consecutive frames
+ * are genuinely different moments rather than the same shake sampled twice, and
  * short enough that the last one is still the photograph the person meant to
  * take rather than whatever they did next.
  */
 const BURST_INTERVAL_MS = 90;
+
+/**
+ * How many more frames are taken when every frame of the burst has both eyes
+ * shut. A blink is 100 to 400ms and the burst spans 180, so a tap that lands on
+ * one can have all three frames closed; three more, at the same spacing, reach
+ * past it. Taken only then: an open eyed burst is not made longer.
+ */
+const BURST_BLINK_EXTRA_FRAMES = 3;
+
+/**
+ * How far the cheek to cheek width may move between the frames of one burst
+ * before the burst is discarded. 15 percent in 180ms is not a person settling,
+ * it is a phone being turned or a face leaving: a burst measured on different
+ * pictures would be choosing between different photographs, and the winner's
+ * reading would not describe the frame it was measured on.
+ */
+const BURST_WIDTH_DRIFT_MAX = 0.15;
+
+/**
+ * The long edge the landmarker reads an uploaded photo at to find the face the
+ * master crop is composed around. The crop itself is then cut from the decoded
+ * file at full resolution.
+ */
+const UPLOAD_READ_LONG_EDGE = 1024;
+
+/** The oval, as percentages of the 3:4 stage. Computed once; it never moves. */
+const OVAL = ovalStageStyle();
 
 /** Yields to the browser for a while. Nothing here runs on the UI thread. */
 function delay(milliseconds: number): Promise<void> {
@@ -157,8 +203,8 @@ function delay(milliseconds: number): Promise<void> {
 /**
  * Gives a canvas back.
  *
- * A burst holds several frames at sensor size at once, which on a phone is tens
- * of megabytes, and dropping the reference is not the same as freeing the
+ * A burst holds several master frames at once, which on a phone is tens of
+ * megabytes, and dropping the reference is not the same as freeing the
  * pixels: a canvas keeps its backing store until it is resized, and the browser
  * collects it whenever it feels like it. Setting it to nothing frees it now.
  */
@@ -167,35 +213,114 @@ function releaseCanvas(canvas: HTMLCanvasElement): void {
   canvas.height = 0;
 }
 
-/** What the readout shows: which estimator, what it measured, what it said. */
+/** Which landmarker answered a frame, or none when nothing measured it. */
+type ReadingSource = LandmarkerDelegate | "none";
+
+/** The size the camera granted and the master rect cut from it. */
+type Geometry = {
+  readonly track: Size;
+  readonly master: Box;
+};
+
+/** What the readout shows: which landmarker, what it measured, what it said. */
 type LiveReadout = {
-  readonly source: FaceEstimateSource;
+  readonly geometry: Geometry | null;
+  readonly source: ReadingSource;
   readonly stats: LiveFrameStats;
   readonly key: GuidanceKey;
+  /** How long the landmarker took on the sample, or null when it did not run. */
+  readonly inferMs: number | null;
+};
+
+/**
+ * How a frame reached the gate on this screen. The third value, "reframe", is
+ * the reveal's tighter crop and is written by src/lib/client/capture-source.ts.
+ */
+type CapturePath = Extract<CaptureQualityPayload["path"], "camera" | "gallery">;
+
+/**
+ * What the gate knew about how a frame was measured, carried beside the
+ * assessment to the upload so the stored row says so.
+ */
+type Provenance = {
+  readonly measured: boolean;
+  readonly landmarkerMs: number | null;
+};
+
+type BurstLosers = NonNullable<CaptureQualityPayload["burstLosers"]>;
+
+/**
+ * A master frame the gate has read: the canvas at native master size and the
+ * one reading of it, taken on a BURST_MEASURE_LONG_EDGE copy.
+ */
+type MeasuredFrame = {
+  readonly canvas: HTMLCanvasElement;
+  readonly assessment: CaptureAssessment;
+  readonly provenance: Provenance;
+};
+
+/**
+ * Everything the upload needs to describe one frame: the canvas, its reading,
+ * how it was measured, which path it came by, the sizes and the burst it won.
+ * The whole of it travels through "Use it anyway" as well, so a borderline row
+ * is stored with the same numbers an accepted one is.
+ */
+type Sendable = MeasuredFrame & {
+  readonly path: CapturePath;
+  readonly frame: NonNullable<CaptureQualityPayload["frame"]>;
+  readonly burstLosers: BurstLosers | null;
 };
 
 function fixed(value: number | null | undefined, digits: number): string {
   return value === null || value === undefined ? "-" : value.toFixed(digits);
 }
 
+function sizeText(size: Size): string {
+  return `${String(size.width)}x${String(size.height)}`;
+}
+
 /** One line, short keys, raw numbers. Read out loud from a phone, on purpose. */
 function formatLiveReadout(readout: LiveReadout): string {
   const d = copy.capture.debug;
-  const { stats } = readout;
-  const pose = stats.pose ?? null;
+  const { stats, geometry } = readout;
+  const reading = stats.reading;
+  const pose = reading?.pose ?? null;
+  const master = geometry?.master ?? null;
   return [
+    `${d.track} ${geometry === null ? "-" : sizeText(geometry.track)}`,
+    `${d.master} ${
+      master === null
+        ? "-"
+        : `${sizeText(master)}@${String(master.x)},${String(master.y)}`
+    }`,
     `${d.source} ${readout.source}`,
-    `${d.coverage} ${fixed(stats.faceCoverage, 2)}`,
-    `${d.widthRatio} ${fixed(stats.faceWidthRatio, 2)}`,
-    `${d.centerY} ${fixed(stats.faceCenterY, 2)}`,
+    `${d.widthRatio} ${fixed(reading?.widthRatio, 2)}`,
+    `${d.mesh} ${fixed(reading?.meshWidthRatio, 2)}`,
+    `${d.bbox} ${fixed(reading?.bboxRatio, 2)}`,
+    `${d.centerX} ${fixed(reading?.center.x, 2)}`,
+    `${d.centerY} ${fixed(reading?.center.y, 2)}`,
     `${d.yaw} ${fixed(pose?.yawDegrees, 0)}`,
     `${d.pitch} ${fixed(pose?.pitchDegrees, 0)}`,
     `${d.roll} ${fixed(pose?.rollDegrees, 0)}`,
-    `${d.luminance} ${fixed(stats.meanLuminance, 0)}`,
+    `${d.luminance} ${fixed(stats.faceLuma ?? stats.frameLuma, 2)}`,
+    `${d.uneven} ${fixed(stats.faceLumaUneven, 2)}`,
+    `${d.blinkLeft} ${fixed(reading?.blink?.left, 2)}`,
+    `${d.blinkRight} ${fixed(reading?.blink?.right, 2)}`,
     `${d.sharpness} ${fixed(stats.sharpness, 0)}`,
     `${d.motion} ${fixed(stats.motion, 1)}`,
+    `${d.ms} ${fixed(readout.inferMs, 0)}`,
     `${d.line} ${readout.key}`,
   ].join("  ");
+}
+
+/** The largest of the faces the landmarker found, or null for none. */
+function largestOf(faces: readonly FaceReading[]): FaceReading | null {
+  if (faces.length === 0) {
+    return null;
+  }
+  return faces.reduce((best, face) =>
+    face.ovalBox.height > best.ovalBox.height ? face : best,
+  );
 }
 
 type Phase =
@@ -242,154 +367,186 @@ function previewDataUrl(canvas: HTMLCanvasElement): string {
 }
 
 /**
- * Where the face is in a frame, and the frame's own pixels, measured once.
- *
- * Both callers need the estimate and one of them needs the pixels it was taken
- * from, and reading a 1024px canvas back is the expensive part, so it happens
- * here rather than twice.
- */
-async function measure(canvas: HTMLCanvasElement): Promise<{
-  readonly estimate: FaceEstimate;
-  readonly full: ImageData;
-}> {
-  const full = readImageData(canvas);
-  const sample = readImageData(
-    drawToCanvas(
-      canvas,
-      { width: canvas.width, height: canvas.height },
-      SKIN_SAMPLE_LONG_EDGE,
-    ),
-  );
-  return {
-    estimate: await estimateFaceForCapture(canvas, full, sample),
-    full,
-  };
-}
-
-/**
- * The video frame, as it was at the instant of the tap, at the sensor's own
- * resolution.
- *
- * A video element is a moving picture, and every read of it answers with
- * whatever frame is on it now. frameForUpload reads its source twice, once to
- * find the face and once to take the crop, so handing it the live element meant
- * the crop was taken from a later frame than the one the face was measured in:
- * a person who moved in the tens of milliseconds between the two got a crop
- * centered on where their face used to be. One snapshot, read as many times as
- * needed, is the whole fix.
- *
- * Taken at full sensor size rather than at CAPTURE_LONG_EDGE, because the crop
- * is cut from this canvas and a crop off an already downscaled copy would land
- * under the 1024 the capture is meant to arrive at. fitWithin never scales up,
- * so passing the long edge back is a copy at native size.
- */
-function snapshotOf(video: HTMLVideoElement): HTMLCanvasElement {
-  const size = { width: video.videoWidth, height: video.videoHeight };
-  return drawToCanvas(video, size, Math.max(size.width, size.height));
-}
-
-/**
- * One photo, composed: the frame that will be judged and sent, and the same
- * photo uncropped for the retry that crops it tighter.
- */
-type ComposedFrame = {
-  /** The frame to judge and upload, at CAPTURE_LONG_EDGE. */
-  readonly canvas: HTMLCanvasElement;
-  /** The same photo whole, at CAPTURE_SOURCE_LONG_EDGE. */
-  readonly source: HTMLCanvasElement;
-};
-
-/**
- * The uploaded photo, composed the way the oval composes a live one.
+ * The uploaded photo, composed into the master geometry around its own face.
  *
  * A phone gallery selfie carries the face at 30 to 50 percent of the frame
- * height and the analyzers want more than 60. On 2026-09-02 one was sent as it
- * came and the engine answered error_src_face_too_small: a refusal, a refund,
- * and a person told to try again with a photo that was never going to work. The
- * camera path solves this with the oval. The upload path solves it here, by
- * finding the face and cropping to it, because the photo already has everything
- * the reading needs and only the framing is wrong.
+ * height and the analyzers want more than 60 of the width. On 2026-09-02 one
+ * was sent as it came and the engine answered error_src_face_too_small: a
+ * refusal, a refund, and a person told to try again with a photo that was
+ * never going to work. The camera path solves this with the oval. The upload
+ * path solves it here: the landmarker reads a 1024px copy, the face oval it
+ * finds is put onto the file's own pixels, and masterCropFor
+ * (src/lib/shared/frame-geometry.ts) composes the same 3:4 frame the camera
+ * would have, with the face at the oval's width and centre, never narrower
+ * than the face, slid inside the picture rather than shrunk.
  *
- * Three cases, and only the middle one changes anything:
+ * Without exactly one face (none, more than one, or nothing measured) there is
+ * nothing to compose around, and the frame is the centred master rect of the
+ * photo: the same crop the camera would have shown of it. A photo with no face
+ * is a refusal the person has to hear, picking one face out of a group is not
+ * this screen's decision, and an unmeasured photo is offered to the engine's
+ * own gate as it is.
  *
- * - No face, or more than one: the frame is returned untouched and the gate says
- *   so in its own words. A photo with no face is not a framing problem, and
- *   picking one face out of a group is not this screen's decision to make.
- * - One face under the rule: recomposed by autoCropBoxFor
- *   (src/lib/shared/quality.ts), taken off the decoded file at full resolution
- *   and only then downscaled, so the crop does not cost sharpness.
- * - One face already filling the frame: nothing happens.
- *
- * The gate still runs afterwards, on the composed frame, so nothing here decides
- * that a photo is good enough. It only gives the gate the best framing the photo
- * contains.
+ * The crop is cut from the decoded file at full resolution and drawn once,
+ * with the engine's cap and floor (MASTER_MAX_LONG_EDGE, MASTER_MIN_SHORT_EDGE),
+ * so a 4000px photo arrives at 1440 and a small one is lifted to the 480 px
+ * short edge the skin analysis requires. The gate still runs afterwards, on
+ * the composed frame, so nothing here decides that a photo is good enough.
  */
-async function frameForUpload(decoded: DecodedImage): Promise<ComposedFrame> {
-  /*
-   * The photo itself, kept before anything is cropped out of it.
-   *
-   * The framing below can be wrong, because on a browser with no face detector
-   * it is composed around lit skin rather than around a face, and when the
-   * engine says so the reveal sends this frame back cropped tighter
-   * (src/lib/client/capture-source.ts).
-   *
-   * It is returned rather than remembered here, and that is a change the burst
-   * forced. rememberCaptureSource holds one slot, so composing five frames and
-   * remembering each of them would leave the retry holding the last frame of the
-   * burst while the upload carried a different one: a tighter crop of a
-   * photograph nobody sent. The caller composes, chooses, and only then says
-   * which frame the retry belongs to.
-   */
-  const source = drawToCanvas(
-    decoded.source,
-    decoded.size,
-    CAPTURE_SOURCE_LONG_EDGE,
-  );
-  const whole = drawToCanvas(decoded.source, decoded.size, CAPTURE_LONG_EDGE);
-  const { estimate } = await measure(whole);
-  if (estimate.faceCount !== 1) {
-    return { canvas: whole, source };
+async function frameForUpload(decoded: DecodedImage): Promise<HTMLCanvasElement> {
+  const probe = drawToCanvas(decoded.source, decoded.size, UPLOAD_READ_LONG_EDGE);
+  let crop: Box | null = null;
+  try {
+    const result = await readFaces(probe);
+    const face =
+      result !== null && result.faces.length === 1 ? result.faces[0] : undefined;
+    if (face !== undefined) {
+      // The reading is normalized, so the oval lands on the file's own pixels
+      // without going through the probe's size.
+      // The visible face box, not the mesh oval: the composer puts the face the
+      // engine sees at the oval's width (MESH_FACE_WIDTH_SHARE, face-reading.ts).
+      crop = masterCropFor(facePixelsIn(face, decoded.size).faceBox, decoded.size);
+    }
+  } finally {
+    // The probe was only ever the thing the face was found in.
+    releaseCanvas(probe);
   }
-  const crop = autoCropBoxFor({
-    faceBox: estimate.faceBox,
-    frame: { width: whole.width, height: whole.height },
-  });
-  if (crop === null) {
-    return { canvas: whole, source };
-  }
-  const cropped = drawCropToCanvas(
+  const region = crop ?? masterRectFor(decoded.size);
+  return drawCropToCanvas(
     decoded.source,
-    scaleBox(crop, decoded.size.height / whole.height),
-    CAPTURE_LONG_EDGE,
+    region,
+    MASTER_MAX_LONG_EDGE,
+    MASTER_MIN_SHORT_EDGE,
   );
-  // The uncropped copy was only ever the thing the face was found in.
-  releaseCanvas(whole);
-  return { canvas: cropped, source };
 }
 
 /**
- * The gate's reading of one composed frame. No screen state, no upload.
+ * The gate's reading of one master frame, taken once, on a copy.
  *
- * One function rather than two, because the burst and the frame that is finally
- * sent have to be judged by identical code: a frame that wins on a measurement
- * the gate does not make is a frame chosen for the wrong reason.
+ * The frame is measured at BURST_MEASURE_LONG_EDGE (512): the landmarker reads
+ * the copy, and the light over the oval, the evenness between the eyes, the
+ * blink and the sharpness all come off that same copy. Nothing ever calls
+ * getImageData at master size, which on a phone is a 6 MB read per frame. The
+ * copy is released as soon as it has been read.
+ *
+ * One function for the burst and for the uploaded photo, because every frame
+ * that can be sent has to be judged by identical code: a frame that wins on a
+ * measurement the gate does not make is a frame chosen for the wrong reason.
  */
-async function readFrame(canvas: HTMLCanvasElement): Promise<{
-  readonly assessment: CaptureAssessment;
-  readonly faceSource: FaceEstimateSource;
-}> {
-  const { estimate, full } = await measure(canvas);
+async function measureFrame(canvas: HTMLCanvasElement): Promise<MeasuredFrame> {
+  const copy = drawToCanvas(
+    canvas,
+    { width: canvas.width, height: canvas.height },
+    BURST_MEASURE_LONG_EDGE,
+  );
+  try {
+    const image = toGrayscale(readImageData(copy));
+    const result = await readFaces(copy);
+    const faces = result?.faces ?? [];
+    return {
+      canvas,
+      assessment: assessCapture({
+        image,
+        faceCount: faces.length,
+        reading: largestOf(faces),
+        measured: result !== null,
+      }),
+      provenance: {
+        measured: result !== null,
+        landmarkerMs: result === null ? null : result.inferMs,
+      },
+    };
+  } finally {
+    releaseCanvas(copy);
+  }
+}
+
+/** Where the gate read the face's centre, in the frame's own pixels, or null. */
+function faceCenterIn(frame: MeasuredFrame): Point | null {
+  const center = frame.assessment.metrics.faceCenter;
+  if (center === null) {
+    return null;
+  }
   return {
-    assessment: assessCapture({
-      image: toGrayscale(full),
-      faceCount: estimate.faceCount,
-      faceBox: estimate.faceBox,
-      pose: estimate.pose ?? null,
-      faceEstimateTrusted: estimate.source !== "skin_region",
-    }),
-    faceSource: estimate.source,
+    x: center.x * frame.canvas.width,
+    y: center.y * frame.canvas.height,
   };
 }
+
+/** True when both eyes read as closed on this frame. */
+function blinked(frame: MeasuredFrame): boolean {
+  const blink = frame.assessment.metrics.blink;
+  return (
+    blink !== null &&
+    blink.left >= EYES_CLOSED_AT_OR_ABOVE &&
+    blink.right >= EYES_CLOSED_AT_OR_ABOVE
+  );
+}
+
+/**
+ * True when the cheek to cheek width moved by more than BURST_WIDTH_DRIFT_MAX
+ * between any two frames of the burst that carry one. Frames without a face
+ * say nothing about drift: they are rejects, and the winner is never one.
+ */
+function widthDrifted(frames: readonly MeasuredFrame[]): boolean {
+  const widths = frames
+    .map((frame) => frame.assessment.metrics.faceWidthRatio)
+    .filter((width): width is number => width !== null && width > 0);
+  if (widths.length < 2) {
+    return false;
+  }
+  const smallest = Math.min(...widths);
+  const largest = Math.max(...widths);
+  return largest / smallest - 1 > BURST_WIDTH_DRIFT_MAX;
+}
+
+/** A finite number as it is, anything else as null, for a stored column. */
+function finiteOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * The frames of the burst that were not sent, as numbers only, so a threshold
+ * can be checked against the frames the scoring passed over as well as the one
+ * it chose (docs/03-architecture.md, captures.quality).
+ */
+function losersOf(frames: readonly MeasuredFrame[]): BurstLosers {
+  return frames.map((frame) => {
+    const { metrics } = frame.assessment;
+    return {
+      yaw: finiteOrNull(metrics.pose?.yawDegrees),
+      pitch: finiteOrNull(metrics.pose?.pitchDegrees),
+      roll: finiteOrNull(metrics.pose?.rollDegrees),
+      faceWidthRatio: finiteOrNull(metrics.faceWidthRatio),
+      faceLuma: finiteOrNull(metrics.faceLuma),
+      blinkMax:
+        metrics.blink === null
+          ? null
+          : finiteOrNull(Math.max(metrics.blink.left, metrics.blink.right)),
+      sharpness: finiteOrNull(metrics.sharpness),
+      score: finiteOrNull(frameScore(frame.assessment)),
+    };
+  });
+}
+
+/** The first HEIC_SNIFF_BYTES of a file, sniffed. False when they cannot be read. */
+async function fileLooksLikeHeic(file: File): Promise<boolean> {
+  try {
+    const head = await file.slice(0, HEIC_SNIFF_BYTES).arrayBuffer();
+    return looksLikeHeic(new Uint8Array(head));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The two frame callbacks, read as optional: the DOM types declare them on
+ * every video element, Firefox before 132 and older WebViews do not have them,
+ * and the fallback (loadedmetadata) is chosen at run time.
+ */
+type FrameCallbacks = Partial<
+  Pick<HTMLVideoElement, "requestVideoFrameCallback" | "cancelVideoFrameCallback">
+>;
 
 export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps) {
   const router = useRouter();
@@ -397,15 +554,29 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
   const previousSampleRef = useRef<ArrayLike<number> | null>(null);
   /** Stops the interval stacking detections it has not waited for. */
   const sampleInFlightRef = useRef(false);
-  const pendingRef = useRef<{
-    canvas: HTMLCanvasElement;
-    assessment: CaptureAssessment;
-  } | null>(null);
+  /** One burst at a time, whether the tap or the countdown asked for it. */
+  const burstInFlightRef = useRef(false);
   /**
-   * The still that froze on the screen when the shutter was tapped. It is the
-   * same data URL /analyzing is handed, drawn once and kept, so the frame the
-   * person is looking at while the upload runs is the frame the reveal opens
-   * with and the two screens never disagree.
+   * The size the camera granted and the master rect cut from it, read from a
+   * delivered frame (see the geometry effect). Refs for the sampler and the
+   * shutter, which read them on every tick; the state beside them is what
+   * enables the shutter and feeds the readout.
+   */
+  const geometryRef = useRef<Geometry | null>(null);
+  const [geometry, setGeometry] = useState<Geometry | null>(null);
+  /**
+   * The borderline frame waiting on "Use it anyway", with everything the upload
+   * needs to describe it. The provenance and the path travel with it because a
+   * row without them cannot be read later: until 2026-09-23 handleUseAnyway
+   * sent the frame without saying what had measured it, so every borderline
+   * row lost its provenance at the one moment provenance mattered most.
+   */
+  const pendingRef = useRef<Sendable | null>(null);
+  /**
+   * The still that froze on the screen when the shutter fired. It is the same
+   * data URL /analyzing is handed, drawn once and kept, so the frame the person
+   * is looking at while the upload runs is the frame the reveal opens with and
+   * the two screens never disagree.
    */
   const previewRef = useRef<string | null>(null);
   /**
@@ -414,11 +585,19 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
    * one. Null whenever there is not.
    */
   const streamRef = useRef<MediaStream | null>(null);
+  /** The latest handleShutter, for the countdown timer to call. */
+  const shutterRef = useRef<() => void>(() => {});
 
   const [phase, setPhase] = useState<Phase>(
     analysesExhausted ? { name: "capped" } : { name: "starting" },
   );
   const [guidance, setGuidance] = useState<GuidanceKey>("light");
+  /**
+   * True once the line has read "ready" for READY_HOLD_MS without a break:
+   * the oval is solid, the line says the photo is being taken, and the
+   * countdown to the shutter is running. False the moment the line moves.
+   */
+  const [readyHeld, setReadyHeld] = useState(false);
   const [still, setStill] = useState<string | null>(null);
   /**
    * The last live measurement, kept only for the readout below. It is written
@@ -448,6 +627,32 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
    */
   const [cameraAttempt, setCameraAttempt] = useState(0);
 
+  /**
+   * The master rect for the size the camera is delivering now. Called from
+   * every place that reads the video's dimensions; recomputes only when they
+   * changed, which on iOS happens once, a few hundred milliseconds in, when
+   * the landscape sensor size gives way to the portrait one.
+   */
+  const applyTrack = useCallback((width: number, height: number): void => {
+    if (!(width > 0) || !(height > 0)) {
+      return;
+    }
+    const current = geometryRef.current;
+    if (
+      current !== null &&
+      current.track.width === width &&
+      current.track.height === height
+    ) {
+      return;
+    }
+    const next: Geometry = {
+      track: { width, height },
+      master: masterRectFor({ width, height }),
+    };
+    geometryRef.current = next;
+    setGeometry(next);
+  }, []);
+
   // -------------------------------------------------------------------------
   // The camera
   // -------------------------------------------------------------------------
@@ -462,14 +667,64 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
 
     let stream: MediaStream | null = null;
     let cancelled = false;
+    let stopWatching: (() => void) | null = null;
 
     const release = (): void => {
+      stopWatching?.();
+      stopWatching = null;
       stream?.getTracks().forEach((track) => {
         track.stop();
       });
       if (streamRef.current === stream) {
         streamRef.current = null;
       }
+      geometryRef.current = null;
+      setGeometry(null);
+    };
+
+    /*
+     * Geometry from delivered frames. requestVideoFrameCallback fires once
+     * per composited frame with the dimensions that frame actually has, which
+     * is the only honest answer on iOS, where videoWidth reads the landscape
+     * sensor size until the first portrait frame lands. Every tick compares
+     * the dimensions and recomputes on a change; the resize event covers a
+     * rotation between ticks; loadedmetadata is the fallback for a browser
+     * without frame callbacks.
+     */
+    const watch = (video: HTMLVideoElement): (() => void) => {
+      const callbacks: FrameCallbacks = video;
+      const onResize = (): void => {
+        applyTrack(video.videoWidth, video.videoHeight);
+      };
+      video.addEventListener("resize", onResize);
+
+      if (
+        typeof callbacks.requestVideoFrameCallback === "function" &&
+        typeof callbacks.cancelVideoFrameCallback === "function"
+      ) {
+        let handle: number | null = null;
+        const tick = (): void => {
+          handle = null;
+          if (cancelled) {
+            return;
+          }
+          applyTrack(video.videoWidth, video.videoHeight);
+          handle = video.requestVideoFrameCallback(tick);
+        };
+        handle = video.requestVideoFrameCallback(tick);
+        return () => {
+          video.removeEventListener("resize", onResize);
+          if (handle !== null) {
+            video.cancelVideoFrameCallback(handle);
+          }
+        };
+      }
+
+      video.addEventListener("loadedmetadata", onResize);
+      return () => {
+        video.removeEventListener("resize", onResize);
+        video.removeEventListener("loadedmetadata", onResize);
+      };
     };
 
     async function start(): Promise<void> {
@@ -482,9 +737,10 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         stream = await media.getUserMedia({
           video: {
             facingMode: "user",
-            // 1920 over 1280: the capture is downscaled to 1024, and starting
-            // from a larger, denoised sensor frame keeps that 1024 crisp. A
-            // night time room at 1280 was reaching the gate visibly soft.
+            // 1920 over 1280: the master frame is sent at up to 1440 on its
+            // long edge, and starting from a larger, denoised sensor frame
+            // keeps it crisp. A night time room at 1280 was reaching the gate
+            // visibly soft.
             width: { ideal: 1920 },
             height: { ideal: 1920 },
           },
@@ -503,6 +759,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       }
       streamRef.current = stream;
       video.srcObject = stream;
+      stopWatching = watch(video);
       try {
         await video.play();
       } catch {
@@ -517,7 +774,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       cancelled = true;
       release();
     };
-  }, [analysesExhausted, cameraAttempt]);
+  }, [analysesExhausted, applyTrack, cameraAttempt]);
 
   // -------------------------------------------------------------------------
   // The live guidance line
@@ -528,32 +785,14 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     if (video === null || video.readyState < 2 || video.videoWidth === 0) {
       return;
     }
+    // A rotation between frame callbacks is caught here as well, so the rect
+    // the sample is cut with is the rect of the frame it is cut from.
+    applyTrack(video.videoWidth, video.videoHeight);
+    const geometryNow = geometryRef.current;
+    if (geometryNow === null) {
+      return;
+    }
     /*
-     * GUIDANCE_SAMPLE_LONG_EDGE, not the smaller skin sample the heuristic is
-     * happy with: the sharpness the line promises has to be measured on a face
-     * big enough to resample down to SHARPNESS_MEASURE_LONG_EDGE, the same way
-     * the gate will resample the 1024px capture. Same function, same size, same
-     * answer. The skin heuristic works off area fractions, so a larger sample
-     * costs it nothing but pixels.
-     */
-    const canvas = drawToCanvas(
-      video,
-      { width: video.videoWidth, height: video.videoHeight },
-      GUIDANCE_SAMPLE_LONG_EDGE,
-    );
-    const image = readImageData(canvas);
-    const gray = toGrayscale(image);
-
-    /*
-     * The real detector when it is already warm, the colour threshold when it is
-     * not.
-     *
-     * detectFaces resolves immediately once the model is loaded, and the consent
-     * screen starts loading it (warmFaceDetector in ConsentForm), so by the time
-     * anybody reaches this screen it is normally ready. While it is not, this
-     * loop keeps running on the heuristic exactly as it did before rather than
-     * standing still with no line under the oval.
-     *
      * An in flight guard, because this runs on an interval: a detection that
      * takes longer than SAMPLE_INTERVAL_MS must not stack up a queue of frames
      * that are already stale by the time they are answered.
@@ -563,48 +802,61 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     }
     sampleInFlightRef.current = true;
 
-    void detectFaces(canvas)
+    /*
+     * The master crop at GUIDANCE_SAMPLE_LONG_EDGE
+     * (src/lib/shared/frame-geometry.ts): the frame the shutter will send,
+     * at a size where the cheek span is comfortably above 150 pixels at the
+     * smallest width the gate sends, so the landmarker reads the eyes for the
+     * uneven measure, and a face big enough to resample down to
+     * SHARPNESS_MEASURE_LONG_EDGE the same way the gate resamples the burst
+     * copy. Same frame, same function, same answer.
+     */
+    const canvas = drawMasterCrop(video, geometryNow.master, GUIDANCE_SAMPLE_LONG_EDGE, 0);
+    const gray = toGrayscale(readImageData(canvas));
+    const sampleSize = { width: canvas.width, height: canvas.height };
+
+    /*
+     * The landmarker when it is warm, and nothing when it is not.
+     *
+     * readFaces resolves at once once the model is loaded, and the consent
+     * screen starts loading it (warmFaceDetector in ConsentForm), so by the time
+     * anybody reaches this screen it is normally ready. While it is not, the
+     * frame is unmeasured and the line says so rather than guessing at a face.
+     */
+
+    void readFaces(canvas)
       .catch(() => null)
-      .then((detected) => {
-        const model =
-          detected !== null && detected.faces.length > 0
-            ? detected.faces.reduce((best, face) =>
-                face.box.height > best.box.height ? face : best,
-              )
-            : null;
-        const faceBox =
-          model !== null ? model.box : estimateFaceFromSkin(image).faceBox;
-        const trusted = detected !== null;
+      .then((result) => {
+        releaseCanvas(canvas);
+        const reading = largestOf(result?.faces ?? []);
+        const pixels = reading === null ? null : facePixelsIn(reading, sampleSize);
 
         const stats: LiveFrameStats = {
-          meanLuminance: meanLuminanceOf(gray),
-          faceCoverage:
-            faceBox === null ? null : faceBox.height / image.height,
-          // The ratio the engine gates on and the crop is built to satisfy.
-          // The live line asks about it against LIVE_FACE_WIDTH_RATIO_MIN, which
-          // is far below the engine's own number because the crop closes the gap.
-          faceWidthRatio:
-            faceBox === null ? null : faceWidthRatio(faceBox, image),
-          // Where the middle of the face sits down the frame, which is what
-          // says the phone is being held below the person's eyes. Only read when
-          // a detector drew the box: the colour threshold's box runs into the
-          // neck and its middle says nothing about the phone.
-          faceCenterY:
-            faceBox === null
+          measured: result !== null,
+          sample: sampleSize,
+          // The granted track, not the sample: the sample is always 3:4.
+          trackIsLandscape: geometryNow.track.width > geometryNow.track.height,
+          coarsePointer: window.matchMedia("(pointer: coarse)").matches,
+          frameLuma: meanLuminanceOf(gray) / 255,
+          faceLuma:
+            pixels === null ? null : meanLumaInside(gray, pixels.ovalPolygon),
+          faceLumaUneven:
+            pixels === null
               ? null
-              : (faceBox.y + faceBox.height / 2) / image.height,
-          faceEstimateTrusted: trusted,
+              : evenness(gray, pixels.eyeBoxes.left, pixels.eyeBoxes.right),
+          reading,
           motion: motionBetween(previousSampleRef.current, gray.data),
-          sharpness: sharpnessOf(gray, faceBox),
-          pose: model?.pose ?? null,
+          sharpness: sharpnessOf(gray, pixels === null ? null : pixels.ovalBox),
         };
         const key = guidanceKey(stats);
         setGuidance(key);
         if (debugReadout) {
           setLiveStats({
-            source: trusted ? "model" : "skin_region",
+            geometry: geometryNow,
+            source: result === null ? "none" : result.delegate,
             stats,
             key,
+            inferMs: result === null ? null : result.inferMs,
           });
         }
         previousSampleRef.current = gray.data;
@@ -612,7 +864,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       .finally(() => {
         sampleInFlightRef.current = false;
       });
-  }, [debugReadout]);
+  }, [applyTrack, debugReadout]);
 
   useEffect(() => {
     if (phase.name !== "live") {
@@ -625,22 +877,45 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
   }, [phase.name, sample]);
 
   // -------------------------------------------------------------------------
+  // The ready hold and the auto capture
+  // -------------------------------------------------------------------------
+
+  /*
+   * After READY_HOLD_MS of continuous "ready" the oval turns solid and the
+   * countdown runs; when AUTO_CAPTURE_COUNTDOWN_MS elapses the shutter fires
+   * itself. Both timers live in this effect, so leaving "ready" for any
+   * reason, the line moving, a tap, the camera going away, is one cleanup: the
+   * countdown cancels the moment the line leaves ready, and the oval goes back
+   * to the hairline. The tap works at any time, before, during and after the
+   * hold (docs/01-user-flow.md section D; the decision with the founder).
+   */
+  useEffect(() => {
+    if (guidance !== "ready" || phase.name !== "live" || geometry === null) {
+      return;
+    }
+    let countdown: number | null = null;
+    const hold = window.setTimeout(() => {
+      setReadyHeld(true);
+      countdown = window.setTimeout(() => {
+        shutterRef.current();
+      }, AUTO_CAPTURE_COUNTDOWN_MS);
+    }, READY_HOLD_MS);
+    return () => {
+      window.clearTimeout(hold);
+      if (countdown !== null) {
+        window.clearTimeout(countdown);
+      }
+      setReadyHeld(false);
+    };
+  }, [guidance, phase.name, geometry]);
+
+  // -------------------------------------------------------------------------
   // Upload
   // -------------------------------------------------------------------------
 
   const upload = useCallback(
-    async (
-      canvas: HTMLCanvasElement,
-      assessment: CaptureAssessment,
-      /*
-       * Which estimator measured this frame, recorded alongside the numbers it
-       * produced. Without it a stored quality row cannot be read later: a face
-       * coverage of 0.7 from the real detector and one from the colour threshold
-       * fallback are not the same claim, and the thresholds all of this is
-       * calibrated against have to be set from the first kind only.
-       */
-      faceSource: FaceEstimateSource | null = null,
-    ) => {
+    async (sendable: Sendable) => {
+      const { canvas, assessment, provenance, path } = sendable;
       setPhase({ name: "working" });
 
       let blob: Blob;
@@ -664,8 +939,30 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         quality: {
           verdict: assessment.verdict,
           reason: assessment.reason,
+          /*
+           * Every number the gate measured: the oval luma and its evenness, the
+           * cheek to cheek width, the oval box and centre, the pose and the
+           * blink, beside the exposure fractions and the sharpness. Then the
+           * calibration fields: whether the landmarker measured the frame (an
+           * unmeasured row carries no face numbers and must never move a
+           * threshold), the platform, the path, the sizes (the track or file
+           * the frame was cut from and the master frame it became), the burst's
+           * losers as numbers, what the model cost, and which geometry all of
+           * it was measured in.
+           */
           ...assessment.metrics,
-          ...(faceSource === null ? {} : { faceSource }),
+          measured: provenance.measured,
+          platform: currentPlatform(),
+          path,
+          attempt: 1,
+          frame: sendable.frame,
+          ...(sendable.burstLosers === null
+            ? {}
+            : { burstLosers: sendable.burstLosers }),
+          ...(provenance.landmarkerMs === null
+            ? {}
+            : { landmarkerMs: provenance.landmarkerMs }),
+          frameGeometryVersion: FRAME_GEOMETRY_VERSION,
         },
       });
 
@@ -709,7 +1006,15 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         }
       }
 
-      const started = await startAnalysis(created.data.captureId);
+      /*
+       * Asked once more on a transport failure, because the first request may
+       * have landed. POST analyze creates the leader task and charges 20 units
+       * for it before it answers; a response lost on the way back used to leave
+       * that capture paid for and never polled. The route is idempotent for a
+       * capture that already has jobs, so the second ask finds the first one's
+       * work or does it (src/lib/client/capture-source.ts says the rest).
+       */
+      const started = await startAnalysisWithOneRetry(created.data.captureId);
       if (!started.ok) {
         if (started.kind === "capped") {
           setPhase({ name: "capped" });
@@ -717,6 +1022,22 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         }
         if (started.kind === "unauthorized" || started.kind === "forbidden") {
           router.push("/welcome");
+          return;
+        }
+        /*
+         * The server read the stored bytes and would not send them: not a
+         * JPEG, not the registered size, outside the engine's limits, or not
+         * the registered digest (docs/03-architecture.md, "Failure modes").
+         * The app reached the server, so requestFailed would be untrue; it is
+         * the photo that did not arrive as registered, and a retake is the way
+         * out. The step and status line names it.
+         */
+        if (started.kind === "unreadable") {
+          setPhase({
+            name: "failed",
+            message: copy.errors.uploadFailed,
+            failure: { step: "analyze", status: started.status },
+          });
           return;
         }
         setPhase({
@@ -751,62 +1072,41 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
   );
 
   // -------------------------------------------------------------------------
-  // The gate
+  // The gate's answer
   // -------------------------------------------------------------------------
 
-  const assess = useCallback(
-    async (canvas: HTMLCanvasElement) => {
-      setPhase({ name: "working" });
-
-      /*
-       * This judges the frame. It does not compose it.
-       *
-       * Both callers have already been through frameForUpload, which is the one
-       * place a frame is recomposed around the face it contains: handleShutter
-       * runs the snapshot through it before freezing, and handleFile runs the
-       * decoded file through it. Composing again here was a real regression, on
-       * for one deploy, and it did two things at once.
-       *
-       * It cropped a crop. frameForUpload takes its crop off the native snapshot
-       * and downscales once, which is what keeps the upload sharp. A second pass
-       * had only the finished 1024px frame to cut from, so the picture was
-       * downscaled, cropped, and downscaled again, and arrived visibly soft.
-       *
-       * And it tightened a tightening. Each pass frames the face at
-       * AUTO_CROP_FACE_COVERAGE of the result, so running it twice put the face
-       * far closer than either pass intended, cut the forehead and the hairline
-       * off the top, and left the engine looking at a frame with no whole face in
-       * it. "No face in the frame" on a photograph with a face in it.
-       *
-       * The width rule this was added for is not lost by removing it: it lives in
-       * autoCropBoxFor, which frameForUpload already calls, so the camera path
-       * gets it through the same single composition the upload path does.
-       */
-      const { assessment, faceSource } = await readFrame(canvas);
-
-      if (assessment.verdict === "accept") {
-        await upload(canvas, assessment, faceSource);
+  /**
+   * What happens to a frame the gate has read: an accepted frame is uploaded
+   * with the reading it was chosen on, and anything else waits on the review
+   * screen with "Use it anyway" where the gate allows it. No second reading:
+   * the assessment that ranked the burst is the assessment the row stores.
+   */
+  const settle = useCallback(
+    async (sendable: Sendable) => {
+      if (sendable.assessment.verdict === "accept") {
+        await upload(sendable);
         return;
       }
-
-      pendingRef.current = { canvas, assessment };
+      pendingRef.current = sendable;
       setPhase({
         name: "review",
         // Non null for every verdict other than accept.
-        reason: assessment.reason ?? "no_face",
-        canUseAnyway: assessment.canUseAnyway,
+        reason: sendable.assessment.reason ?? "no_face",
+        canUseAnyway: sendable.assessment.canUseAnyway,
       });
     },
     [upload],
   );
 
   /**
-   * The frame on the screen, the instant the shutter is tapped.
+   * The frame on the screen, the instant the shutter fires.
    *
    * docs/01-user-flow.md section D ends at "Route to /analyzing", and between
-   * the tap and that route there is a measure, a hash, an upload, and two
-   * requests. Freezing the frame first means the answer to the tap is the
-   * photo, not a live camera that carried on moving while the work happened.
+   * the shutter and that route there is a measure, a hash, an upload, and two
+   * requests. Freezing the frame first means the answer is the photo, not a
+   * live camera that carried on moving while the work happened. The still is
+   * drawn inside the same mirrored wrapper as the video, so it is the mirror
+   * image the person framed and nothing flips.
    */
   function freeze(canvas: HTMLCanvasElement): void {
     const dataUrl = previewDataUrl(canvas);
@@ -815,117 +1115,178 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     setPhase({ name: "working" });
   }
 
+  /**
+   * Back to the live camera without a photo, with the line that says why:
+   * the burst was discarded because the picture changed under it.
+   */
+  function rearm(frames: readonly HTMLCanvasElement[]): void {
+    for (const frame of frames) {
+      releaseCanvas(frame);
+    }
+    previewRef.current = null;
+    previousSampleRef.current = null;
+    setStill(null);
+    setGuidance("upright");
+    setPhase({ name: "live" });
+  }
+
   function handleShutter(): void {
     const video = videoRef.current;
-    if (video === null || video.videoWidth === 0) {
+    if (video === null || video.videoWidth === 0 || burstInFlightRef.current) {
       return;
     }
+    applyTrack(video.videoWidth, video.videoHeight);
+    const geometryNow = geometryRef.current;
+    if (geometryNow === null) {
+      return;
+    }
+    burstInFlightRef.current = true;
+    const { track, master } = geometryNow;
+
     /*
-     * The tap is answered before anything is measured. The snapshot is one
-     * synchronous canvas draw, so the picture on the screen is the picture that
-     * was in front of the camera at the instant of the tap, and the feed does
-     * not carry on moving underneath while the face is found.
+     * The shutter is answered before anything is measured. The first master
+     * crop is one canvas draw with a source rect, so the picture on the screen
+     * is the picture that was in front of the camera at that instant, and the
+     * feed does not carry on moving underneath while the face is found.
      *
-     * That first frame is what freezes, and it is deliberately not what gets
-     * sent. See BURST_FRAMES: the instant of the tap is the instant the finger
-     * moved the phone, so the shutter takes four more frames behind the frozen
-     * one and the best of the five is the one that goes. The person sees an
+     * That first frame is what freezes, and it is deliberately not always what
+     * gets sent. See BURST_FRAMES: the instant of the tap is the instant the
+     * finger moved the phone, so two more frames are taken behind the frozen
+     * one and the best of the three is the one that goes. The person sees an
      * answer immediately either way, and by the time the burst has been judged
      * the winner has replaced it on screen.
      */
-    const first = snapshotOf(video);
+    const first = drawMasterCrop(video, master, MASTER_MAX_LONG_EDGE, MASTER_MIN_SHORT_EDGE);
     freeze(first);
 
     void (async () => {
-      /*
-       * The burst itself, taken before anything is measured. Measuring between
-       * frames would stretch the spacing out to however long a detection
-       * happened to take, and the point of BURST_INTERVAL_MS is that the five
-       * frames are five known moments of the same second.
-       */
-      const snapshots = [first];
-      for (let taken = 1; taken < BURST_FRAMES; taken += 1) {
-        await delay(BURST_INTERVAL_MS);
-        const live = videoRef.current;
-        if (live === null || live.videoWidth === 0) {
-          // The camera went away mid burst. What was caught is the burst.
-          break;
-        }
-        snapshots.push(snapshotOf(live));
-      }
+      const frames: HTMLCanvasElement[] = [first];
+      try {
+        /*
+         * One more master crop, or null when the burst has to be discarded:
+         * the camera went away, or the track changed size under it (a phone
+         * turning, iOS swapping to the portrait sensor size), which means the
+         * master rect these frames were cut with no longer describes the
+         * picture.
+         */
+        const takeOne = async (): Promise<HTMLCanvasElement | null> => {
+          await delay(BURST_INTERVAL_MS);
+          const live = videoRef.current;
+          if (live === null || live.videoWidth === 0) {
+            return null;
+          }
+          if (live.videoWidth !== track.width || live.videoHeight !== track.height) {
+            applyTrack(live.videoWidth, live.videoHeight);
+            return null;
+          }
+          return drawMasterCrop(live, master, MASTER_MAX_LONG_EDGE, MASTER_MIN_SHORT_EDGE);
+        };
 
-      /*
-       * Every frame through the same composition and the same gate the single
-       * frame path has always used. The stage shows a center crop of the
-       * sensor, but the sensor frame is wider than the stage, so a face filling
-       * the oval on screen can still be a small fraction of the raw capture,
-       * and the provider refused exactly that live (error_src_face_too_small,
-       * 2026-09-03). A canvas is a canvas image source, so a snapshot goes
-       * through the same face framing the upload path uses.
-       *
-       * Each sensor sized frame is given back the moment its composition has
-       * been cut from it, so the burst never holds more of them than it is
-       * still reading.
-       */
-      const candidates: FrameCandidate<ComposedFrame>[] = [];
-      for (const snapshot of snapshots) {
-        const composed = await frameForUpload({
-          source: snapshot,
-          size: { width: snapshot.width, height: snapshot.height },
-          release: () => {},
+        /*
+         * The burst itself, taken before anything is measured. Measuring
+         * between frames would stretch the spacing out to however long a
+         * detection happened to take, and the point of BURST_INTERVAL_MS is
+         * that the frames are known moments of the same second.
+         */
+        for (let taken = 1; taken < BURST_FRAMES; taken += 1) {
+          const next = await takeOne();
+          if (next === null) {
+            rearm(frames);
+            return;
+          }
+          frames.push(next);
+        }
+
+        // Each frame measured once, on its 512px copy, and never again.
+        const measured: MeasuredFrame[] = [];
+        for (const frame of frames) {
+          measured.push(await measureFrame(frame));
+        }
+
+        /*
+         * Every frame with both eyes shut is a tap that landed on a blink. Up
+         * to BURST_BLINK_EXTRA_FRAMES more, measured as they come, until one
+         * has the eyes open; the burst is then chosen from all of them.
+         */
+        let extra = 0;
+        while (measured.every(blinked) && extra < BURST_BLINK_EXTRA_FRAMES) {
+          extra += 1;
+          const next = await takeOne();
+          if (next === null) {
+            rearm(frames);
+            return;
+          }
+          frames.push(next);
+          measured.push(await measureFrame(next));
+        }
+
+        if (widthDrifted(measured)) {
+          rearm(frames);
+          return;
+        }
+
+        /*
+         * The best frame, or the frame the shutter was aimed at when the gate
+         * refused all of them.
+         *
+         * pickBestFrame answers null when every candidate is a reject, and
+         * that is not a case to handle by giving up: the person still has to
+         * be told what was wrong. Frames 90ms apart are refused for the same
+         * reason as each other in practice, so the first one carries the same
+         * message as any of them and is the one the person actually meant to
+         * take. It lands on the review screen exactly as a single refused
+         * frame always has.
+         */
+        const candidates: FrameCandidate<MeasuredFrame>[] = measured.map(
+          (frame) => ({ assessment: frame.assessment, value: frame }),
+        );
+        const winner = pickBestFrame(candidates) ?? measured[0];
+        if (winner === undefined) {
+          rearm(frames);
+          return;
+        }
+
+        // The losers are of no further use, and on a phone they are tens of
+        // megabytes of face. Their numbers go with the winner.
+        const losers = measured.filter((frame) => frame !== winner);
+        const burstLosers = losersOf(losers);
+        for (const loser of losers) {
+          releaseCanvas(loser.canvas);
+        }
+
+        /*
+         * The retry frame is the photograph that is being sent, with the face
+         * centre the gate read in it, so the one reframe crops around the face
+         * rather than around a guess.
+         */
+        rememberCaptureSource(winner.canvas, faceCenterIn(winner));
+        /*
+         * The winner replaces the first frame on screen, so what the person is
+         * looking at while the upload runs is the frame that is being uploaded.
+         */
+        if (winner.canvas !== first) {
+          freeze(winner.canvas);
+        }
+        await settle({
+          ...winner,
+          path: "camera",
+          frame: {
+            sourceWidth: track.width,
+            sourceHeight: track.height,
+            masterWidth: winner.canvas.width,
+            masterHeight: winner.canvas.height,
+          },
+          burstLosers,
         });
-        releaseCanvas(snapshot);
-        const read = await readFrame(composed.canvas);
-        candidates.push({ assessment: read.assessment, value: composed });
+      } finally {
+        burstInFlightRef.current = false;
       }
-
-      /*
-       * The best frame, or the frame the tap was aimed at when the gate refused
-       * all five.
-       *
-       * pickBestFrame answers null when every candidate is a reject, and that
-       * is not a case to handle by giving up: the person still has to be told
-       * what was wrong. Five frames 90ms apart are refused for the same reason
-       * as each other in practice, so the first one carries the same message as
-       * any of them and is the one the person actually meant to take. It then
-       * goes through the existing gate and lands on the review screen exactly
-       * as a single refused frame always has.
-       */
-      const fallback = candidates.length > 0 ? candidates[0].value : null;
-      const winner = pickBestFrame(candidates) ?? fallback;
-      if (winner === null) {
-        return;
-      }
-
-      // The losers are of no further use, and on a phone they are tens of
-      // megabytes of face.
-      for (const candidate of candidates) {
-        if (candidate.value !== winner) {
-          releaseCanvas(candidate.value.canvas);
-          releaseCanvas(candidate.value.source);
-        }
-      }
-
-      /*
-       * The retry frame belongs to the photograph that is being sent, which is
-       * why this is here and not inside frameForUpload any more.
-       */
-      rememberCaptureSource(winner.source);
-      /*
-       * The winner replaces the first frame on screen, so what the person is
-       * looking at while the upload runs is the frame that is being uploaded,
-       * down to the crop.
-       */
-      freeze(winner.canvas);
-      /*
-       * Through the gate unchanged, which reads the winner once more. That
-       * second reading is the price of leaving the gate and the upload exactly
-       * as they were: one detection on one canvas, against a burst that has
-       * already run five.
-       */
-      await assess(winner.canvas);
     })();
   }
+
+  useEffect(() => {
+    shutterRef.current = handleShutter;
+  });
 
   function handleFile(file: File): void {
     void (async () => {
@@ -934,12 +1295,23 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       try {
         decoded = await decodeImageFile(file);
       } catch {
-        setPhase({ name: "failed", message: copy.errors.uploadFailed });
+        /*
+         * Nothing was uploaded, so "Upload did not complete" would be untrue.
+         * A HEIC from an iPhone's gallery, handed to a browser that cannot
+         * decode it, is the one case with a name and a way out; everything
+         * else keeps the documented line.
+         */
+        setPhase({
+          name: "failed",
+          message: (await fileLooksLikeHeic(file))
+            ? copy.errors.unsupportedImageFormat
+            : copy.errors.uploadFailed,
+        });
         return;
       }
-      let composed: ComposedFrame;
+      let master: HTMLCanvasElement;
       try {
-        composed = await frameForUpload(decoded);
+        master = await frameForUpload(decoded);
       } catch {
         setPhase({ name: "failed", message: copy.errors.uploadFailed });
         return;
@@ -949,11 +1321,29 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         // done.
         decoded.release();
       }
+      let read: MeasuredFrame;
+      try {
+        read = await measureFrame(master);
+      } catch {
+        releaseCanvas(master);
+        setPhase({ name: "failed", message: copy.errors.uploadFailed });
+        return;
+      }
       // One photo, so there is nothing to choose between: this is the frame the
-      // retry crops tighter.
-      rememberCaptureSource(composed.source);
-      freeze(composed.canvas);
-      await assess(composed.canvas);
+      // retry crops tighter, around the face the gate found in it.
+      rememberCaptureSource(master, faceCenterIn(read));
+      freeze(master);
+      await settle({
+        ...read,
+        path: "gallery",
+        frame: {
+          sourceWidth: decoded.size.width,
+          sourceHeight: decoded.size.height,
+          masterWidth: master.width,
+          masterHeight: master.height,
+        },
+        burstLosers: null,
+      });
     })();
   }
 
@@ -983,6 +1373,10 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
    * for again rather than the person being left with a dead frame.
    */
   function handleRetake(): void {
+    const pending = pendingRef.current;
+    if (pending !== null) {
+      releaseCanvas(pending.canvas);
+    }
     pendingRef.current = null;
     previewRef.current = null;
     // The next motion reading compares against the next frame, not against one
@@ -1002,7 +1396,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     if (pending === null) {
       return;
     }
-    void upload(pending.canvas, pending.assessment);
+    void upload(pending);
   }
 
   // -------------------------------------------------------------------------
@@ -1024,14 +1418,20 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
    * capture' frame" and nothing else on this screen, and Amber is for
    * "borderline capture frames only". So a frame the gate refused outright
    * keeps the ordinary Antique gold hairline: the words under it carry the
-   * refusal, which is the same rule as "there is no red".
+   * refusal, which is the same rule as "there is no red". The frame turns
+   * solid only after READY_HOLD_MS of ready, which is when the photo is about
+   * to take itself.
    */
   const frameTone =
     phase.name === "review" && phase.canUseAnyway
       ? "border-caution"
-      : guidance === "ready" && phase.name === "live"
+      : readyHeld && phase.name === "live"
         ? "border-accent-bright"
         : "border-accent";
+
+  const guidanceLine = readyHeld
+    ? copy.capture.guidance.taking
+    : copy.capture.guidance[guidance];
 
   return (
     <main className="flex min-h-[100svh] flex-col items-center bg-canvas">
@@ -1058,43 +1458,72 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
           </Column>
         </header>
 
-        <div className="relative min-h-[420px] flex-1 overflow-hidden bg-surface">
-          {showCamera ? (
-            <video
-              ref={videoRef}
-              muted
-              playsInline
-              autoPlay
-              aria-hidden="true"
-              className="absolute inset-0 h-full w-full scale-x-[-1] object-cover"
-            />
-          ) : null}
-          {still !== null ? (
-            /*
-             * The frame the person just took. Not decorative, but it has no
-             * description that is not already on the screen.
-             *
-             * While the upload runs it sits at 70 percent, which is the pattern
-             * docs/02-design-system.md gives for a render that is being
-             * replaced. It is the one thing on the screen that says the tap
-             * landed and the work is still going.
-             */
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={still}
-              alt=""
-              className={`absolute inset-0 h-full w-full object-cover ${
-                phase.name === "working" ? "opacity-70" : ""
-              }`}
-            />
-          ) : null}
-          {showOval ? (
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <div
-                className={`aspect-[18/25] h-[62%] rounded-[50%] border ${frameTone}`}
+        {/*
+          The stage: a 3:4 box, the column's full width, which is the master
+          frame's shape and the reason what it shows IS the master frame. On a
+          viewport too short to hold it, the width shrinks (centred) rather
+          than the frame being cropped: the cap is the viewport height less
+          the 312px the header (24 + 44) and the control block (24 + 24 + 24 +
+          72 + 24 + 52 + 24) take, at 3:4. A phone at 844px tall keeps the full
+          390; a 900px laptop window gets 441 of the 480 column.
+        */}
+        <div className="relative mx-auto aspect-[3/4] w-full max-w-[calc((100svh_-_312px)_*_0.75)] overflow-hidden bg-surface">
+          {/*
+            One mirrored wrapper for everything that shows the person: the
+            video, the still and the oval, so the still is the same mirror
+            image the person framed and does not flip at the tap. The oval is
+            symmetric, so mirroring it changes nothing but keeps it in the same
+            box. Nothing outside this wrapper is mirrored and nothing inside it
+            carries a transform of its own.
+          */}
+          <div className="absolute inset-0 scale-x-[-1]">
+            {showCamera ? (
+              <video
+                ref={videoRef}
+                muted
+                playsInline
+                autoPlay
+                aria-hidden="true"
+                className="absolute inset-0 h-full w-full object-cover"
               />
-            </div>
-          ) : null}
+            ) : null}
+            {still !== null ? (
+              /*
+               * The frame the person just took. Not decorative, but it has no
+               * description that is not already on the screen.
+               *
+               * While the upload runs it sits at 70 percent, which is the
+               * pattern docs/02-design-system.md gives for a render that is
+               * being replaced. It is the one thing on the screen that says
+               * the tap landed and the work is still going.
+               */
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={still}
+                alt=""
+                className={`absolute inset-0 h-full w-full object-cover ${
+                  phase.name === "working" ? "opacity-70" : ""
+                }`}
+              />
+            ) : null}
+            {showOval ? (
+              /*
+               * The target oval, from ovalStageStyle: percentages of the 3:4
+               * stage, which are shares of the master frame, so the ring is
+               * drawn on the same pixels the gate measures the oval at.
+               */
+              <div
+                aria-hidden="true"
+                className={`pointer-events-none absolute rounded-[50%] border ${frameTone}`}
+                style={{
+                  left: `${String(OVAL.leftPercent)}%`,
+                  top: `${String(OVAL.topPercent)}%`,
+                  width: `${String(OVAL.widthPercent)}%`,
+                  height: `${String(OVAL.heightPercent)}%`,
+                }}
+              />
+            ) : null}
+          </div>
         </div>
 
         <div className="py-6">
@@ -1105,7 +1534,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
                   aria-live="polite"
                   className="min-h-[24px] font-body text-body text-text"
                 >
-                  {copy.capture.guidance[guidance]}
+                  {guidanceLine}
                 </p>
                 {debugReadout && liveStats !== null ? (
                   <p
@@ -1120,13 +1549,17 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
                  * three centered elements in the app. Everything else on this
                  * screen, the guidance line and the upload link included, stays
                  * left aligned with the column.
+                 *
+                 * Disabled until the master rect has been read from a delivered
+                 * frame: a tap before that would have no frame to cut.
                  */}
                 <div className="flex justify-center">
                   <button
                     type="button"
                     aria-label={copy.capture.shutterLabel}
+                    disabled={geometry === null}
                     onClick={handleShutter}
-                    className="group flex h-[72px] w-[72px] items-center justify-center rounded-sm border border-accent bg-transparent active:bg-accent focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    className="group flex h-[72px] w-[72px] items-center justify-center rounded-sm border border-accent bg-transparent active:bg-accent disabled:opacity-40 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-accent"
                   >
                     {/*
                      * Pressed, the control inverts: the ring fills with Antique

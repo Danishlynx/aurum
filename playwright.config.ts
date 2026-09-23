@@ -115,6 +115,16 @@ export default defineConfig({
           timeout: 120_000,
           env: {
             AURUM_DEMO_FIXTURE: "true",
+            /*
+             * The face model seam (src/lib/client/landmarks-seam.ts): lets
+             * e2e/capture.spec.ts hand the capture screen a landmarker result
+             * of known width and pose, since the fake camera has no face in
+             * it. next.config.ts defines the variable in every build, "false"
+             * unless it is exactly "true", and Next inlines it as a literal,
+             * so this is the only build in which the seam exists at all. Test
+             * only, never set in production (.env.example).
+             */
+            NEXT_PUBLIC_AURUM_E2E_SEAMS: "true",
             // Only on a moved run: on 3000 this is the ordinary .next, which is
             // what npm run dev builds and what a developer already has warm.
             ...(MOVED ? { AURUM_DIST_DIR: ".next/e2e-fixture" } : {}),

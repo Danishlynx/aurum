@@ -413,6 +413,25 @@ export function globalDailyCap(): number {
 }
 
 /**
+ * The bearer POST /api/jobs/reconcile expects from the scheduled driver, or null
+ * when the driver is not configured.
+ *
+ * The route is the one thing that advances a reading when no tab is polling it
+ * (docs/03-architecture.md, "Jobs", reconcile). It has no session and no cookie:
+ * the caller is pg_cron in the Supabase project, reading this same value out of
+ * Vault (supabase/migrations/0016_jobs_reconcile_schedule.sql). Unset, the route
+ * answers 503 and logs that the driver is not configured, so a deployment without
+ * it is visibly without it rather than quietly polled by nobody.
+ *
+ * Optional because the app works without it, as it did before the route existed:
+ * the client poll, the catch up pass on the report page and the poll on return
+ * to the foreground all still run. What is missing without it is the guarantee.
+ */
+export function jobsReconcileSecret(): string | null {
+  return optional("JOBS_RECONCILE_SECRET");
+}
+
+/**
  * Build identity for /api/health. Vercel sets VERCEL_GIT_COMMIT_SHA; a local
  * dev server has neither, and "unknown" is an honest answer.
  */

@@ -251,6 +251,41 @@ export async function ensureAnalysis(args: {
   return unwrap<Analysis>("create analysis", result);
 }
 
+/**
+ * Every analysis whose id is in the list, whoever owns it.
+ *
+ * This is the one read in this file that takes no owner id, and it exists for
+ * one caller: the scheduled reconcile pass (src/lib/server/jobs/reconcile.ts),
+ * which starts from open jobs across every owner and needs each job's analysis
+ * to learn which capture it belongs to and who owns it. Nothing is returned to a
+ * person from this read; every call that follows it (getCapture, pollCaptureJobs)
+ * is scoped to the user_id it reads off the row, so the owner filter this file
+ * promises is applied one step later rather than dropped.
+ */
+export async function listAnalysesByIds(
+  analysisIds: readonly string[],
+): Promise<Analysis[]> {
+  if (analysisIds.length === 0) {
+    return [];
+  }
+  const result = await serviceClient()
+    .from("analyses")
+    .select("*")
+    .in("id", [...analysisIds]);
+  return unwrap("list analyses by id", result);
+}
+
+/**
+ * Updates one analysis row. Returns true when a row was written.
+ *
+ * `unchangedSince` makes the write a compare and set on updated_at: the row is
+ * written only if nobody has touched it since the caller read it, and false
+ * says somebody has. The jobs runner uses it where a poll can settle a task in
+ * the gap between recording the task on the job row and recording it on the
+ * analysis row (src/lib/server/jobs/index.ts, startKinds), so a start that lost
+ * that race can never write "running" over a result the poll already stored.
+ * Without the guard the write is unconditional, as it always was.
+ */
 export async function updateAnalysis(
   analysisId: string,
   patch: {
@@ -262,14 +297,20 @@ export async function updateAnalysis(
     readonly credits_used?: number;
     readonly error?: string | null;
   },
-): Promise<void> {
-  const result = await serviceClient()
+  guard?: { readonly unchangedSince: string },
+): Promise<boolean> {
+  const query = serviceClient()
     .from("analyses")
     .update(patch)
-    .eq("id", analysisId)
-    .select("id")
-    .maybeSingle();
-  unwrapNullable("update analysis", result);
+    .eq("id", analysisId);
+  const result =
+    guard === undefined
+      ? await query.select("id").maybeSingle()
+      : await query
+          .eq("updated_at", guard.unchangedSince)
+          .select("id")
+          .maybeSingle();
+  return unwrapNullable("update analysis", result) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +347,48 @@ export async function findJobForSubject(
     .limit(1)
     .maybeSingle();
   return unwrapNullable("read job", result);
+}
+
+/**
+ * How long a job may go unpolled before the scheduled reconcile pass treats it
+ * as nobody's.
+ *
+ * The client polls every 1.5 seconds and every poll stamps last_polled_at
+ * (claimForPolling in src/lib/server/jobs), so a job a tab is watching carries
+ * a stamp younger than this. Two seconds leaves that tab alone and picks up the
+ * job the moment it is not being watched: a backgrounded tab, a phone that lost
+ * its network, a person who closed the page.
+ */
+export const OPEN_JOB_STALE_POLL_MS = 2_000;
+
+/**
+ * The open analysis jobs nobody is polling, oldest stamp first, across every
+ * owner.
+ *
+ * Read by the scheduled reconcile pass only (src/lib/server/jobs/reconcile.ts,
+ * POST /api/jobs/reconcile). It is the second of the two reads in this file
+ * that take no owner id, for the same reason as listAnalysesByIds: the pass has
+ * to find the jobs before it can know whose they are, and everything it does
+ * with one afterwards is scoped to the owner on the row.
+ *
+ * Open means pending or running; unpolled means last_polled_at is null or older
+ * than OPEN_JOB_STALE_POLL_MS. Nulls first, so a job that has never been polled
+ * (a follower a client never got round to, a leader whose analyze response was
+ * lost) is reached before one that was polled a while ago. The partial index
+ * jobs_open_poll_idx (migration 0004) is built on exactly this predicate and
+ * this order.
+ */
+export async function listOpenAnalysisJobs(limit: number): Promise<JobRecord[]> {
+  const staleBefore = new Date(Date.now() - OPEN_JOB_STALE_POLL_MS).toISOString();
+  const result = await serviceClient()
+    .from("jobs")
+    .select("*")
+    .eq("subject_type", "analysis")
+    .in("status", ["pending", "running"])
+    .or(`last_polled_at.is.null,last_polled_at.lt."${staleBefore}"`)
+    .order("last_polled_at", { ascending: true, nullsFirst: true })
+    .limit(limit);
+  return unwrap("list open analysis jobs", result);
 }
 
 export async function findOpenJobForSubject(

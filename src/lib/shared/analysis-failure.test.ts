@@ -16,8 +16,9 @@ import { analysisFailureCopy, COPY_NOT_IN_FLOW_DOC, copy } from "./copy";
  *
  * The first three were read on 2026-09-02. faceTooSmall came later, off a photo
  * picked out of the phone's gallery rather than taken on the capture screen, and
- * it is what the auto framing in src/lib/shared/quality.ts (autoCropBoxFor) now
- * exists to stop happening. It is kept here because the framing can only help a
+ * it is what the upload composer in src/lib/shared/frame-geometry.ts
+ * (masterCropFor) now exists to stop happening. It is kept here because the
+ * framing can only help a
  * photo that has a findable face in it, so the refusal still has to land well.
  */
 const LIVE_CODES = {

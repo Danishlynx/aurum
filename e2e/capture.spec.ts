@@ -1,51 +1,81 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { syntheticFace } from "../evals/support/synthetic-face";
 import { copy } from "../src/lib/shared/copy";
+import {
+  FRAME_FACE_CENTER_X,
+  FRAME_FACE_CENTER_Y,
+  FRAME_GEOMETRY_VERSION,
+  FRAME_OVAL_WIDTH,
+  MASTER_ASPECT,
+  MASTER_MIN_SHORT_EDGE,
+} from "../src/lib/shared/frame-geometry";
+import { FLAT_CAMERA_SIZE, flatCameraFile } from "./support/flat-camera";
 
 /**
  * D. Capture, docs/01-user-flow.md section D, as a person meets it.
  *
- * Three things are proved here, and all three come from watching someone use
+ * Four things are proved here, and all four come from watching someone use
  * the screen rather than from a scanner.
  *
  * 1. Composition. docs/02-design-system.md, Layout: "Mobile first at 390px ...
  *    On desktop, the app renders a 480px column centered on the Obsidian
- *    canvas". A laptop webcam is landscape, so without that column the feed
- *    filled the window as a wide strip with the shutter floating below it.
+ *    canvas". The stage is a 3:4 box in that column, the master frame's own
+ *    shape, on a phone and on a laptop alike.
  * 2. The way out. The camera is the one screen a person can arrive at by
  *    accident, and docs/02 puts a back control in the screen skeleton.
  * 3. The tap. The shutter answers instantly and the frame it took stays on the
- *    screen, so there is no moment where nothing is happening.
+ *    screen, the same mirror image the person framed, so there is no moment
+ *    where nothing is happening and nothing flips.
+ * 4. The frame. What is sent is the master frame: 3:4, at the engine's floor,
+ *    whatever the camera granted; and after a hold of "ready" the screen takes
+ *    it itself.
  *
- * The camera tests run against Chromium's fake capture device, so no real face
- * is involved. Nothing in this file spends a credit or writes a row: the gate
- * runs in the browser, and the one request a frame could start is stubbed.
+ * The camera tests run against Chromium's fake capture device fed a still,
+ * flat picture (e2e/support/flat-camera.ts), so no real face is involved and
+ * the camera holds still the way a person does. Nothing in this file spends a
+ * credit or writes a row: the gate runs in the browser, and the one request a
+ * frame could start is stubbed.
  */
 
 /*
  * Chromium's fake capture device, for the whole file: the screen under test is
  * a camera screen, and the composition it is asked about is the composition it
  * has with a feed running in it. Playwright allows launch options only at the
- * top level of a file, because they decide the worker.
+ * top level of a file, because they decide the worker. The device plays the
+ * flat camera file in a loop, at the file's own size.
  */
 test.use({
   launchOptions: {
     args: [
       "--use-fake-device-for-media-stream",
       "--use-fake-ui-for-media-stream",
+      `--use-file-for-fake-video-capture=${flatCameraFile()}`,
     ],
   },
   permissions: ["camera"],
 });
+
+/**
+ * The fake device's track: the flat camera file's 360 by 480 portrait, which
+ * masterRectFor keeps whole and the draw lifts to the 480 px floor: 480 by
+ * 640 (src/lib/shared/frame-geometry.test.ts pins the rect).
+ */
+const FAKE_TRACK = FLAT_CAMERA_SIZE;
 
 /** The 480px column: the one child of main. */
 function column(page: Page) {
   return page.locator("main > div").first();
 }
 
-/** The camera stage inside it. */
+/** The camera stage inside it: the first div under the header. */
 function stage(page: Page) {
   return column(page).locator("> div").first();
+}
+
+/** The oval, the one rounded thing on the screen (docs/02, Radius). */
+function oval(page: Page) {
+  return page.locator('main [class*="rounded-[50%]"]');
 }
 
 /** The resolved value of a design token, so no colour is written into a test. */
@@ -99,6 +129,17 @@ function paintedBorders(page: Page): Promise<string[]> {
   );
 }
 
+/** Nothing may reach the server: this is the one request a frame could start. */
+async function stubCaptureCreate(page: Page): Promise<void> {
+  await page.route("**/api/captures", (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "e2e" }),
+    }),
+  );
+}
+
 test.describe("the capture screen composes into one column", () => {
   test("fills a phone, with the controls under the stage", async ({ page }) => {
     await page.goto("/capture");
@@ -107,8 +148,9 @@ test.describe("the capture screen composes into one column", () => {
     const box = await stage(page).boundingBox();
     expect(box?.x).toBe(0);
     expect(box?.width).toBe(390);
-    // Portrait, which is the shape a face is.
-    expect(box?.height ?? 0).toBeGreaterThan(box?.width ?? 0);
+    // 3:4, the master frame's shape: the stage shows exactly the frame that
+    // is sent, so it has to be the frame's shape and nothing else.
+    expect((box?.height ?? 0) / (box?.width ?? 1)).toBeCloseTo(1 / MASTER_ASPECT, 2);
   });
 
   test.describe("on a laptop window", () => {
@@ -118,7 +160,14 @@ test.describe("the capture screen composes into one column", () => {
       hasTouch: false,
     });
 
-    test("holds the 480px column rather than spreading sideways", async ({
+    /**
+     * The column holds, the stage stays 3:4, and on a window too short for the
+     * full 480 wide stage under the header and above the controls it shrinks
+     * its width, centred, rather than cropping the frame: the shutter has to
+     * be on screen without scrolling, and the frame shown has to be the frame
+     * sent.
+     */
+    test("holds the 480px column and a 3:4 stage that fits the window", async ({
       page,
     }) => {
       await page.goto("/capture");
@@ -131,11 +180,26 @@ test.describe("the capture screen composes into one column", () => {
         640,
       );
 
-      // The stage is the column, and it is taller than it is wide: the same
-      // portrait frame the phone gets, not the webcam's landscape strip.
       const stageBox = await stage(page).boundingBox();
-      expect(stageBox?.width).toBe(480);
-      expect(stageBox?.height ?? 0).toBeGreaterThan(stageBox?.width ?? 0);
+      expect(stageBox?.width ?? 0).toBeLessThanOrEqual(480);
+      expect(stageBox?.width ?? 0).toBeGreaterThan(300);
+      expect((stageBox?.height ?? 0) / (stageBox?.width ?? 1)).toBeCloseTo(
+        1 / MASTER_ASPECT,
+        1,
+      );
+      // Centred in the column when it is narrower than it.
+      expect(Math.round((stageBox?.x ?? 0) + (stageBox?.width ?? 0) / 2)).toBe(
+        640,
+      );
+
+      const shutter = page.getByRole("button", {
+        name: copy.capture.shutterLabel,
+      });
+      await expect(shutter).toBeVisible();
+      const shutterBox = await shutter.boundingBox();
+      expect((shutterBox?.y ?? 0) + (shutterBox?.height ?? 0)).toBeLessThanOrEqual(
+        900,
+      );
     });
   });
 });
@@ -193,6 +257,8 @@ test.describe("the camera itself", () => {
       name: copy.capture.shutterLabel,
     });
     await expect(shutter).toBeVisible();
+    // Enabled once the master rect has been read off a delivered frame.
+    await expect(shutter).toBeEnabled();
 
     const accent = await token(page, "--accent");
     const resting = await shutter.evaluate(
@@ -226,15 +292,7 @@ test.describe("the camera itself", () => {
   test("keeps the frame on screen and answers a refused one in words", async ({
     page,
   }) => {
-    // Nothing may reach the server from this test. A frame that passed the gate
-    // would try to create a capture; this is the one request that could.
-    await page.route("**/api/captures", (route) =>
-      route.fulfill({
-        status: 500,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "e2e" }),
-      }),
-    );
+    await stubCaptureCreate(page);
 
     await page.goto("/capture");
     const shutter = page.getByRole("button", {
@@ -274,59 +332,136 @@ test.describe("the camera itself", () => {
   });
 
   /**
+   * The still does not flip at the tap, docs/01-user-flow.md section D.
+   *
+   * Until 2026-09-23 the video was mirrored by CSS and the still was not, so
+   * the frozen frame was the mirror image of what the person had just been
+   * looking at. One wrapper now carries the flip and holds the video, the
+   * still and the oval, so the still is the same mirror image the video was
+   * and nothing inside the wrapper carries a transform of its own. The upload
+   * is drawn from the video, which is never mirrored, so the picture the
+   * analysis reads is the un mirrored one.
+   */
+  test("does not flip the still at the tap: the video and the still share one mirrored wrapper", async ({
+    page,
+  }) => {
+    await stubCaptureCreate(page);
+
+    await page.goto("/capture");
+    const shutter = page.getByRole("button", {
+      name: copy.capture.shutterLabel,
+    });
+    await expect(shutter).toBeVisible();
+
+    const before = await page.evaluate(() => {
+      const video = document.querySelector("main video");
+      const wrapper = video?.parentElement ?? null;
+      return {
+        wrapperTransform:
+          wrapper === null ? null : getComputedStyle(wrapper).transform,
+        videoTransform: video === null ? null : getComputedStyle(video).transform,
+      };
+    });
+    expect(before.wrapperTransform).toBe("matrix(-1, 0, 0, 1, 0, 0)");
+    expect(before.videoTransform).toBe("none");
+
+    await shutter.click();
+    await expect(page.locator("main img")).toHaveCount(1);
+
+    const after = await page.evaluate(() => {
+      const video = document.querySelector("main video");
+      const still = document.querySelector("main img");
+      const ring = document.querySelector('main [class*="rounded-[50%]"]');
+      const wrapper = still?.parentElement ?? null;
+      return {
+        wrapperTransform:
+          wrapper === null ? null : getComputedStyle(wrapper).transform,
+        stillTransform: still === null ? null : getComputedStyle(still).transform,
+        videoShares: wrapper !== null && video?.parentElement === wrapper,
+        ovalShares: wrapper !== null && ring?.parentElement === wrapper,
+      };
+    });
+    expect(after.wrapperTransform).toBe("matrix(-1, 0, 0, 1, 0, 0)");
+    expect(after.stillTransform).toBe("none");
+    expect(after.videoShares).toBe(true);
+    expect(after.ovalShares).toBe(true);
+  });
+
+  /**
    * The borderline frame, at 390px, which is the state this screen is judged on.
    *
    * On 2026-09-03 a founder on a Samsung S26 Ultra was told "Good. Tap to
    * capture." and then, on that same frame, "A little blurry. Hold still and tap
    * again." Softness no longer flags a frame at all (src/lib/shared/quality.ts,
-   * 2026-09-14), so the borderline this test walks is the one the gate still
-   * offers rather than refuses: a face running into the edge of the picture,
-   * which the engine refuses and a tighter crop cannot fix. What is proved is
-   * unchanged: the way through is there, is the documented copy, and is where a
-   * thumb is already looking: directly under Retake, the same full width, the
-   * same 52px, both above the fold of a phone.
+   * 2026-09-14), so the borderline this test walks is one the gate still
+   * offers rather than refuses: a face a little too wide for the band the
+   * engine reads, which is "too close". What is proved is unchanged: the way
+   * through is there, is the documented copy, and is where a thumb is already
+   * looking: directly under Retake, the same full width, the same 52px, both
+   * above the fold of a phone.
    *
-   * The fake capture device is not a face, so the frame that produces this state
-   * comes in through "Upload instead", which runs the identical gate on the
-   * identical canvas. It is drawn in the page rather than carried as a fixture,
-   * so no photograph of a person enters this repository
-   * (docs/06-safety-privacy.md).
+   * The fake capture device is not a face, so the face comes in through the
+   * e2e seam (src/lib/client/landmarks-seam.ts): a synthetic landmarker result
+   * of known width and pose, built in Node by evals/support/synthetic-face.ts
+   * and put on the window before the app's scripts run. The gate then reads
+   * the shutter's frame with that face, through the same conversion the real
+   * model's result goes through. No photograph of a person enters this
+   * repository (docs/06-safety-privacy.md). The seam exists only in a build
+   * made with NEXT_PUBLIC_AURUM_E2E_SEAMS=true, which playwright.config.ts
+   * sets for the fixture server it starts; a missing seam on that server is
+   * a failure, and only a run pointed at another server by
+   * PLAYWRIGHT_BASE_URL skips (requireSeam below).
    */
   test("offers use it anyway under retake for a borderline frame", async ({
     page,
   }) => {
-    await page.route("**/api/captures", (route) =>
-      route.fulfill({
-        status: 500,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "e2e" }),
-      }),
-    );
+    await stubCaptureCreate(page);
 
-    /*
-     * The face model is kept out of this test on purpose. A painted rectangle
-     * is not a face to a detector, and a detector that has looked and seen
-     * nothing is a refusal, not a borderline. With the model unreachable the
-     * gate reads the frame with the colour threshold, which is the same on every
-     * machine this runs on, and which finds exactly one skin region here.
-     */
-    await page.route("https://cdn.jsdelivr.net/**", (route) => route.abort());
-    await page.route("https://storage.googleapis.com/**", (route) =>
-      route.abort(),
-    );
+    await injectTooCloseFace(page);
+
+    await page.goto("/capture");
+    const shutter = page.getByRole("button", {
+      name: copy.capture.shutterLabel,
+    });
+    await expect(shutter).toBeVisible();
+
+    await requireSeam(page);
+
+    await shutter.click();
+
+    // The words, from src/lib/shared/copy.ts and nowhere else.
+    await expect(page.getByText(copy.capture.rejection.too_close)).toBeVisible();
+
+    await expectUseAnywayUnderRetake(page);
+  });
+
+  /**
+   * The same borderline through "Upload instead". This keeps the gallery path
+   * covered end to end (decodeImageFile, frameForUpload with masterCropFor,
+   * then the gate): a flat, evenly lit picture drawn in the page is set on the
+   * file input, the seam hands the landmarker the same too close face for the
+   * decoded photo and again for the composed frame, and the review screen
+   * has to answer the same way. Drawn rather than carried as a fixture, so no
+   * photograph of a person enters this repository (docs/06-safety-privacy.md).
+   */
+  test("offers use it anyway for a borderline photo sent through upload instead", async ({
+    page,
+  }) => {
+    await stubCaptureCreate(page);
+
+    await injectTooCloseFace(page);
 
     await page.goto("/capture");
     await expect(
       page.getByRole("button", { name: copy.capture.shutterLabel }),
     ).toBeVisible();
+    await requireSeam(page);
 
     /*
-     * A frame the gate reads as one face, well lit, wide enough to need no
-     * crop, and cut off at the top of the picture. The face region is flat skin
-     * chroma; the ground behind it is a colour with the same luminance and a
-     * chroma outside the skin range, so the skin heuristic finds exactly one
-     * region, 0.66 of the width and 0.7 of the height, touching the top edge.
-     * That is the borderline the gate calls face_out_of_bounds.
+     * Mid grey over the whole picture: a face luma of 0.5 on the gate's 0 to
+     * 1 scale, inside the light bands, with nothing blown and nothing
+     * crushed, so the only thing wrong with the frame is the injected width.
+     * 600 by 800 keeps the short edge above the 480 floor after composition.
      */
     const dataUrl = await page.evaluate(() => {
       const canvas = document.createElement("canvas");
@@ -336,63 +471,282 @@ test.describe("the camera itself", () => {
       if (context === null) {
         throw new Error("no canvas context");
       }
-      context.fillStyle = "rgb(120, 175, 150)";
+      context.fillStyle = "rgb(128, 128, 128)";
       context.fillRect(0, 0, canvas.width, canvas.height);
-      context.fillStyle = "rgb(205, 150, 120)";
-      const faceWidth = Math.round(canvas.width * 0.66);
-      const faceHeight = Math.round(canvas.height * 0.7);
-      context.fillRect(
-        Math.round((canvas.width - faceWidth) / 2),
-        0,
-        faceWidth,
-        faceHeight,
-      );
       return canvas.toDataURL("image/png");
     });
 
-    await page
-      .locator('main input[type="file"]')
-      .setInputFiles({
-        name: "clipped.png",
-        mimeType: "image/png",
-        buffer: Buffer.from(dataUrl.split(",")[1] ?? "", "base64"),
-      });
+    await page.locator('main input[type="file"]').setInputFiles({
+      name: "close.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(dataUrl.split(",")[1] ?? "", "base64"),
+    });
 
-    // The words, from src/lib/shared/copy.ts and nowhere else.
+    await expect(page.getByText(copy.capture.rejection.too_close)).toBeVisible();
+    await expectUseAnywayUnderRetake(page);
+  });
+
+  /**
+   * The auto capture, docs/01-user-flow.md section D: after READY_HOLD_MS of
+   * "ready" the oval turns solid (Champagne, the one place docs/02 allows it)
+   * and the line says the photo is about to be taken; when the countdown
+   * elapses the shutter fires itself and the still appears without a tap.
+   *
+   * A ready face through the seam: the oval's own width, at the target
+   * centre, square to the lens, eyes open. The flat camera file supplies the
+   * light and the stillness; Chromium's own animated fake picture reads as
+   * motion every third sample and never lets the hold complete. Watched with
+   * a MutationObserver rather than polled, because the solid oval and the
+   * line last only the countdown (700ms) before the still replaces them, and
+   * a poll can miss a window that short.
+   */
+  test("turns the oval solid after the hold, then takes the photo itself", async ({
+    page,
+  }) => {
+    await stubCaptureCreate(page);
+
+    await injectFace(page, {
+      widthRatio: FRAME_OVAL_WIDTH,
+      center: { x: FRAME_FACE_CENTER_X, y: FRAME_FACE_CENTER_Y },
+    });
+
+    await page.goto("/capture");
     await expect(
-      page.getByText(copy.capture.rejection.face_out_of_bounds),
+      page.getByRole("button", { name: copy.capture.shutterLabel }),
+    ).toBeVisible();
+    await skipWithoutSeam(page);
+    await expect(oval(page)).toHaveCount(1);
+
+    const accentBright = await token(page, "--accent-bright");
+    await page.evaluate(
+      ([solidColor, takingLine]) => {
+        const record = { solid: false, taking: false };
+        (window as unknown as { __aurumHold: typeof record }).__aurumHold = record;
+        const check = (): void => {
+          const ring = document.querySelector('main [class*="rounded-[50%]"]');
+          const stillThere = document.querySelector("main img") !== null;
+          if (stillThere) {
+            return;
+          }
+          if (ring !== null && getComputedStyle(ring).borderTopColor === solidColor) {
+            record.solid = true;
+          }
+          if (
+            Array.from(document.querySelectorAll("main p")).some(
+              (line) => line.textContent === takingLine,
+            )
+          ) {
+            record.taking = true;
+          }
+        };
+        const main = document.querySelector("main");
+        if (main !== null) {
+          new MutationObserver(check).observe(main, {
+            subtree: true,
+            attributes: true,
+            childList: true,
+            characterData: true,
+          });
+        }
+        check();
+      },
+      [accentBright, copy.capture.guidance.taking] as const,
+    );
+
+    // No tap. The still appears on its own once the hold and the countdown
+    // have run, and the stubbed register answer lands the screen on Retake.
+    const still = page.locator("main img");
+    await expect(still).toHaveCount(1);
+    await expect(
+      page.getByRole("button", { name: copy.capture.retakeAction }),
     ).toBeVisible();
 
-    const retake = page.getByRole("button", { name: copy.capture.retakeAction });
-    const useAnyway = page.getByRole("button", {
-      name: copy.capture.useAnywayAction,
-    });
-    await expect(retake).toBeVisible();
-    await expect(useAnyway).toBeVisible();
+    const hold = await page.evaluate(
+      () => (window as unknown as { __aurumHold: { solid: boolean; taking: boolean } }).__aurumHold,
+    );
+    expect(hold.solid).toBe(true);
+    expect(hold.taking).toBe(true);
+  });
 
-    const retakeBox = await retake.boundingBox();
-    const useAnywayBox = await useAnyway.boundingBox();
-    if (retakeBox === null || useAnywayBox === null) {
-      throw new Error("Both answers to a borderline frame must be on screen.");
+  /**
+   * What is sent is the master frame, docs/01-user-flow.md section D and
+   * docs/03-architecture.md step 1: 3:4 whatever the camera granted, and for
+   * the flat camera's 360 by 480 track that frame lifted to the 480 px
+   * floor, 480 by 640. The register body carries the sizes and the geometry
+   * version the calibration report keys on.
+   *
+   * The face is one the gate accepts and the live line does not yet call
+   * ready (0.62 of the width: over the engine's 0.60, under the line's 0.64),
+   * so the request is the tap's and the auto capture cannot race it.
+   */
+  test("sends the master frame: 3:4, at the floor, with its sizes", async ({
+    page,
+  }) => {
+    type SentBody = {
+      readonly width?: number;
+      readonly height?: number;
+      readonly quality?: {
+        readonly frame?: Record<string, number>;
+        readonly frameGeometryVersion?: number;
+        readonly burstLosers?: unknown[];
+        readonly faceWidthRatio?: number | null;
+        readonly path?: string;
+      };
+    };
+    // Held in an object: the route callback fills it after this flow reads it.
+    const captured: { body: SentBody | null } = { body: null };
+    await page.route("**/api/captures", (route) => {
+      captured.body = route.request().postDataJSON() as SentBody;
+      return route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "e2e" }),
+      });
+    });
+
+    await injectFace(page, {
+      widthRatio: 0.62,
+      center: { x: FRAME_FACE_CENTER_X, y: FRAME_FACE_CENTER_Y },
+    });
+
+    await page.goto("/capture");
+    const shutter = page.getByRole("button", {
+      name: copy.capture.shutterLabel,
+    });
+    await expect(shutter).toBeVisible();
+    await skipWithoutSeam(page);
+    await expect(shutter).toBeEnabled();
+    await shutter.click();
+
+    await expect.poll(() => captured.body).not.toBeNull();
+    const sent = captured.body;
+    if (sent === null) {
+      throw new Error("The register request never left the screen.");
     }
 
-    // docs/02-design-system.md, Components: height 52, full width on mobile.
-    expect(Math.round(retakeBox.height)).toBe(52);
-    expect(Math.round(useAnywayBox.height)).toBe(52);
-    expect(Math.round(useAnywayBox.width)).toBe(Math.round(retakeBox.width));
-    expect(retakeBox.width).toBeGreaterThan(300);
+    const width = sent.width ?? 0;
+    const height = sent.height ?? 0;
+    // 3:4 to within a pixel of rounding.
+    expect(Math.abs(width - height * MASTER_ASPECT)).toBeLessThanOrEqual(1);
+    // The fake device's frame after the floor.
+    expect(Math.min(width, height)).toBe(MASTER_MIN_SHORT_EDGE);
+    expect({ width, height }).toEqual({ width: 480, height: 640 });
 
-    // Directly under it, aligned with it, and not below the fold of the phone.
-    expect(Math.round(useAnywayBox.x)).toBe(Math.round(retakeBox.x));
-    const gap = useAnywayBox.y - (retakeBox.y + retakeBox.height);
-    expect(gap).toBeGreaterThan(0);
-    expect(gap).toBeLessThanOrEqual(16);
-    const viewport = page.viewportSize();
-    expect(useAnywayBox.y + useAnywayBox.height).toBeLessThanOrEqual(
-      viewport?.height ?? 0,
-    );
+    expect(sent.quality?.frame).toEqual({
+      sourceWidth: FAKE_TRACK.width,
+      sourceHeight: FAKE_TRACK.height,
+      masterWidth: 480,
+      masterHeight: 640,
+    });
+    expect(sent.quality?.frameGeometryVersion).toBe(FRAME_GEOMETRY_VERSION);
+    expect(sent.quality?.path).toBe("camera");
+    // Three frames, one sent, two passed over as numbers.
+    expect(sent.quality?.burstLosers).toHaveLength(2);
+    expect(sent.quality?.faceWidthRatio ?? 0).toBeCloseTo(0.62, 2);
   });
 });
+
+/**
+ * A synthetic face on the window before the app's scripts run, where the seam
+ * reads it (src/lib/client/landmarks-seam.ts). Square to the lens, eyes open
+ * unless the options say otherwise, so nothing but the given framing is wrong
+ * with it.
+ */
+async function injectFace(
+  page: Page,
+  options: Parameters<typeof syntheticFace>[0],
+): Promise<void> {
+  const face = syntheticFace({ yaw: 0, pitch: 0, roll: 0, blink: 0, ...options });
+  const injected = {
+    faces: [
+      {
+        landmarks: face.landmarks.map((point) => ({ ...point })),
+        matrix: [...face.matrix],
+        blendshapes: Object.fromEntries(face.blendshapes),
+      },
+    ],
+  };
+  await page.addInitScript((result) => {
+    (window as unknown as { __aurumLandmarker: unknown }).__aurumLandmarker =
+      result;
+  }, injected);
+}
+
+/**
+ * A face at 0.87 of the frame width, cheek to cheek: above the 0.86 top of
+ * the band, so the gate offers it as too close, and centred at 0.525 of the
+ * height so its oval (0.87 of the width tall, being 1.35 times as tall as it
+ * is wide on a 3 by 4 frame) stays inside the 0.08 top and 0.03 bottom edge
+ * margins. Any wider, or centred at the target 0.47, and the oval runs into a
+ * margin and the gate answers out of bounds first.
+ */
+async function injectTooCloseFace(page: Page): Promise<void> {
+  await injectFace(page, { widthRatio: 0.87, center: { x: 0.5, y: 0.525 } });
+}
+
+const SEAM_MISSING =
+  "The face model seam is off: this server was not built with NEXT_PUBLIC_AURUM_E2E_SEAMS=true (playwright.config.ts sets it for the fixture server it starts).";
+
+function seamIsOn(page: Page): Promise<boolean> {
+  return page.evaluate(
+    () => (window as unknown as { __aurumSeams?: boolean }).__aurumSeams === true,
+  );
+}
+
+/**
+ * The seam has to be there. When this file's own config started the server
+ * it set NEXT_PUBLIC_AURUM_E2E_SEAMS for it, so a missing seam is a broken
+ * build and the test fails and says so. Only a run pointed at somebody else's
+ * server (PLAYWRIGHT_BASE_URL) may legitimately have no seam, and that run
+ * skips with the same message rather than failing on the wrong build.
+ */
+async function requireSeam(page: Page): Promise<void> {
+  const seamed = await seamIsOn(page);
+  if (process.env.PLAYWRIGHT_BASE_URL) {
+    test.skip(!seamed, SEAM_MISSING);
+    return;
+  }
+  if (!seamed) {
+    throw new Error(SEAM_MISSING);
+  }
+}
+
+/** The master frame tests skip, with the same message, on a server without the seam. */
+async function skipWithoutSeam(page: Page): Promise<void> {
+  test.skip(!(await seamIsOn(page)), SEAM_MISSING);
+}
+
+/** The two answers to a borderline frame, in the geometry docs/02 gives them. */
+async function expectUseAnywayUnderRetake(page: Page): Promise<void> {
+  const retake = page.getByRole("button", { name: copy.capture.retakeAction });
+  const useAnyway = page.getByRole("button", {
+    name: copy.capture.useAnywayAction,
+  });
+  await expect(retake).toBeVisible();
+  await expect(useAnyway).toBeVisible();
+
+  const retakeBox = await retake.boundingBox();
+  const useAnywayBox = await useAnyway.boundingBox();
+  if (retakeBox === null || useAnywayBox === null) {
+    throw new Error("Both answers to a borderline frame must be on screen.");
+  }
+
+  // docs/02-design-system.md, Components: height 52, full width on mobile.
+  expect(Math.round(retakeBox.height)).toBe(52);
+  expect(Math.round(useAnywayBox.height)).toBe(52);
+  expect(Math.round(useAnywayBox.width)).toBe(Math.round(retakeBox.width));
+  expect(retakeBox.width).toBeGreaterThan(300);
+
+  // Directly under it, aligned with it, and not below the fold of the phone.
+  expect(Math.round(useAnywayBox.x)).toBe(Math.round(retakeBox.x));
+  const gap = useAnywayBox.y - (retakeBox.y + retakeBox.height);
+  expect(gap).toBeGreaterThan(0);
+  expect(gap).toBeLessThanOrEqual(16);
+  const viewport = page.viewportSize();
+  expect(useAnywayBox.y + useAnywayBox.height).toBeLessThanOrEqual(
+    viewport?.height ?? 0,
+  );
+}
 
 /**
  * The retake loop, docs/01-user-flow.md section D: "Retake" is the primary
@@ -406,17 +760,6 @@ test.describe("the camera itself", () => {
  * happens a screen later and comes back through a navigation.
  */
 test.describe("the retake loop", () => {
-  /** Nothing may reach the server: this is the one request a frame could start. */
-  async function stubCaptureCreate(page: Page): Promise<void> {
-    await page.route("**/api/captures", (route) =>
-      route.fulfill({
-        status: 500,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "e2e" }),
-      }),
-    );
-  }
-
   test("hands back a running camera, and does it twice", async ({ page }) => {
     await stubCaptureCreate(page);
     await page.goto("/capture");
