@@ -18,9 +18,13 @@
  * and the Camera Kit presets the numbers below are derived from.
  *
  * Pure: no DOM, no canvas, no pixels. Every function here is geometry over
- * numbers, and src/lib/client/image.ts draws what this module computes. Box and
- * Size come from src/lib/shared/quality.ts so the gate and the geometry speak
- * the same coordinates.
+ * numbers; the capture screen and src/lib/client/image.ts will draw what this
+ * module computes once the master frame lands (the capture-master-frame PR).
+ * Box comes from src/lib/shared/quality.ts and Size is an alias of its Frame
+ * type, so the gate and the geometry speak the same coordinates. The crops this
+ * module returns are in source pixels: the drawing step enforces
+ * MASTER_MIN_SHORT_EDGE and MASTER_MAX_LONG_EDGE on the encoded frame, not the
+ * geometry.
  */
 
 import { clampBox, type Box, type Frame } from "./quality";

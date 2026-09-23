@@ -15,6 +15,9 @@
  * LEFT_EYE_LANDMARKS is the person's left eye, which sits on the image's right
  * in an un mirrored frame, and eyeBlinkLeft is the same eye. The two are kept
  * consistent with each other here and nothing downstream needs the image side.
+ * The one exception is the pair of cheek constants below, which the plan names
+ * by IMAGE side (CHEEK_LEFT is the image's left, the person's right); each
+ * carries its own comment saying so, and only their distance is ever read.
  *
  * Pure: no DOM, no MediaPipe types, no I/O. The landmarker's result is passed
  * in as plain numbers, so this runs identically in a test with a synthetic

@@ -260,7 +260,14 @@ describe("poseFromLandmarkerMatrix", () => {
     });
     expect(poseFromLandmarkerMatrix(null)).toBeNull();
     expect(poseFromLandmarkerMatrix([1, 2, 3])).toBeNull();
-    expect(poseFromLandmarkerMatrix(new Float32Array(16))).not.toBeNull();
+    // A typed array reads the same numbers as a plain array. The identity is
+    // used rather than a zero filled buffer, because zeros are not a rotation
+    // and would decode to "square to the lens" for the wrong reason.
+    expect(
+      poseFromLandmarkerMatrix(
+        Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+      ),
+    ).toEqual({ yawDegrees: 0, pitchDegrees: 0, rollDegrees: 0 });
   });
 });
 

@@ -53,11 +53,18 @@
  *
  * What the check catches. poseFromLandmarkerMatrix transposes the column major
  * data before decoding it. Reading a column major matrix as row major is
- * reading the transpose, which for a rotation is the inverse, so a wrong major
- * order negates all three angles at once, and a single turned frame shows it.
- * Until the check is written into this file as done, with the phones and the
- * date, the signs here are the convention the code is written to, not a
- * measurement.
+ * reading the transpose, which for a rotation is the inverse, so for a turn
+ * about ONE axis (which is what each calibration move is) a wrong major order
+ * negates that angle, and a single turned frame shows it. For a combined
+ * rotation the transpose is a different decomposition, not a negation, so if
+ * the phone check finds the signs reversed the fix is to negate the three
+ * decoded angles inside poseFromLandmarkerMatrix (and the synthetic face's
+ * matrix builder and the signed tests with it), never to drop the transpose.
+ * The geometric reading of MediaPipe's metric space (x right, y up, z toward
+ * the viewer, the face looking along +z) predicts exactly that reversal on all
+ * three axes, so expect the check to ask for it. Until the check is written
+ * into this file as done, with the phones and the date, the signs here are the
+ * convention the code is written to, not a measurement.
  */
 
 export type FacePose = {

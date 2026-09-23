@@ -153,6 +153,8 @@ The four face gate families, read from the raw OpenAPI bundles on 2026-09-23. Th
 | C fitzpatrick | fitzpatrick-scale-analyzer (10 units) | too_small or out_of_boundary | hard "within 10 degrees of straight", no override | error_insufficient_lighting | short side at least 320 | jpg only |
 | D hairstyle | hair-transfer (2 units) | face width at least 128 px, single face, shoulders visible (error_no_shoulder) | pitch within 10, yaw within 45, roll within 15 | none published | long side at most 1024 | jpg only |
 
+The table says image width and the paragraph above says short axis, and both name the same number: on a portrait frame the short axis is the width, which is one more reason the master frame is portrait.
+
 Two consequences. The one go promise is bounded by family C's hard 10 degrees, which no strictness level relaxes, so the accept tier has to sit inside 10 on all three axes with margin, and that needs a solved head pose rather than a keypoint heuristic. And family D wants shoulders, which is geometrically incompatible with a face at 60 to 80 percent of the width, so the hairstyle input has to be a derivative of the widest frame rather than the master frame itself. Leftward and rightward are in image terms; mirroring is undocumented; a refused task costs 0 units on every family; no blur code exists on any of them.
 
 The master frame geometry in src/lib/shared/frame-geometry.ts is derived from these rows and the Camera Kit presets: the 3:4 frame and its 1440 and 480 edges from the size columns, the 0.70 oval from the face rules and the MODERATE preset with margin on both sides, the width bands from the RELAXED floor, and the hold and countdown from the 800 ms rule.
