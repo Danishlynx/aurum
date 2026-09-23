@@ -52,6 +52,25 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/": ["./public/fixtures/landing-face.jpg"],
   },
+  /*
+   * The e2e seam switch (src/lib/client/landmarks-seam.ts), defined in every
+   * build so that it is inlined as a literal.
+   *
+   * Next inlines a NEXT_PUBLIC_* variable only when it is defined at build
+   * time; an undefined one is left as a property read on the process shim and
+   * the code behind it ships, gated at runtime. Reviewed on 2026-09-23: with
+   * the variable unset the seam branch, its schema and the window read were
+   * all in the capture chunk. Giving the variable a value in every build
+   * ("false" unless the environment says exactly "true") makes the check a
+   * constant, and the minifier drops the branch. The verification is a grep
+   * of .next/static for __aurumLandmarker after a build without the variable:
+   * it must find nothing. playwright.config.ts sets the variable for the
+   * fixture server it starts; nothing else does (.env.example).
+   */
+  env: {
+    NEXT_PUBLIC_AURUM_E2E_SEAMS:
+      process.env.NEXT_PUBLIC_AURUM_E2E_SEAMS === "true" ? "true" : "false",
+  },
 };
 
 export default nextConfig;

@@ -102,7 +102,11 @@ export type StoredJson =
 
 export type StoredCaptureQuality = { [key: string]: StoredJson | undefined };
 
-/** The eight keys every row has carried since the column existed. */
+/**
+ * The eight keys every row carried from the column's first build to
+ * 2026-09-23. exposure, mean_luminance and face_coverage are written only when
+ * the client sent them, which a build from that date on does not.
+ */
 export const STORED_QUALITY_ORIGINAL_KEYS = [
   "sharpness",
   "exposure",
@@ -143,14 +147,25 @@ export function storedCaptureQualityFrom(
 ): StoredCaptureQuality {
   const stored: StoredCaptureQuality = {
     sharpness: quality.sharpness,
-    exposure: quality.meanLuminance,
-    face_coverage: quality.faceCoverage,
     verdict: quality.verdict,
     reason: quality.reason,
     blown_fraction: quality.blownFraction,
     crushed_fraction: quality.crushedFraction,
-    mean_luminance: quality.meanLuminance,
   };
+
+  /*
+   * Two of the original eight, optional since 2026-09-23: the gate measures
+   * light over the face oval (face_luma) and reads no face box height, so a
+   * row from this build onward carries neither, while a row from an earlier
+   * build still writes both under the names it always had.
+   */
+  if (present(quality.meanLuminance)) {
+    stored.exposure = quality.meanLuminance;
+    stored.mean_luminance = quality.meanLuminance;
+  }
+  if (present(quality.faceCoverage)) {
+    stored.face_coverage = quality.faceCoverage;
+  }
 
   if (present(quality.faceWidthRatio)) {
     stored.face_width_ratio = quality.faceWidthRatio;

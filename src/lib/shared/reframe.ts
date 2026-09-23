@@ -3,11 +3,12 @@
  *
  * Why this exists. On 2026-09-03 the founder's phone uploaded a selfie twice and
  * the skin analysis refused both with error_src_face_too_small. That phone's
- * browser has no FaceDetector, so the framing in src/lib/shared/quality.ts
- * (autoCropBoxFor) was composed around the skin region heuristic in
- * src/lib/client/face.ts, which had run down the neck and shoulders and returned
- * a box far larger than the face. The crop was therefore far looser than it
- * looked, and the engine measured what we actually sent.
+ * browser had no face model loaded, so the framing in src/lib/shared/quality.ts
+ * (autoCropBoxFor) was composed around a skin colour heuristic (deleted since;
+ * a frame is now measured by the landmarker or unmeasured), which had run down
+ * the neck and shoulders and returned a box far larger than the face. The crop
+ * was therefore far looser than it looked, and the engine measured what we
+ * actually sent.
  *
  * A refused task is charged nothing (docs/04-integrations.md, "Input errors"),
  * so a second and a third framing of the same photo cost nothing but the

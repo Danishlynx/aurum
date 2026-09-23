@@ -94,11 +94,10 @@ import { makeupTaskBody } from "@/lib/server/renders/makeup";
 import { MAKEUP_CATEGORIES, type MakeupCategory } from "@/lib/shared/color-view";
 import type { AnalysisKind } from "@/lib/server/db/types";
 import { derivePalette } from "@/lib/shared/palette";
+import { FACE_WIDTH_REJECT_BELOW } from "@/lib/shared/frame-geometry";
 import {
-  FACE_COVERAGE_MIN,
-  MEAN_LUMINANCE_REJECT_ABOVE,
-  MEAN_LUMINANCE_REJECT_BELOW,
-  SHARPNESS_BORDERLINE_BELOW,
+  FACE_LUMA_REJECT_ABOVE,
+  FACE_LUMA_REJECT_BELOW,
 } from "@/lib/shared/quality";
 
 /* ------------------------------------------------------------------ */
@@ -744,9 +743,9 @@ export function describeQualityGate(header: ImageHeader): string[] {
     "The sharpness and exposure gate is advisory here and has not run: it reads pixels,",
     "Node has no image decoder, and no dependency is being added for one call.",
     "The gate that does run is the size and format check above, against the provider constraints.",
-    `For the eye: the app offers, rather than refuses, a face below sharpness ${String(SHARPNESS_BORDERLINE_BELOW)}.`,
-    `It refuses a mean luminance outside ${String(MEAN_LUMINANCE_REJECT_BELOW)} to ${String(MEAN_LUMINANCE_REJECT_ABOVE)},`,
-    `and a face filling far less than ${String(Math.round(FACE_COVERAGE_MIN * 100))} percent of the frame height.`,
+    "For the eye: the app never refuses or flags a frame for sharpness.",
+    `It refuses a face luma outside ${FACE_LUMA_REJECT_BELOW.toFixed(2)} to ${FACE_LUMA_REJECT_ABOVE.toFixed(2)} of full scale,`,
+    `and a face narrower than ${String(Math.round(FACE_WIDTH_REJECT_BELOW * 100))} percent of the frame width, cheek to cheek.`,
   ];
 }
 

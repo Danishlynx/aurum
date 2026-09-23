@@ -44,16 +44,19 @@ vi.mock("@/lib/client/capture-handoff", () => ({
 }));
 
 /** One face, found every time, so the gate never refuses the crop under test. */
-vi.mock("@/lib/client/face", () => ({
-  SKIN_SAMPLE_LONG_EDGE: 96,
-  estimateFaceForCapture: () =>
-    Promise.resolve({
-      faceCount: 1,
-      faceBox: { x: 10, y: 10, width: 80, height: 80 },
-      source: "model",
-      pose: { yawDegrees: 0, pitchDegrees: 0, rollDegrees: 0 },
-    }),
-}));
+vi.mock("@/lib/client/landmarks", async () => {
+  const { syntheticFace } = await import("../support/synthetic-face");
+  const { faceReadingFrom } = await import("@/lib/shared/face-reading");
+  const reading = faceReadingFrom(syntheticFace());
+  return {
+    readFaces: () =>
+      Promise.resolve({
+        faces: reading === null ? [] : [reading],
+        inferMs: 12,
+        delegate: "cpu",
+      }),
+  };
+});
 
 /**
  * The image layer is canvas work and there is no canvas here. Every function is
@@ -92,10 +95,13 @@ vi.mock("@/lib/shared/quality", async (importOriginal) => {
         sharpness: 100,
         blownFraction: 0,
         crushedFraction: 0,
-        meanLuminance: 128,
-        faceCoverage: 0.7,
+        faceLuma: 0.5,
+        faceLumaUneven: 0.02,
         faceWidthRatio: 0.7,
+        faceBboxRatio: 0.7,
+        faceCenter: { x: 0.5, y: 0.47 },
         pose: null,
+        blink: { left: 0, right: 0 },
       },
     }),
   };

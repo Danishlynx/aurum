@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { syntheticFace } from "../evals/support/synthetic-face";
 import { copy } from "../src/lib/shared/copy";
 
 /**
@@ -279,18 +280,24 @@ test.describe("the camera itself", () => {
    * On 2026-09-03 a founder on a Samsung S26 Ultra was told "Good. Tap to
    * capture." and then, on that same frame, "A little blurry. Hold still and tap
    * again." Softness no longer flags a frame at all (src/lib/shared/quality.ts,
-   * 2026-09-14), so the borderline this test walks is the one the gate still
-   * offers rather than refuses: a face running into the edge of the picture,
-   * which the engine refuses and a tighter crop cannot fix. What is proved is
-   * unchanged: the way through is there, is the documented copy, and is where a
-   * thumb is already looking: directly under Retake, the same full width, the
-   * same 52px, both above the fold of a phone.
+   * 2026-09-14), so the borderline this test walks is one the gate still
+   * offers rather than refuses: a face a little too wide for the band the
+   * engine reads, which is "too close". What is proved is unchanged: the way
+   * through is there, is the documented copy, and is where a thumb is already
+   * looking: directly under Retake, the same full width, the same 52px, both
+   * above the fold of a phone.
    *
-   * The fake capture device is not a face, so the frame that produces this state
-   * comes in through "Upload instead", which runs the identical gate on the
-   * identical canvas. It is drawn in the page rather than carried as a fixture,
-   * so no photograph of a person enters this repository
-   * (docs/06-safety-privacy.md).
+   * The fake capture device is not a face, so the face comes in through the
+   * e2e seam (src/lib/client/landmarks-seam.ts): a synthetic landmarker result
+   * of known width and pose, built in Node by evals/support/synthetic-face.ts
+   * and put on the window before the app's scripts run. The gate then reads
+   * the shutter's frame with that face, through the same conversion the real
+   * model's result goes through. No photograph of a person enters this
+   * repository (docs/06-safety-privacy.md). The seam exists only in a build
+   * made with NEXT_PUBLIC_AURUM_E2E_SEAMS=true, which playwright.config.ts
+   * sets for the fixture server it starts; a missing seam on that server is
+   * a failure, and only a run pointed at another server by
+   * PLAYWRIGHT_BASE_URL skips (requireSeam below).
    */
   test("offers use it anyway under retake for a borderline frame", async ({
     page,
@@ -303,30 +310,59 @@ test.describe("the camera itself", () => {
       }),
     );
 
-    /*
-     * The face model is kept out of this test on purpose. A painted rectangle
-     * is not a face to a detector, and a detector that has looked and seen
-     * nothing is a refusal, not a borderline. With the model unreachable the
-     * gate reads the frame with the colour threshold, which is the same on every
-     * machine this runs on, and which finds exactly one skin region here.
-     */
-    await page.route("https://cdn.jsdelivr.net/**", (route) => route.abort());
-    await page.route("https://storage.googleapis.com/**", (route) =>
-      route.abort(),
+    await injectTooCloseFace(page);
+
+    await page.goto("/capture");
+    const shutter = page.getByRole("button", {
+      name: copy.capture.shutterLabel,
+    });
+    await expect(shutter).toBeVisible();
+
+    await requireSeam(page);
+
+    await shutter.click();
+
+    // The words, from src/lib/shared/copy.ts and nowhere else.
+    await expect(page.getByText(copy.capture.rejection.too_close)).toBeVisible();
+
+    await expectUseAnywayUnderRetake(page);
+  });
+
+  /**
+   * The same borderline through "Upload instead". Until 2026-09-23 this was
+   * the only end to end walk of the gallery path (decodeImageFile,
+   * frameForUpload, autoCropBoxFor, then the gate), and the seam rewrite of
+   * the test above moved the walk onto the shutter. This keeps the gallery
+   * path covered: a flat, evenly lit picture drawn in the page is set on the
+   * file input, the seam hands the landmarker the same too close face for the
+   * decoded photo and again for the composed frame, and the review screen
+   * has to answer the same way. Drawn rather than carried as a fixture, so no
+   * photograph of a person enters this repository (docs/06-safety-privacy.md).
+   */
+  test("offers use it anyway for a borderline photo sent through upload instead", async ({
+    page,
+  }) => {
+    await page.route("**/api/captures", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "e2e" }),
+      }),
     );
+
+    await injectTooCloseFace(page);
 
     await page.goto("/capture");
     await expect(
       page.getByRole("button", { name: copy.capture.shutterLabel }),
     ).toBeVisible();
+    await requireSeam(page);
 
     /*
-     * A frame the gate reads as one face, well lit, wide enough to need no
-     * crop, and cut off at the top of the picture. The face region is flat skin
-     * chroma; the ground behind it is a colour with the same luminance and a
-     * chroma outside the skin range, so the skin heuristic finds exactly one
-     * region, 0.66 of the width and 0.7 of the height, touching the top edge.
-     * That is the borderline the gate calls face_out_of_bounds.
+     * Mid grey over the whole picture: a face luma of 0.5 on the gate's 0 to
+     * 1 scale, inside the light bands, with nothing blown and nothing
+     * crushed, so the only thing wrong with the frame is the injected width.
+     * 600 by 800 keeps the short edge above the 480 floor after composition.
      */
     const dataUrl = await page.evaluate(() => {
       const canvas = document.createElement("canvas");
@@ -336,63 +372,109 @@ test.describe("the camera itself", () => {
       if (context === null) {
         throw new Error("no canvas context");
       }
-      context.fillStyle = "rgb(120, 175, 150)";
+      context.fillStyle = "rgb(128, 128, 128)";
       context.fillRect(0, 0, canvas.width, canvas.height);
-      context.fillStyle = "rgb(205, 150, 120)";
-      const faceWidth = Math.round(canvas.width * 0.66);
-      const faceHeight = Math.round(canvas.height * 0.7);
-      context.fillRect(
-        Math.round((canvas.width - faceWidth) / 2),
-        0,
-        faceWidth,
-        faceHeight,
-      );
       return canvas.toDataURL("image/png");
     });
 
-    await page
-      .locator('main input[type="file"]')
-      .setInputFiles({
-        name: "clipped.png",
-        mimeType: "image/png",
-        buffer: Buffer.from(dataUrl.split(",")[1] ?? "", "base64"),
-      });
-
-    // The words, from src/lib/shared/copy.ts and nowhere else.
-    await expect(
-      page.getByText(copy.capture.rejection.face_out_of_bounds),
-    ).toBeVisible();
-
-    const retake = page.getByRole("button", { name: copy.capture.retakeAction });
-    const useAnyway = page.getByRole("button", {
-      name: copy.capture.useAnywayAction,
+    await page.locator('main input[type="file"]').setInputFiles({
+      name: "close.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(dataUrl.split(",")[1] ?? "", "base64"),
     });
-    await expect(retake).toBeVisible();
-    await expect(useAnyway).toBeVisible();
 
-    const retakeBox = await retake.boundingBox();
-    const useAnywayBox = await useAnyway.boundingBox();
-    if (retakeBox === null || useAnywayBox === null) {
-      throw new Error("Both answers to a borderline frame must be on screen.");
-    }
-
-    // docs/02-design-system.md, Components: height 52, full width on mobile.
-    expect(Math.round(retakeBox.height)).toBe(52);
-    expect(Math.round(useAnywayBox.height)).toBe(52);
-    expect(Math.round(useAnywayBox.width)).toBe(Math.round(retakeBox.width));
-    expect(retakeBox.width).toBeGreaterThan(300);
-
-    // Directly under it, aligned with it, and not below the fold of the phone.
-    expect(Math.round(useAnywayBox.x)).toBe(Math.round(retakeBox.x));
-    const gap = useAnywayBox.y - (retakeBox.y + retakeBox.height);
-    expect(gap).toBeGreaterThan(0);
-    expect(gap).toBeLessThanOrEqual(16);
-    const viewport = page.viewportSize();
-    expect(useAnywayBox.y + useAnywayBox.height).toBeLessThanOrEqual(
-      viewport?.height ?? 0,
-    );
+    await expect(page.getByText(copy.capture.rejection.too_close)).toBeVisible();
+    await expectUseAnywayUnderRetake(page);
   });
 });
+
+/**
+ * A face at 0.87 of the frame width, cheek to cheek: above the 0.86 top of
+ * the band, so the gate offers it as too close, and centred at 0.525 of the
+ * height so its oval (0.87 of the width tall, being 1.35 times as tall as it
+ * is wide on a 3 by 4 frame) stays inside the 0.08 top and 0.03 bottom edge
+ * margins. Any wider, or centred at the target 0.47, and the oval runs into a
+ * margin and the gate answers out of bounds first. Square to the lens, eyes
+ * open, so nothing else is wrong with it. Put on the window before the app's
+ * scripts run, where the seam reads it (src/lib/client/landmarks-seam.ts).
+ */
+async function injectTooCloseFace(page: Page): Promise<void> {
+  const face = syntheticFace({
+    widthRatio: 0.87,
+    center: { x: 0.5, y: 0.525 },
+    yaw: 0,
+    pitch: 0,
+    roll: 0,
+    blink: 0,
+  });
+  const injected = {
+    faces: [
+      {
+        landmarks: face.landmarks.map((point) => ({ ...point })),
+        matrix: [...face.matrix],
+        blendshapes: Object.fromEntries(face.blendshapes),
+      },
+    ],
+  };
+  await page.addInitScript((result) => {
+    (window as unknown as { __aurumLandmarker: unknown }).__aurumLandmarker =
+      result;
+  }, injected);
+}
+
+/**
+ * The seam has to be there. When this file's own config started the server
+ * it set NEXT_PUBLIC_AURUM_E2E_SEAMS for it, so a missing seam is a broken
+ * build and the test fails and says so. Only a run pointed at somebody else's
+ * server (PLAYWRIGHT_BASE_URL) may legitimately have no seam, and that run
+ * skips with the same message rather than failing on the wrong build.
+ */
+async function requireSeam(page: Page): Promise<void> {
+  const seamed = await page.evaluate(
+    () => (window as unknown as { __aurumSeams?: boolean }).__aurumSeams === true,
+  );
+  const message =
+    "The face model seam is off: this server was not built with NEXT_PUBLIC_AURUM_E2E_SEAMS=true (playwright.config.ts sets it for the fixture server it starts).";
+  if (process.env.PLAYWRIGHT_BASE_URL) {
+    test.skip(!seamed, message);
+    return;
+  }
+  if (!seamed) {
+    throw new Error(message);
+  }
+}
+
+/** The two answers to a borderline frame, in the geometry docs/02 gives them. */
+async function expectUseAnywayUnderRetake(page: Page): Promise<void> {
+  const retake = page.getByRole("button", { name: copy.capture.retakeAction });
+  const useAnyway = page.getByRole("button", {
+    name: copy.capture.useAnywayAction,
+  });
+  await expect(retake).toBeVisible();
+  await expect(useAnyway).toBeVisible();
+
+  const retakeBox = await retake.boundingBox();
+  const useAnywayBox = await useAnyway.boundingBox();
+  if (retakeBox === null || useAnywayBox === null) {
+    throw new Error("Both answers to a borderline frame must be on screen.");
+  }
+
+  // docs/02-design-system.md, Components: height 52, full width on mobile.
+  expect(Math.round(retakeBox.height)).toBe(52);
+  expect(Math.round(useAnywayBox.height)).toBe(52);
+  expect(Math.round(useAnywayBox.width)).toBe(Math.round(retakeBox.width));
+  expect(retakeBox.width).toBeGreaterThan(300);
+
+  // Directly under it, aligned with it, and not below the fold of the phone.
+  expect(Math.round(useAnywayBox.x)).toBe(Math.round(retakeBox.x));
+  const gap = useAnywayBox.y - (retakeBox.y + retakeBox.height);
+  expect(gap).toBeGreaterThan(0);
+  expect(gap).toBeLessThanOrEqual(16);
+  const viewport = page.viewportSize();
+  expect(useAnywayBox.y + useAnywayBox.height).toBeLessThanOrEqual(
+    viewport?.height ?? 0,
+  );
+}
 
 /**
  * The retake loop, docs/01-user-flow.md section D: "Retake" is the primary

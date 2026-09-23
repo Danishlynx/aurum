@@ -89,18 +89,24 @@ export const captureQualitySchema = z.object({
    * Laplacian variance over the face, divided by that region's own intensity
    * variance and scaled (SHARPNESS_SCALE). Not bounded above. Since 2026-09-07
    * this is a ratio rather than raw edge energy, so it no longer moves with the
-   * contrast of the face it was measured on: see SHARPNESS_BORDERLINE_BELOW in
+   * contrast of the face it was measured on: see SHARPNESS_SCALE in
    * src/lib/shared/quality.ts for why that mattered enough to change.
    */
   sharpness: z.number().nonnegative(),
   blownFraction: z.number().min(0).max(1),
   crushedFraction: z.number().min(0).max(1),
-  meanLuminance: z.number().min(0).max(255),
-  /** Null when no face box was available. */
-  faceCoverage: z.number().min(0).max(1).nullable(),
   /**
-   * Face width over the frame's short axis, which is the ratio the engine gates
-   * on rather than the height one above it (FACE_WIDTH_RATIO_MIN).
+   * Two measurements the gate stopped making on 2026-09-23, kept optional so a
+   * stored row from an earlier build still parses. The mean luminance over the
+   * face box (0 to 255) became faceLuma below, over the oval on a 0 to 1 scale;
+   * the face box height over the frame height was a rule about a detector box
+   * that no longer exists. The client sends neither.
+   */
+  meanLuminance: z.number().min(0).max(255).optional(),
+  faceCoverage: z.number().min(0).max(1).nullable().optional(),
+  /**
+   * Cheek to cheek over the frame width, which is the ratio the engine gates
+   * on (FACE_WIDTH_RATIO_MIN). Null when there was no face.
    *
    * Optional because a capture row written by a build from before 2026-09-07 does
    * not carry it, and a stored row has to keep parsing.
@@ -125,9 +131,10 @@ export const captureQualitySchema = z.object({
     .nullable()
     .optional(),
   /**
-   * Which estimator produced the box and the pose. "model" is the real detector,
-   * "skin_region" is the colour threshold fallback, and the difference is the
-   * whole point of the 2026-09-07 change, so a stored row says which one it was.
+   * Which estimator produced the box and the pose in builds before 2026-09-23,
+   * when a colour threshold could stand in for the detector. Kept so those rows
+   * parse; the client no longer sends it, because there is one estimator now
+   * and `measured` says whether it ran.
    */
   faceSource: z.enum(["model", "detector", "skin_region"]).optional(),
 
@@ -142,9 +149,9 @@ export const captureQualitySchema = z.object({
    */
 
   /**
-   * True when a face model measured the frame. False when the numbers came from
-   * the colour threshold fallback, which measures skin coloured area and not a
-   * face, so a row with measured false must never move a threshold.
+   * True when the face model measured the frame. False when it had not loaded
+   * and the frame was sent unmeasured with "Use it anyway", so a row with
+   * measured false carries no face numbers and must never move a threshold.
    */
   measured: z.boolean().optional(),
   /** Which kind of device took the frame, from the user agent and nothing else. */
@@ -165,7 +172,7 @@ export const captureQualitySchema = z.object({
       masterHeight: z.number().int().min(1),
     })
     .optional(),
-  /** The face box area over the frame area. */
+  /** The face oval's bounding box width over the frame width, 0 to 1. */
   faceBboxRatio: z.number().min(0).max(1).nullable().optional(),
   /** Where the middle of the face sits in the frame, both axes 0 to 1. */
   faceCenter: z

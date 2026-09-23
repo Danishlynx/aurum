@@ -134,9 +134,9 @@ images, in `evals/capture/capture.test.ts` and `src/lib/shared/quality.test.ts`.
 Those tests prove the decision logic, the reason precedence, and the accept and
 borderline boundaries.
 
-They do not prove the thresholds. `SHARPNESS_BORDERLINE_BELOW`, read at
-`SHARPNESS_MEASURE_LONG_EDGE`, the exposure fractions, and the mean luminance
-bounds in `quality.ts` are numbers about real photographs. They get their real
+They do not prove the thresholds. The face luma bands, the exposure fractions,
+the width bands and the pose window in `quality.ts` and `frame-geometry.ts`
+are numbers about real photographs. They get their real
 values from the exported outcome rows in `private/capture-outcomes.json` and
 the calibration report over them (`npm run calibration:report`), against the
 bar in docs/05-evals.md: a constant moves only when the report says the engine

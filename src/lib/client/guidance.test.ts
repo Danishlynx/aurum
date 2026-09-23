@@ -1,14 +1,17 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
+import { syntheticFace } from "../../../evals/support/synthetic-face";
 import { copy } from "@/lib/shared/copy";
+import { faceReadingFrom, type FaceReading } from "@/lib/shared/face-reading";
+import { GUIDANCE_SAMPLE_LONG_EDGE } from "@/lib/shared/frame-geometry";
+import type { FacePose } from "@/lib/shared/pose";
 import {
-  FACE_COVERAGE_MIN,
-  FACE_COVERAGE_REJECT_BELOW,
-  MEAN_LUMINANCE_BORDERLINE_BELOW,
+  FACE_LUMA_BORDERLINE_ABOVE,
+  FACE_LUMA_BORDERLINE_BELOW,
+  FACE_WIDTH_RATIO_MAX,
   POSE_PITCH_MAX_DEGREES,
   POSE_SLACK_DEGREES,
   POSE_YAW_MAX_DEGREES,
-  SHARPNESS_BORDERLINE_BELOW,
   SHARPNESS_MEASURE_LONG_EDGE,
   assessCapture,
   sharpnessOf,
@@ -16,12 +19,11 @@ import {
 import type { Box, GrayscaleImage } from "@/lib/shared/quality";
 
 import {
-  FACE_CENTER_TOO_LOW_ABOVE,
-  GUIDANCE_SAMPLE_LONG_EDGE,
   LIVE_FACE_WIDTH_RATIO_MIN,
   MOTION_STILL_AT_OR_BELOW,
   guidanceKey,
   guidanceLine,
+  liveWidthRatioOf,
   meanLuminanceOf,
   motionBetween,
   type LiveFrameStats,
@@ -32,33 +34,76 @@ import {
  * replaced as conditions change, never stacked.
  *
  * Two things this file has to prove at once. First, docs/01 section D's own
- * shape: light, then the height of the phone, then distance, then stillness,
- * then ready. Second, the promise "Good. Tap to capture." makes about what the
+ * shape: light, then the phone, then pose, then distance, then stillness, then
+ * ready. Second, the promise "Good. Tap to capture." makes about what the
  * gate in src/lib/shared/quality.ts is about to do with the same frame, which
- * failed for real on a Samsung S26 Ultra on 2026-09-03: the line said good, the
- * gate answered blurry, on the very frame that had just been tapped.
+ * failed for real on a Samsung S26 Ultra on 2026-09-03: the line said good,
+ * the gate answered blurry, on the very frame that had just been tapped.
  *
- * The eyeLevel line is also 2026-09-03: the engine refused the founder's photo
- * with error_face_angle_downward, a phone held at chest height, which the gate
- * cannot measure directly but which shows up as a face slid low in the frame.
+ * Since 2026-09-23 the line reads the same FaceReading the gate reads, so the
+ * stats here are built from a synthetic landmarker result rather than from a
+ * box and a guessed centre.
  */
 
+/** A face filling the oval, square to the lens, eyes open. */
+const OVAL_FACE: FaceReading = (() => {
+  const reading = faceReadingFrom(syntheticFace());
+  if (reading === null) {
+    throw new Error("The synthetic face did not read.");
+  }
+  return reading;
+})();
+
+/** A reading of a synthetic face with the given numbers. */
+function face(options: Parameters<typeof syntheticFace>[0]): FaceReading {
+  const reading = faceReadingFrom(syntheticFace(options));
+  if (reading === null) {
+    throw new Error("The synthetic face did not read.");
+  }
+  return reading;
+}
+
+/** The oval face with its pose replaced. */
+function withPose(pose: FacePose | null): FaceReading {
+  return { ...OVAL_FACE, pose };
+}
+
+/** The preview sample of a portrait phone track, 3 by 4 at the guidance size. */
+const PORTRAIT_SAMPLE = {
+  width: Math.round((GUIDANCE_SAMPLE_LONG_EDGE * 3) / 4),
+  height: GUIDANCE_SAMPLE_LONG_EDGE,
+} as const;
+
+/** The preview sample of a 16 by 9 laptop webcam track. */
+const LANDSCAPE_SAMPLE = {
+  width: GUIDANCE_SAMPLE_LONG_EDGE,
+  height: Math.round((GUIDANCE_SAMPLE_LONG_EDGE * 9) / 16),
+} as const;
+
 /**
- * A frame with nothing wrong with it: lit, framed, held still, eye level.
- *
- * faceWidthRatio is the framing number the line reads since 2026-09-14, at a
- * value a face filling the oval actually produces on a 3 by 4 preview (about
- * half, before the crop lifts it to the engine's 0.66). faceCoverage stays
- * because the line still refuses on a face too small to crop at all.
+ * A frame with nothing wrong with it: lit, framed, held still, square, on a
+ * phone held upright, measured by the landmarker.
  */
 const READY: LiveFrameStats = {
-  meanLuminance: 140,
-  faceCoverage: 0.5,
-  faceWidthRatio: 0.5,
-  faceCenterY: 0.42,
-  faceEstimateTrusted: true,
+  measured: true,
+  sample: PORTRAIT_SAMPLE,
+  trackIsLandscape: false,
+  coarsePointer: true,
+  frameLuma: 0.5,
+  faceLuma: 0.55,
+  faceLumaUneven: 0.02,
+  reading: OVAL_FACE,
   motion: 0,
-  sharpness: SHARPNESS_BORDERLINE_BELOW * 4,
+  sharpness: 80,
+};
+
+/** A preview frame nothing measured. */
+const UNMEASURED: LiveFrameStats = {
+  ...READY,
+  measured: false,
+  faceLuma: null,
+  faceLumaUneven: null,
+  reading: null,
 };
 
 describe("guidanceKey", () => {
@@ -67,70 +112,111 @@ describe("guidanceKey", () => {
     expect(guidanceLine(READY)).toBe(copy.capture.guidance.ready);
   });
 
-  it("asks for light first, because a dark frame measures wrong everywhere", () => {
+  it("asks for light first, because a dark face measures wrong everywhere", () => {
     expect(
       guidanceKey({
         ...READY,
-        meanLuminance: MEAN_LUMINANCE_BORDERLINE_BELOW - 1,
-        faceCenterY: 0.9,
-        faceCoverage: null,
+        faceLuma: FACE_LUMA_BORDERLINE_BELOW - 0.01,
+        trackIsLandscape: true,
+        reading: face({ yaw: 40, widthRatio: 0.2 }),
         motion: 100,
         sharpness: 0,
       }),
     ).toBe("light");
-  });
-
-  it("asks for the phone at eye level when the face sits low in the frame", () => {
-    expect(guidanceKey({ ...READY, faceCenterY: 0.7 })).toBe("eyeLevel");
-    expect(guidanceLine({ ...READY, faceCenterY: 0.7 })).toBe(
-      copy.capture.guidance.eyeLevel,
-    );
-  });
-
-  it("leaves a face framed where a face belongs alone", () => {
-    // A person holding the phone up has their face high in the picture, which is
-    // the framing the auto crop aims at. Nothing to say about it.
-    for (const centerY of [0.2, 0.35, 0.42, 0.5, FACE_CENTER_TOO_LOW_ABOVE]) {
-      expect(guidanceKey({ ...READY, faceCenterY: centerY })).toBe("ready");
-    }
-  });
-
-  it("answers the height of the phone before the distance", () => {
-    /*
-     * Lifting the phone moves the face inside the frame as well as squaring it
-     * to the lens, so asking for the distance first would ask for two
-     * corrections where one will do.
-     */
-    expect(guidanceKey({ ...READY, faceCenterY: 0.8, faceCoverage: 0.2 })).toBe(
-      "eyeLevel",
-    );
-  });
-
-  it("still asks for the distance when the face is where it should be", () => {
     expect(
-      guidanceKey({ ...READY, faceWidthRatio: LIVE_FACE_WIDTH_RATIO_MIN - 0.1 }),
-    ).toBe("closer");
+      guidanceKey({ ...READY, faceLuma: FACE_LUMA_BORDERLINE_BELOW }),
+    ).toBe("ready");
+  });
+
+  it("reads the light off the frame when there is no face to read it off", () => {
+    // Unmeasured: the frame mean is all there is.
+    expect(guidanceKey({ ...UNMEASURED, frameLuma: 0.1 })).toBe("light");
+    // Measured with no face: the same.
+    expect(
+      guidanceKey({ ...READY, reading: null, faceLuma: null, frameLuma: 0.1 }),
+    ).toBe("light");
+    // With a face, the face decides and the frame does not.
+    expect(guidanceKey({ ...READY, frameLuma: 0.1 })).toBe("ready");
+  });
+
+  /**
+   * The other side of the light band, added with the face luma measurement.
+   * The engine's own capture SDK bounds lighting above as well as below
+   * (docs/04-integrations.md), and a face in direct sun is the frame it names.
+   */
+  it("asks for less light on a blown face, after light and before everything else", () => {
     expect(
       guidanceKey({
         ...READY,
-        faceCoverage: null,
-        faceWidthRatio: null,
-        faceCenterY: null,
+        faceLuma: FACE_LUMA_BORDERLINE_ABOVE + 0.01,
+        trackIsLandscape: true,
+        reading: face({ yaw: 40 }),
+        motion: 100,
       }),
-    ).toBe("closer");
+    ).toBe("bright");
+    expect(guidanceLine({ ...READY, faceLuma: 0.95 })).toBe(
+      copy.capture.guidance.bright,
+    );
+    expect(guidanceKey({ ...READY, faceLuma: FACE_LUMA_BORDERLINE_ABOVE })).toBe(
+      "ready",
+    );
   });
 
-  it("says nothing about the phone when there is no face center to measure", () => {
-    // No estimate is not an estimate of a low face. A stats object that never
-    // carried the optional field reads exactly as a good frame would.
-    const withoutTheField: LiveFrameStats = {
-      meanLuminance: 140,
-      faceCoverage: 0.5,
-      faceWidthRatio: 0.5,
-      motion: 0,
-      sharpness: READY.sharpness,
-    };
-    expect(guidanceKey(withoutTheField)).toBe("ready");
+  /**
+   * A frame nothing measured says so, and says nothing about a face. The
+   * person still has a tap: the gate offers the frame as unmeasured and the
+   * engine's own input gate reads it for free.
+   */
+  it("says the check did not load on an unmeasured frame, after light and hold", () => {
+    expect(guidanceKey(UNMEASURED)).toBe("unmeasured");
+    expect(guidanceLine(UNMEASURED)).toBe(copy.capture.guidance.unmeasured);
+    expect(guidanceKey({ ...UNMEASURED, motion: MOTION_STILL_AT_OR_BELOW + 1 })).toBe(
+      "hold",
+    );
+    expect(guidanceKey({ ...UNMEASURED, frameLuma: 0.05 })).toBe("light");
+    // Both light lines need no face: a frame blown over its whole area is
+    // said before the hold and the unmeasured lines (docs/01 section D).
+    expect(guidanceKey({ ...UNMEASURED, frameLuma: 0.95 })).toBe("bright");
+    expect(
+      guidanceKey({
+        ...UNMEASURED,
+        frameLuma: FACE_LUMA_BORDERLINE_ABOVE + 0.01,
+        motion: MOTION_STILL_AT_OR_BELOW + 1,
+      }),
+    ).toBe("bright");
+    // Nothing a phone held landscape or a stale reading could add.
+    expect(guidanceKey({ ...UNMEASURED, trackIsLandscape: true })).toBe(
+      "unmeasured",
+    );
+  });
+
+  /**
+   * A phone held landscape hands the camera a landscape track, and the frame
+   * that is sent is portrait. Only on a touch device: a laptop webcam is
+   * landscape by construction.
+   */
+  it("asks for the phone upright on a landscape track from a touch device", () => {
+    expect(guidanceKey({ ...READY, trackIsLandscape: true })).toBe("upright");
+    expect(guidanceLine({ ...READY, trackIsLandscape: true })).toBe(
+      copy.capture.guidance.upright,
+    );
+    expect(
+      guidanceKey({ ...READY, trackIsLandscape: true, coarsePointer: false }),
+    ).toBe("ready");
+    // Before pose and framing: turning the phone changes both.
+    expect(
+      guidanceKey({
+        ...READY,
+        trackIsLandscape: true,
+        reading: face({ yaw: 40, widthRatio: 0.2 }),
+      }),
+    ).toBe("upright");
+  });
+
+  it("asks for closer when the landmarker found no face", () => {
+    expect(guidanceKey({ ...READY, reading: null, faceLuma: null })).toBe(
+      "closer",
+    );
   });
 
   it("says hold still for a moving frame, and for nothing else", () => {
@@ -146,89 +232,120 @@ describe("guidanceKey", () => {
    * Softness never holds the line, since 2026-09-14. The threshold it used to
    * be held against was set from synthetic stripes, and a smooth face at
    * preview size can read under it at any focus, which is a line that never
-   * says "Good" and a person who never learns why. The gate no longer flags
+   * says "Good" and a person who never learns why. The gate never flags
    * softness either (assessCapture), so the promise "Good" makes still holds;
-   * and the burst sends the sharpest of five frames, which answers a soft
+   * and the burst sends the sharpest of its frames, which answers a soft
    * moment better than asking a person to wait for a sharp one.
    */
-  it("says good at any sharpness, because the gate no longer flags it", () => {
+  it("says good at any sharpness, because the gate never flags it", () => {
     for (const sharpness of [0, 1, 30, 59, 60, 61, 500]) {
       expect(guidanceKey({ ...READY, sharpness })).toBe("ready");
     }
   });
 
   /**
-   * The framing question is asked about the frame the gate will see, which is
-   * the composed one. The crop lifts a face to 0.66 of the width from almost
-   * anything, so the live line asks only whether there is enough face to crop.
+   * The framing question is asked about the frame the gate will see, which in
+   * this build is the composed one: autoCropBoxFor lifts a face to 0.66 of the
+   * width from almost anything, so the live line asks only whether there is
+   * enough face to compose. The capture-master-frame PR moves this floor to
+   * the oval's own band.
    */
   it("asks for closer only under the live width floor", () => {
     expect(
-      guidanceKey({ ...READY, faceWidthRatio: LIVE_FACE_WIDTH_RATIO_MIN - 0.01 }),
+      guidanceKey({
+        ...READY,
+        reading: face({ widthRatio: LIVE_FACE_WIDTH_RATIO_MIN - 0.01 }),
+      }),
     ).toBe("closer");
-    expect(
-      guidanceKey({ ...READY, faceWidthRatio: LIVE_FACE_WIDTH_RATIO_MIN }),
-    ).toBe("ready");
-    // A face a detector would report for somebody filling the oval on a 3 by 4
-    // preview is about half the width. The old height rule called that too far.
-    expect(
-      guidanceKey({ ...READY, faceCoverage: 0.45, faceWidthRatio: 0.48 }),
-    ).toBe("ready");
-    // No width at all is no face at all.
-    expect(guidanceKey({ ...READY, faceWidthRatio: null })).toBe("closer");
-  });
-
-  it("still asks for closer on a face too small to crop", () => {
     expect(
       guidanceKey({
         ...READY,
-        faceCoverage: FACE_COVERAGE_REJECT_BELOW - 0.01,
-        faceWidthRatio: 0.45,
+        reading: face({ widthRatio: LIVE_FACE_WIDTH_RATIO_MIN + 0.001 }),
       }),
-    ).toBe("closer");
+    ).toBe("ready");
+    // A face filling the oval on a 3 by 4 preview, and one a little back.
+    expect(guidanceKey({ ...READY, reading: face({ widthRatio: 0.48 }) })).toBe(
+      "ready",
+    );
+    expect(guidanceLine({ ...READY, reading: face({ widthRatio: 0.2 }) })).toBe(
+      copy.capture.guidance.closer,
+    );
   });
 
   /**
-   * The colour threshold's box runs into the neck, so where its middle sits
-   * says nothing about the phone. Only a detector's box gets the eye level line
-   * from position.
+   * The floor is read on the sample's short axis, not its width. A laptop
+   * webcam hands over a landscape track, and a reading's widthRatio is over
+   * the frame width: on a 16 by 9 sample a face at 0.40 of the width has an
+   * oval taller than the frame, so read against the width the line went
+   * closer, then back, and never ready (reviewed 2026-09-23). The composition
+   * step measured the detector's box against the short axis before the
+   * landmarker, and the live floor keeps that parity until the master frame
+   * PR moves the preview onto the frame that is sent.
    */
-  it("does not read the phone height off a colour threshold box", () => {
-    expect(
-      guidanceKey({ ...READY, faceCenterY: 0.7, faceEstimateTrusted: false }),
-    ).toBe("ready");
-    expect(
-      guidanceKey({ ...READY, faceCenterY: 0.7, faceEstimateTrusted: true }),
-    ).toBe("eyeLevel");
+  it("reaches ready on a laptop's landscape sample, with the floor on the short axis", () => {
+    const laptop: LiveFrameStats = {
+      ...READY,
+      sample: LANDSCAPE_SAMPLE,
+      trackIsLandscape: true,
+      coarsePointer: false,
+    };
+    const onLaptop = (widthRatio: number) =>
+      face({ widthRatio, center: { x: 0.5, y: 0.47 }, frame: LANDSCAPE_SAMPLE });
+    // 0.28 of the width is 0.50 of the height: over the floor, inside the
+    // margins.
+    expect(guidanceKey({ ...laptop, reading: onLaptop(0.28) })).toBe("ready");
+    expect(guidanceKey({ ...laptop, reading: onLaptop(0.24) })).toBe("ready");
+    // Under the floor on the short axis (0.20 of the width is 0.36 of it).
+    expect(guidanceKey({ ...laptop, reading: onLaptop(0.2) })).toBe("closer");
+    // Past the top margin on a landscape frame, and still "back", not "closer".
+    expect(guidanceKey({ ...laptop, reading: onLaptop(0.36) })).toBe("back");
+    // The same width read on a portrait sample is under the floor.
+    expect(guidanceKey({ ...READY, reading: face({ widthRatio: 0.28 }) })).toBe(
+      "closer",
+    );
   });
 
   /**
-   * The reading off a phone on 2026-09-14: face filling the oval, phone level,
-   * pitch three degrees, box middle at 0.58. The old threshold of 0.55 held
-   * that frame at "Hold the phone at eye level" against a measured pitch the
-   * engine takes. The proxy was only ever a guess at pitch, so it is not asked
-   * once pitch has been measured, and its threshold now sits above where a
-   * correctly framed face reads.
+   * The other side of "Move closer", added 2026-09-23: a face wider than the
+   * band the engine reads, or one whose oval runs into the edge margins, is
+   * refused by the engine as out of boundary and no crop fixes it.
    */
-  it("does not second guess a measured pitch with the face position", () => {
-    const level = { yawDegrees: 1, pitchDegrees: 3, rollDegrees: 1 };
+  it("asks for back on a face too wide for the band or touching the edge", () => {
     expect(
-      guidanceKey({ ...READY, faceCenterY: 0.58, pose: level }),
+      guidanceKey({ ...READY, reading: face({ widthRatio: FACE_WIDTH_RATIO_MAX + 0.01 }) }),
+    ).toBe("back");
+    expect(guidanceLine({ ...READY, reading: face({ widthRatio: 0.9 }) })).toBe(
+      copy.capture.guidance.back,
+    );
+    // A face of the right width sitting into the top margin.
+    expect(
+      guidanceKey({ ...READY, reading: face({ center: { x: 0.5, y: 0.2 } }) }),
+    ).toBe("back");
+    // And one at the top of the band, inside the margins, is fine. At that
+    // width the oval is 0.87 of a 3 by 4 frame's height, so it has to sit at
+    // 0.525 to keep the 0.08 top margin; centred at the target it touches.
+    expect(
+      guidanceKey({
+        ...READY,
+        reading: face({
+          widthRatio: FACE_WIDTH_RATIO_MAX - 0.001,
+          center: { x: 0.5, y: 0.525 },
+        }),
+      }),
     ).toBe("ready");
-    // Even a middle the proxy would call low is not the proxy's call when the
-    // detector has said the head is level.
+    // Back comes after closer and before hold.
     expect(
-      guidanceKey({ ...READY, faceCenterY: 0.8, pose: level }),
-    ).toBe("ready");
-    // Without a pose the proxy still speaks, and 0.58 is a framed face.
-    expect(guidanceKey({ ...READY, faceCenterY: 0.58 })).toBe("ready");
-    expect(
-      guidanceKey({ ...READY, faceCenterY: FACE_CENTER_TOO_LOW_ABOVE + 0.01 }),
-    ).toBe("eyeLevel");
+      guidanceKey({
+        ...READY,
+        reading: face({ widthRatio: 0.9 }),
+        motion: MOTION_STILL_AT_OR_BELOW + 1,
+      }),
+    ).toBe("back");
   });
 
   /**
-   * The pose lines, added 2026-09-07 with the detector that can measure one.
+   * The pose lines, added 2026-09-07 with a detector that could estimate one
+   * and read since 2026-09-23 from a solved matrix.
    *
    * Every refusal this product has read off the live API has been about pose,
    * and until the detector landed the live line had nothing to say about it. A
@@ -236,31 +353,24 @@ describe("guidanceKey", () => {
    * and was then told the engine would not read their face.
    */
   it("says nothing about pose when there is no pose to read", () => {
-    expect(guidanceKey({ ...READY, pose: null })).toBe("ready");
-    expect(guidanceKey(READY)).toBe("ready");
+    expect(guidanceKey({ ...READY, reading: withPose(null) })).toBe("ready");
   });
 
   it("leaves a head inside the window alone", () => {
     expect(
       guidanceKey({
         ...READY,
-        pose: { yawDegrees: 0, pitchDegrees: 0, rollDegrees: 0 },
+        reading: withPose({ yawDegrees: 0, pitchDegrees: 0, rollDegrees: 0 }),
       }),
     ).toBe("ready");
   });
 
   it("asks for a square head when it is turned or the phone is tilted", () => {
-    const turned = guidanceKey({
-      ...READY,
-      pose: { yawDegrees: 40, pitchDegrees: 0, rollDegrees: 0 },
-    });
-    const tilted = guidanceKey({
-      ...READY,
-      pose: { yawDegrees: 0, pitchDegrees: 0, rollDegrees: -40 },
-    });
+    const turned = guidanceKey({ ...READY, reading: face({ yaw: 40 }) });
+    const tilted = guidanceKey({ ...READY, reading: face({ roll: -40 }) });
     expect(turned).toBe("square");
     expect(tilted).toBe("square");
-    expect(guidanceLine({ ...READY, pose: { yawDegrees: 40, pitchDegrees: 0, rollDegrees: 0 } })).toBe(
+    expect(guidanceLine({ ...READY, reading: face({ yaw: 40 }) })).toBe(
       copy.capture.guidance.square,
     );
   });
@@ -271,58 +381,48 @@ describe("guidanceKey", () => {
    * not the line about the head, because the phone is what is wrong.
    */
   it("asks for the phone when the problem is pitch", () => {
-    expect(
-      guidanceKey({
-        ...READY,
-        pose: { yawDegrees: 0, pitchDegrees: 35, rollDegrees: 0 },
-      }),
-    ).toBe("eyeLevel");
-    expect(
-      guidanceKey({
-        ...READY,
-        pose: { yawDegrees: 0, pitchDegrees: -40, rollDegrees: 0 },
-      }),
-    ).toBe("eyeLevel");
+    expect(guidanceKey({ ...READY, reading: face({ pitch: 35 }) })).toBe("eyeLevel");
+    expect(guidanceKey({ ...READY, reading: face({ pitch: -40 }) })).toBe("eyeLevel");
+    expect(guidanceLine({ ...READY, reading: face({ pitch: 35 }) })).toBe(
+      copy.capture.guidance.eyeLevel,
+    );
   });
 
   /**
    * A pose the gate would merely flag does not hold the line, since 2026-09-14.
-   * The gate offers a borderline pose with "Use it anyway", the burst sends the
-   * squarest of five frames, and the pitch estimate off four keypoints is a
-   * heuristic that held a level phone at "Hold the phone at eye level" for as
-   * long as the person cared to wait. Only a pose the gate would refuse holds.
+   * The gate offers a borderline pose with "Use it anyway" and the burst sends
+   * the squarest of its frames. Only a pose the gate would refuse holds.
    */
   it("lets a borderline pose through and holds only a refused one", () => {
     const justOutside = POSE_YAW_MAX_DEGREES + 1;
     expect(
       guidanceKey({
         ...READY,
-        pose: { yawDegrees: justOutside, pitchDegrees: 0, rollDegrees: 0 },
+        reading: withPose({ yawDegrees: justOutside, pitchDegrees: 0, rollDegrees: 0 }),
       }),
     ).toBe("ready");
     const pitchJustOver = POSE_PITCH_MAX_DEGREES + 1;
     expect(
       guidanceKey({
         ...READY,
-        pose: { yawDegrees: 0, pitchDegrees: pitchJustOver, rollDegrees: 0 },
+        reading: withPose({ yawDegrees: 0, pitchDegrees: pitchJustOver, rollDegrees: 0 }),
       }),
     ).toBe("ready");
     const refused = POSE_YAW_MAX_DEGREES + POSE_SLACK_DEGREES + 1;
     expect(
       guidanceKey({
         ...READY,
-        pose: { yawDegrees: refused, pitchDegrees: 0, rollDegrees: 0 },
+        reading: withPose({ yawDegrees: refused, pitchDegrees: 0, rollDegrees: 0 }),
       }),
     ).toBe("square");
   });
 
   it("answers pose before framing, because framing cannot fix a turned head", () => {
     expect(
-      guidanceKey({
-        ...READY,
-        faceCoverage: 0.2,
-        pose: { yawDegrees: 40, pitchDegrees: 0, rollDegrees: 0 },
-      }),
+      guidanceKey({ ...READY, reading: face({ yaw: 40, widthRatio: 0.2 }) }),
+    ).toBe("square");
+    expect(
+      guidanceKey({ ...READY, reading: face({ yaw: 40, widthRatio: 0.95 }) }),
     ).toBe("square");
   });
 
@@ -330,8 +430,8 @@ describe("guidanceKey", () => {
     expect(
       guidanceKey({
         ...READY,
-        meanLuminance: MEAN_LUMINANCE_BORDERLINE_BELOW - 1,
-        pose: { yawDegrees: 40, pitchDegrees: 0, rollDegrees: 0 },
+        faceLuma: FACE_LUMA_BORDERLINE_BELOW - 0.01,
+        reading: face({ yaw: 40 }),
       }),
     ).toBe("light");
   });
@@ -339,11 +439,15 @@ describe("guidanceKey", () => {
   it("has a line for every key it can return", () => {
     const keys = [
       "light",
+      "bright",
+      "upright",
       "square",
       "eyeLevel",
       "closer",
+      "back",
       "hold",
       "ready",
+      "unmeasured",
     ] as const;
     // Built from character codes on purpose, never typed as a literal glyph:
     // this file lives under src, where the em dash and en dash rule is
@@ -354,6 +458,7 @@ describe("guidanceKey", () => {
       expect(copy.capture.guidance[key].length).toBeGreaterThan(0);
       expect(copy.capture.guidance[key]).not.toMatch(dashes);
     }
+    expect(Object.keys(copy.capture.guidance).sort()).toEqual([...keys].sort());
   });
 });
 
@@ -370,13 +475,13 @@ function bands(width: number, height: number, contrast: number): GrayscaleImage 
   return { data, width, height };
 }
 
-/** A face box filling exactly the framing rule, centered. */
-function faceBoxIn(width: number, height: number): Box {
-  const boxHeight = Math.round(height * FACE_COVERAGE_MIN);
-  const boxWidth = Math.round(boxHeight * 0.68);
+/** The oval's bounding box in a frame's pixels, centered as the oval is. */
+function ovalBoxIn(width: number, height: number): Box {
+  const boxWidth = Math.round(width * 0.7);
+  const boxHeight = Math.round(boxWidth * 1.35);
   return {
     x: Math.round((width - boxWidth) / 2),
-    y: Math.round((height - boxHeight) / 2),
+    y: Math.round(height * 0.47 - boxHeight / 2),
     width: boxWidth,
     height: boxHeight,
   };
@@ -388,7 +493,7 @@ function faceBoxIn(width: number, height: number): Box {
  * The preview sample the guidance line is measured off, at the size
  * src/components/capture/CaptureScreen.tsx draws it, and the 1024px capture the
  * gate measures, both at 9 by 16, which is what a front camera hands back in
- * portrait. Same picture, resolutions a factor of three apart.
+ * portrait. Same picture, resolutions a factor of two and a half apart.
  */
 const PREVIEW = {
   width: Math.round((GUIDANCE_SAMPLE_LONG_EDGE * 9) / 16),
@@ -404,24 +509,24 @@ describe("the live line and the gate, on the same face", () => {
     const capture = bands(CAPTURE.width, CAPTURE.height, 20);
     // Both face crops are larger than the measurement size, so both resample
     // down to it and neither is stretched up to meet the other.
-    expect(faceBoxIn(PREVIEW.width, PREVIEW.height).height).toBeGreaterThan(
+    expect(ovalBoxIn(PREVIEW.width, PREVIEW.height).height).toBeGreaterThan(
       SHARPNESS_MEASURE_LONG_EDGE,
     );
-    expect(faceBoxIn(CAPTURE.width, CAPTURE.height).height).toBeGreaterThan(
+    expect(ovalBoxIn(CAPTURE.width, CAPTURE.height).height).toBeGreaterThan(
       SHARPNESS_MEASURE_LONG_EDGE,
     );
-    expect(preview.height * 3).toBeLessThan(capture.height);
+    expect(preview.height * 2).toBeLessThan(capture.height);
   });
 
   it("reads the same sharpness off both, across the whole range", () => {
     for (const contrast of CONTRASTS) {
       const live = sharpnessOf(
         bands(PREVIEW.width, PREVIEW.height, contrast),
-        faceBoxIn(PREVIEW.width, PREVIEW.height),
+        ovalBoxIn(PREVIEW.width, PREVIEW.height),
       );
       const gate = sharpnessOf(
         bands(CAPTURE.width, CAPTURE.height, contrast),
-        faceBoxIn(CAPTURE.width, CAPTURE.height),
+        ovalBoxIn(CAPTURE.width, CAPTURE.height),
       );
       if (contrast === 0) {
         expect(live).toBe(0);
@@ -440,34 +545,56 @@ describe("the live line and the gate, on the same face", () => {
    * on either side. The sweep still runs the full contrast range, on the same
    * face, through both, and asserts that neither of them ever mentions it.
    */
-  it("says good at every contrast, and the gate never flags softness either", () => {
+  it("says good at every contrast, and the gate accepts every one", () => {
+    const reading = face({ frame: CAPTURE });
     for (const contrast of CONTRASTS) {
-      const previewBox = faceBoxIn(PREVIEW.width, PREVIEW.height);
+      const preview = bands(PREVIEW.width, PREVIEW.height, contrast);
       const said = guidanceKey({
-        meanLuminance: meanLuminanceOf(bands(PREVIEW.width, PREVIEW.height, contrast)),
-        faceCoverage: previewBox.height / PREVIEW.height,
-        faceWidthRatio: previewBox.width / Math.min(PREVIEW.width, PREVIEW.height),
-        faceCenterY: 0.42,
-        faceEstimateTrusted: true,
-        motion: 0,
-        sharpness: sharpnessOf(
-          bands(PREVIEW.width, PREVIEW.height, contrast),
-          previewBox,
-        ),
+        ...READY,
+        frameLuma: meanLuminanceOf(preview) / 255,
+        faceLuma: meanLuminanceOf(preview) / 255,
+        reading,
+        sharpness: sharpnessOf(preview, ovalBoxIn(PREVIEW.width, PREVIEW.height)),
       });
 
       const verdict = assessCapture({
         image: bands(CAPTURE.width, CAPTURE.height, contrast),
         faceCount: 1,
-        faceBox: faceBoxIn(CAPTURE.width, CAPTURE.height),
+        reading,
+        measured: true,
       });
-      const flagged = verdict.failures.some((failure) => failure.reason === "blurry");
 
       expect(said).toBe("ready");
-      expect(flagged).toBe(false);
-      // And whatever else it decided, the frame is never refused for softness.
-      expect(verdict.verdict).not.toBe("reject");
+      expect(verdict.verdict).toBe("accept");
+      expect(verdict.failures).toEqual([]);
     }
+  });
+});
+
+describe("liveWidthRatioOf", () => {
+  it("is the reading's width on a portrait or square sample", () => {
+    expect(liveWidthRatioOf(OVAL_FACE, PORTRAIT_SAMPLE)).toBeCloseTo(
+      OVAL_FACE.widthRatio,
+      10,
+    );
+    expect(liveWidthRatioOf(OVAL_FACE, { width: 100, height: 100 })).toBeCloseTo(
+      OVAL_FACE.widthRatio,
+      10,
+    );
+  });
+
+  it("scales the width onto the short axis of a landscape sample", () => {
+    const reading = face({ widthRatio: 0.3, frame: LANDSCAPE_SAMPLE });
+    expect(liveWidthRatioOf(reading, LANDSCAPE_SAMPLE)).toBeCloseTo(
+      (0.3 * LANDSCAPE_SAMPLE.width) / LANDSCAPE_SAMPLE.height,
+      6,
+    );
+  });
+
+  it("falls back to the reading's width on a sample without a size", () => {
+    expect(liveWidthRatioOf(OVAL_FACE, { width: 0, height: 0 })).toBe(
+      OVAL_FACE.widthRatio,
+    );
   });
 });
 

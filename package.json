@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "postinstall": "tsx scripts/prepare-face-model.ts",
     "test": "vitest run",
     "e2e": "playwright test",
     "shots": "node scripts/screenshots.mjs",

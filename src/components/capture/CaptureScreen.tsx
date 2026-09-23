@@ -18,20 +18,21 @@ import {
 } from "@/lib/client/capture-source";
 import { currentPlatform } from "@/lib/client/platform";
 import { decrementJudgeRemaining } from "@/lib/client/judge-session";
-import { detectFaces } from "@/lib/client/landmarks";
+import { readFaces } from "@/lib/client/landmarks";
+import type { LandmarkerDelegate } from "@/lib/client/landmarks";
 import {
-  estimateFaceForCapture,
-  estimateFaceFromSkin,
-  SKIN_SAMPLE_LONG_EDGE,
-} from "@/lib/client/face";
-import type { FaceEstimate, FaceEstimateSource } from "@/lib/client/face";
-import {
-  GUIDANCE_SAMPLE_LONG_EDGE,
   guidanceKey,
   meanLuminanceOf,
   motionBetween,
 } from "@/lib/client/guidance";
 import type { GuidanceKey, LiveFrameStats } from "@/lib/client/guidance";
+import {
+  evenness,
+  facePixelsIn,
+  meanLumaInside,
+} from "@/lib/shared/face-reading";
+import type { FaceReading } from "@/lib/shared/face-reading";
+import { GUIDANCE_SAMPLE_LONG_EDGE } from "@/lib/shared/frame-geometry";
 import {
   CAPTURE_JPEG_QUALITY,
   CAPTURE_LONG_EDGE,
@@ -55,7 +56,6 @@ import { backTargetFor } from "@/lib/shared/navigation";
 import {
   assessCapture,
   autoCropBoxFor,
-  faceWidthRatio,
   pickBestFrame,
   scaleBox,
   sharpnessOf,
@@ -166,11 +166,16 @@ function releaseCanvas(canvas: HTMLCanvasElement): void {
   canvas.height = 0;
 }
 
-/** What the readout shows: which estimator, what it measured, what it said. */
+/** Which landmarker answered a frame, or none when nothing measured it. */
+type ReadingSource = LandmarkerDelegate | "none";
+
+/** What the readout shows: which landmarker, what it measured, what it said. */
 type LiveReadout = {
-  readonly source: FaceEstimateSource;
+  readonly source: ReadingSource;
   readonly stats: LiveFrameStats;
   readonly key: GuidanceKey;
+  /** How long the landmarker took on the sample, or null when it did not run. */
+  readonly inferMs: number | null;
 };
 
 /**
@@ -178,6 +183,15 @@ type LiveReadout = {
  * the reveal's tighter crop and is written by src/lib/client/capture-source.ts.
  */
 type CapturePath = Extract<CaptureQualityPayload["path"], "camera" | "gallery">;
+
+/**
+ * What the gate knew about how a frame was measured, carried beside the
+ * assessment to the upload so the stored row says so.
+ */
+type Provenance = {
+  readonly measured: boolean;
+  readonly landmarkerMs: number | null;
+};
 
 function fixed(value: number | null | undefined, digits: number): string {
   return value === null || value === undefined ? "-" : value.toFixed(digits);
@@ -187,20 +201,36 @@ function fixed(value: number | null | undefined, digits: number): string {
 function formatLiveReadout(readout: LiveReadout): string {
   const d = copy.capture.debug;
   const { stats } = readout;
-  const pose = stats.pose ?? null;
+  const reading = stats.reading;
+  const pose = reading?.pose ?? null;
   return [
     `${d.source} ${readout.source}`,
-    `${d.coverage} ${fixed(stats.faceCoverage, 2)}`,
-    `${d.widthRatio} ${fixed(stats.faceWidthRatio, 2)}`,
-    `${d.centerY} ${fixed(stats.faceCenterY, 2)}`,
+    `${d.widthRatio} ${fixed(reading?.widthRatio, 2)}`,
+    `${d.bbox} ${fixed(reading?.bboxRatio, 2)}`,
+    `${d.centerX} ${fixed(reading?.center.x, 2)}`,
+    `${d.centerY} ${fixed(reading?.center.y, 2)}`,
     `${d.yaw} ${fixed(pose?.yawDegrees, 0)}`,
     `${d.pitch} ${fixed(pose?.pitchDegrees, 0)}`,
     `${d.roll} ${fixed(pose?.rollDegrees, 0)}`,
-    `${d.luminance} ${fixed(stats.meanLuminance, 0)}`,
+    `${d.luminance} ${fixed(stats.faceLuma ?? stats.frameLuma, 2)}`,
+    `${d.uneven} ${fixed(stats.faceLumaUneven, 2)}`,
+    `${d.blinkLeft} ${fixed(reading?.blink?.left, 2)}`,
+    `${d.blinkRight} ${fixed(reading?.blink?.right, 2)}`,
     `${d.sharpness} ${fixed(stats.sharpness, 0)}`,
     `${d.motion} ${fixed(stats.motion, 1)}`,
+    `${d.ms} ${fixed(readout.inferMs, 0)}`,
     `${d.line} ${readout.key}`,
   ].join("  ");
+}
+
+/** The largest of the faces the landmarker found, or null for none. */
+function largestOf(faces: readonly FaceReading[]): FaceReading | null {
+  if (faces.length === 0) {
+    return null;
+  }
+  return faces.reduce((best, face) =>
+    face.ovalBox.height > best.ovalBox.height ? face : best,
+  );
 }
 
 type Phase =
@@ -244,31 +274,6 @@ function previewDataUrl(canvas: HTMLCanvasElement): string {
     ),
     PREVIEW_JPEG_QUALITY,
   );
-}
-
-/**
- * Where the face is in a frame, and the frame's own pixels, measured once.
- *
- * Both callers need the estimate and one of them needs the pixels it was taken
- * from, and reading a 1024px canvas back is the expensive part, so it happens
- * here rather than twice.
- */
-async function measure(canvas: HTMLCanvasElement): Promise<{
-  readonly estimate: FaceEstimate;
-  readonly full: ImageData;
-}> {
-  const full = readImageData(canvas);
-  const sample = readImageData(
-    drawToCanvas(
-      canvas,
-      { width: canvas.width, height: canvas.height },
-      SKIN_SAMPLE_LONG_EDGE,
-    ),
-  );
-  return {
-    estimate: await estimateFaceForCapture(canvas, full, sample),
-    full,
-  };
 }
 
 /**
@@ -317,12 +322,15 @@ type ComposedFrame = {
  *
  * Three cases, and only the middle one changes anything:
  *
- * - No face, or more than one: the frame is returned untouched and the gate says
- *   so in its own words. A photo with no face is not a framing problem, and
- *   picking one face out of a group is not this screen's decision to make.
+ * - No face, more than one, or nothing measured: the frame is returned
+ *   untouched and the gate says so in its own words. A photo with no face is
+ *   not a framing problem, picking one face out of a group is not this
+ *   screen's decision to make, and an unmeasured photo has no face to compose
+ *   around.
  * - One face under the rule: recomposed by autoCropBoxFor
- *   (src/lib/shared/quality.ts), taken off the decoded file at full resolution
- *   and only then downscaled, so the crop does not cost sharpness.
+ *   (src/lib/shared/quality.ts) around the landmarker's face oval scaled to
+ *   pixels, taken off the decoded file at full resolution and only then
+ *   downscaled, so the crop does not cost sharpness.
  * - One face already filling the frame: nothing happens.
  *
  * The gate still runs afterwards, on the composed frame, so nothing here decides
@@ -333,9 +341,8 @@ async function frameForUpload(decoded: DecodedImage): Promise<ComposedFrame> {
   /*
    * The photo itself, kept before anything is cropped out of it.
    *
-   * The framing below can be wrong, because on a browser with no face detector
-   * it is composed around lit skin rather than around a face, and when the
-   * engine says so the reveal sends this frame back cropped tighter
+   * The framing below can still be wrong, and when the engine says so the
+   * reveal sends this frame back cropped tighter
    * (src/lib/client/capture-source.ts).
    *
    * It is returned rather than remembered here, and that is a change the burst
@@ -351,13 +358,18 @@ async function frameForUpload(decoded: DecodedImage): Promise<ComposedFrame> {
     CAPTURE_SOURCE_LONG_EDGE,
   );
   const whole = drawToCanvas(decoded.source, decoded.size, CAPTURE_LONG_EDGE);
-  const { estimate } = await measure(whole);
-  if (estimate.faceCount !== 1) {
+  const result = await readFaces(whole);
+  if (result === null || result.faces.length !== 1) {
     return { canvas: whole, source };
   }
+  const face = result.faces[0];
+  if (face === undefined) {
+    return { canvas: whole, source };
+  }
+  const frame = { width: whole.width, height: whole.height };
   const crop = autoCropBoxFor({
-    faceBox: estimate.faceBox,
-    frame: { width: whole.width, height: whole.height },
+    faceBox: facePixelsIn(face, frame).ovalBox,
+    frame,
   });
   if (crop === null) {
     return { canvas: whole, source };
@@ -381,18 +393,22 @@ async function frameForUpload(decoded: DecodedImage): Promise<ComposedFrame> {
  */
 async function readFrame(canvas: HTMLCanvasElement): Promise<{
   readonly assessment: CaptureAssessment;
-  readonly faceSource: FaceEstimateSource;
+  readonly provenance: Provenance;
 }> {
-  const { estimate, full } = await measure(canvas);
+  const image = toGrayscale(readImageData(canvas));
+  const result = await readFaces(canvas);
+  const faces = result?.faces ?? [];
   return {
     assessment: assessCapture({
-      image: toGrayscale(full),
-      faceCount: estimate.faceCount,
-      faceBox: estimate.faceBox,
-      pose: estimate.pose ?? null,
-      faceEstimateTrusted: estimate.source !== "skin_region",
+      image,
+      faceCount: faces.length,
+      reading: largestOf(faces),
+      measured: result !== null,
     }),
-    faceSource: estimate.source,
+    provenance: {
+      measured: result !== null,
+      landmarkerMs: result === null ? null : result.inferMs,
+    },
   };
 }
 
@@ -404,15 +420,15 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
   const sampleInFlightRef = useRef(false);
   /**
    * The borderline frame waiting on "Use it anyway", with everything the upload
-   * needs to describe it. faceSource and path travel with it because a row
-   * without them cannot be read later: until 2026-09-23 handleUseAnyway sent
-   * the frame without its estimator, so every borderline row lost its provenance
-   * at the one moment provenance mattered most.
+   * needs to describe it. The provenance and the path travel with it because a
+   * row without them cannot be read later: until 2026-09-23 handleUseAnyway
+   * sent the frame without saying what had measured it, so every borderline
+   * row lost its provenance at the one moment provenance mattered most.
    */
   const pendingRef = useRef<{
     canvas: HTMLCanvasElement;
     assessment: CaptureAssessment;
-    faceSource: FaceEstimateSource;
+    provenance: Provenance;
     path: CapturePath;
   } | null>(null);
   /**
@@ -543,30 +559,25 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       return;
     }
     /*
-     * GUIDANCE_SAMPLE_LONG_EDGE, not the smaller skin sample the heuristic is
-     * happy with: the sharpness the line promises has to be measured on a face
-     * big enough to resample down to SHARPNESS_MEASURE_LONG_EDGE, the same way
-     * the gate will resample the 1024px capture. Same function, same size, same
-     * answer. The skin heuristic works off area fractions, so a larger sample
-     * costs it nothing but pixels.
+     * GUIDANCE_SAMPLE_LONG_EDGE (src/lib/shared/frame-geometry.ts): a sample
+     * with the cheek span comfortably above 150 pixels at the smallest width
+     * the gate sends, so the landmarker reads the eyes for the uneven measure,
+     * and a face big enough to resample down to SHARPNESS_MEASURE_LONG_EDGE
+     * the same way the gate resamples the 1024px capture. Same function, same
+     * size, same answer.
      */
-    const canvas = drawToCanvas(
-      video,
-      { width: video.videoWidth, height: video.videoHeight },
-      GUIDANCE_SAMPLE_LONG_EDGE,
-    );
-    const image = readImageData(canvas);
-    const gray = toGrayscale(image);
+    const trackSize = { width: video.videoWidth, height: video.videoHeight };
+    const canvas = drawToCanvas(video, trackSize, GUIDANCE_SAMPLE_LONG_EDGE);
+    const gray = toGrayscale(readImageData(canvas));
+    const sampleSize = { width: canvas.width, height: canvas.height };
 
     /*
-     * The real detector when it is already warm, the colour threshold when it is
-     * not.
+     * The landmarker when it is warm, and nothing when it is not.
      *
-     * detectFaces resolves immediately once the model is loaded, and the consent
+     * readFaces resolves at once once the model is loaded, and the consent
      * screen starts loading it (warmFaceDetector in ConsentForm), so by the time
-     * anybody reaches this screen it is normally ready. While it is not, this
-     * loop keeps running on the heuristic exactly as it did before rather than
-     * standing still with no line under the oval.
+     * anybody reaches this screen it is normally ready. While it is not, the
+     * frame is unmeasured and the line says so rather than guessing at a face.
      *
      * An in flight guard, because this runs on an interval: a detection that
      * takes longer than SAMPLE_INTERVAL_MS must not stack up a queue of frames
@@ -577,48 +588,36 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     }
     sampleInFlightRef.current = true;
 
-    void detectFaces(canvas)
+    void readFaces(canvas)
       .catch(() => null)
-      .then((detected) => {
-        const model =
-          detected !== null && detected.faces.length > 0
-            ? detected.faces.reduce((best, face) =>
-                face.box.height > best.box.height ? face : best,
-              )
-            : null;
-        const faceBox =
-          model !== null ? model.box : estimateFaceFromSkin(image).faceBox;
-        const trusted = detected !== null;
+      .then((result) => {
+        const reading = largestOf(result?.faces ?? []);
+        const pixels = reading === null ? null : facePixelsIn(reading, sampleSize);
 
         const stats: LiveFrameStats = {
-          meanLuminance: meanLuminanceOf(gray),
-          faceCoverage:
-            faceBox === null ? null : faceBox.height / image.height,
-          // The ratio the engine gates on and the crop is built to satisfy.
-          // The live line asks about it against LIVE_FACE_WIDTH_RATIO_MIN, which
-          // is far below the engine's own number because the crop closes the gap.
-          faceWidthRatio:
-            faceBox === null ? null : faceWidthRatio(faceBox, image),
-          // Where the middle of the face sits down the frame, which is what
-          // says the phone is being held below the person's eyes. Only read when
-          // a detector drew the box: the colour threshold's box runs into the
-          // neck and its middle says nothing about the phone.
-          faceCenterY:
-            faceBox === null
+          measured: result !== null,
+          sample: sampleSize,
+          trackIsLandscape: trackSize.width > trackSize.height,
+          coarsePointer: window.matchMedia("(pointer: coarse)").matches,
+          frameLuma: meanLuminanceOf(gray) / 255,
+          faceLuma:
+            pixels === null ? null : meanLumaInside(gray, pixels.ovalPolygon),
+          faceLumaUneven:
+            pixels === null
               ? null
-              : (faceBox.y + faceBox.height / 2) / image.height,
-          faceEstimateTrusted: trusted,
+              : evenness(gray, pixels.eyeBoxes.left, pixels.eyeBoxes.right),
+          reading,
           motion: motionBetween(previousSampleRef.current, gray.data),
-          sharpness: sharpnessOf(gray, faceBox),
-          pose: model?.pose ?? null,
+          sharpness: sharpnessOf(gray, pixels === null ? null : pixels.ovalBox),
         };
         const key = guidanceKey(stats);
         setGuidance(key);
         if (debugReadout) {
           setLiveStats({
-            source: trusted ? "model" : "skin_region",
+            source: result === null ? "none" : result.delegate,
             stats,
             key,
+            inferMs: result === null ? null : result.inferMs,
           });
         }
         previousSampleRef.current = gray.data;
@@ -647,13 +646,14 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
       canvas: HTMLCanvasElement,
       assessment: CaptureAssessment,
       /*
-       * Which estimator measured this frame, recorded alongside the numbers it
-       * produced. Without it a stored quality row cannot be read later: a face
-       * coverage of 0.7 from the real detector and one from the colour threshold
-       * fallback are not the same claim, and the thresholds all of this is
-       * calibrated against have to be set from the first kind only.
+       * Whether the landmarker measured this frame and what it cost, recorded
+       * alongside the numbers it produced. Without it a stored quality row
+       * cannot be read later: a row with no face numbers because the model did
+       * not load and a row with none because there was no face are not the same
+       * claim, and the thresholds all of this is calibrated against have to be
+       * set from measured rows only.
        */
-      faceSource: FaceEstimateSource,
+      provenance: Provenance,
       /** The shutter or "Upload instead", for the same column. */
       path: CapturePath,
     ) => {
@@ -680,19 +680,23 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
         quality: {
           verdict: assessment.verdict,
           reason: assessment.reason,
-          ...assessment.metrics,
-          faceSource,
           /*
-           * The calibration fields this build can already fill. A frame is
-           * measured when a face model drew its box; the colour threshold
-           * fallback measures skin coloured area and its numbers must never
-           * move a threshold. The frame sizes, the oval luma and the blink land
-           * with the master frame and the landmarker in later PRs.
+           * Every number the gate measured: the oval luma and its evenness, the
+           * cheek to cheek width, the oval box and centre, the pose and the
+           * blink, beside the exposure fractions and the sharpness. Then the
+           * calibration fields this build can fill: whether the landmarker
+           * measured the frame (an unmeasured row carries no face numbers and
+           * must never move a threshold), the platform, the path, and what the
+           * model cost. The frame sizes land with the master frame.
            */
-          measured: faceSource !== "skin_region",
+          ...assessment.metrics,
+          measured: provenance.measured,
           platform: currentPlatform(),
           path,
           attempt: 1,
+          ...(provenance.landmarkerMs === null
+            ? {}
+            : { landmarkerMs: provenance.landmarkerMs }),
         },
       });
 
@@ -824,23 +828,24 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
        * downscaled, cropped, and downscaled again, and arrived visibly soft.
        *
        * And it tightened a tightening. Each pass frames the face at
-       * AUTO_CROP_FACE_COVERAGE of the result, so running it twice put the face
-       * far closer than either pass intended, cut the forehead and the hairline
-       * off the top, and left the engine looking at a frame with no whole face in
-       * it. "No face in the frame" on a photograph with a face in it.
+       * AUTO_CROP_FACE_WIDTH_TARGET of the result, so running it twice put the
+       * face far closer than either pass intended, cut the forehead and the
+       * hairline off the top, and left the engine looking at a frame with no
+       * whole face in it. "No face in the frame" on a photograph with a face in
+       * it.
        *
        * The width rule this was added for is not lost by removing it: it lives in
        * autoCropBoxFor, which frameForUpload already calls, so the camera path
        * gets it through the same single composition the upload path does.
        */
-      const { assessment, faceSource } = await readFrame(canvas);
+      const { assessment, provenance } = await readFrame(canvas);
 
       if (assessment.verdict === "accept") {
-        await upload(canvas, assessment, faceSource, path);
+        await upload(canvas, assessment, provenance, path);
         return;
       }
 
-      pendingRef.current = { canvas, assessment, faceSource, path };
+      pendingRef.current = { canvas, assessment, provenance, path };
       setPhase({
         name: "review",
         // Non null for every verdict other than accept.
@@ -1056,7 +1061,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
     void upload(
       pending.canvas,
       pending.assessment,
-      pending.faceSource,
+      pending.provenance,
       pending.path,
     );
   }
