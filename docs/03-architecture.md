@@ -225,6 +225,7 @@ The five capture analyses run in parallel from the same uploaded object. Perfect
 
 - Every route logs a structured line: request id, route, user or judge session id, duration, provider calls made, credits spent, outcome. No image bytes, no signed URLs, no prompt text with personal data.
 - Provider errors log status, provider error code, and the zod issue path if validation failed.
+- An upload the analyze route would not send logs aurum.capture_unreadable with the capture id, the failing check (size, format, dimensions, short_side, long_side, digest) and the numbers it measured against the limits. Never the bytes, never the digest.
 - A simple /api/health returns build sha, provider kill switch state, and cache hit rates for the last hour.
 - Optional Sentry for exceptions, with PII scrubbing on by default.
 
@@ -237,6 +238,7 @@ The five capture analyses run in parallel from the same uploaded object. Perfect
 - SerpApi quota exhausted: routine rows show the product type and "No listing found near you yet"; the app never invents a listing.
 - Claude API error: the reading block shows a deterministic fallback built from the ranked concerns ("Main concern: pigmentation on the cheekbones. Skin type: combination.") and the stylist ranks looks by the rules alone with a one line rule based rationale.
 - Supabase storage error on upload: capture screen shows "Upload did not complete. Your photo was not saved. Try again.", with a second line naming the step and the status ("Stopped while saving the photo. The server answered 500.").
+- Unreadable upload at analyze: the stored object is not a JPEG, is not the registered size, is outside the engine's limits, or does not hash to the row (docs/04-integrations.md, "Implementation rules"). The route answers 409 capture_unreadable before any task is created or any unit reserved, and the capture screen names the step: "Upload did not complete. Your photo was not saved. Try again." with "Stopped while starting the reading. The server answered 409." under it, so the person retakes.
 - No session, or no consent, at the register or analyze call (401 or 403): the capture screen goes to /welcome, which records consent and, with open access on, mints the session. It is not an upload failure and is not shown as one. With open access on, /capture itself sends a device without a consented session there before a photo is framed.
 - Credits nearly out during judging: flip the kill switch; the app keeps working from cache and the demo profile.
 

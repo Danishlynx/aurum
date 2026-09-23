@@ -34,6 +34,14 @@ export type ApiFailureKind =
   | "forbidden"
   /** 429. A judge session or a daily cap is exhausted. */
   | "capped"
+  /**
+   * 409. The stored photo is not one the server can send: it failed the read
+   * at analyze (not a JPEG, a size other than the registered one, outside the
+   * engine's limits, a different digest), or it was never stored at all. The
+   * way out is a new photo, so the capture screen shows it as an upload that
+   * did not complete, with the step and status under it.
+   */
+  | "unreadable"
   /** The response arrived but did not match its schema. */
   | "invalid"
   /** Any other non success status. */
@@ -49,6 +57,9 @@ function failureKind(status: number): ApiFailureKind {
   }
   if (status === 403) {
     return "forbidden";
+  }
+  if (status === 409) {
+    return "unreadable";
   }
   if (status === 429) {
     return "capped";

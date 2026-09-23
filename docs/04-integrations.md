@@ -64,7 +64,7 @@ Implementation rules
 - Poll from our own GET /api/jobs handler, never from a long running server loop. Respect any polling interval the docs specify.
 - Parse every response with zod. If a field we depend on is missing, fail the job with a clear error and keep the raw payload (minus any image data) for debugging.
 - Map provider concern keys to our internal keys in one place: src/lib/shared/concerns.ts. The tone first ranking lives there too and is unit tested.
-- Never send a photo that failed our quality gate. Never send a photo of anyone but the signed in person.
+- Never send a photo that failed our quality gate. Never send a photo of anyone but the signed in person. The gate runs on the client; the server does not recompute it. What the server does, at analyze and before any task is created or any unit reserved, is validate the uploaded bytes from their header and digest alone (src/lib/server/capture/validate.ts): JPEG only, header dimensions equal to the ones the client registered, at least 480 px on the short side, at most 2560 px on the long side, at most 10 MB, and a sha256 equal to the captures row. An object that fails is answered 409 capture_unreadable and logged as aurum.capture_unreadable with the capture id, the failing check and the numbers, never the bytes.
 
 Credit table
 
