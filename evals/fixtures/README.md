@@ -126,6 +126,19 @@ writes: the raw provider payloads, the masks of a real face, and the analyses
 fixture built from them. Everything a test needs out of it is copied into
 `perfectcorp` above, sanitized by a script and never by hand.
 
+### evals/fixtures/private
+
+Not committed, and it is in `.gitignore`. Two things live here:
+
+- `capture-outcomes.json`, written by `npm run calibration:export`: one row per
+  first camera capture with the gate's numbers beside what the engine did with
+  the frame. Numbers, a capture id, a timestamp and the engine's own words about
+  the frame; never a pixel, a landmark, a path or a URL. The fixture half of
+  eval:capture runs on it and skips with a printed reason when it is absent
+  (docs/05-evals.md, eval:capture).
+- `faces/`, the founder's private selfies for the Playwright gate eval, which is
+  not built yet. Same consent rule as everything above.
+
 ## What is not blocked on these files
 
 The pure functions in `src/lib/shared/quality.ts` are tested now, with synthetic

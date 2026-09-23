@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,6 +9,23 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { messageForTaskFailure } from "@/lib/server/jobs";
+import {
+  CAPTURE_OUTCOMES_EXPORT_COMMAND,
+  CAPTURE_OUTCOMES_RELATIVE_PATH,
+  OUTCOME_BUCKETS,
+  OUTCOME_PICKERS,
+  bucketRates,
+  captureOutcomesFileSchema,
+  engineOutcomeOf,
+  precisionRecallOf,
+  readCaptureOutcomes,
+  refusalCodeCounts,
+  refusalLines,
+  type CaptureOutcomesFile,
+  type OutcomeAnalysis,
+  type OutcomeRow,
+} from "../support/capture-outcomes";
+import { toOutcomeRow } from "../../scripts/export-capture-outcomes";
 import {
   ANALYSIS_FAILURE_REASONS,
   analysisFailureReasonFor,
@@ -38,10 +56,13 @@ import {
  * logic, the reason precedence, and the accept and borderline boundaries. It is
  * not enough to prove the thresholds, which are numbers about real photographs.
  *
- * The half left as it.todo is the fixture half: the consented selfies and bad
- * captures the human has to add, listed in evals/fixtures/README.md. Those
- * tests carry the precision and recall thresholds from docs/05-evals.md and
- * they are what calibrates the constants in quality.ts.
+ * The other half runs on exported outcome rows: what the client measured on
+ * each first camera capture beside what the engine then did with it
+ * (evals/support/capture-outcomes.ts, written by npm run calibration:export
+ * into a gitignored private folder). It carries the precision and recall of
+ * accept from docs/05-evals.md and it is what calibrates the constants in
+ * quality.ts. On a machine without the export it skips and says so; the
+ * arithmetic it runs is proved on synthetic rows either way.
  */
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -494,31 +515,417 @@ describe("eval:capture, fixture contract", () => {
   it("documents which consented photos the human has to add", () => {
     expect(existsSync(resolve(FIXTURES, "README.md"))).toBe(true);
   });
+});
 
-  /*
-   * These land when evals/fixtures/faces and evals/fixtures/captures-bad have
-   * real photos in them. See docs/05-evals.md, "Fixtures" and suite
-   * eval:capture, and evals/fixtures/README.md for what to add and where.
-   * They also replace the PROVISIONAL threshold constants in
-   * src/lib/shared/quality.ts with calibrated ones.
-   */
-  it.todo(
-    "rejects every image in evals/fixtures/captures-bad (blurry, dark, over exposed, off center, partial face, no face, and a photo of a printed photo)",
-  );
+/* ------------------------------------------------------------------ */
+/* The arithmetic of the fixture half, on synthetic rows               */
+/* ------------------------------------------------------------------ */
 
-  it.todo(
-    "accepts every good window light fixture face in evals/fixtures/faces",
-  );
+/**
+ * The rows below are shaped exactly as the export writes them, with numbers
+ * chosen to make each rule visible. Nothing here is a real capture.
+ */
+function analysis(
+  kind: OutcomeAnalysis["kind"],
+  status: OutcomeAnalysis["status"],
+  refusal: OutcomeAnalysis["refusal"] = null,
+): OutcomeAnalysis {
+  return {
+    kind,
+    status,
+    ran: status !== "pending",
+    refusal,
+    faceQuality:
+      status === "succeeded"
+        ? { hasFace: true, area: "good", frontal: "good", lighting: "good", faceangle: "good" }
+        : null,
+    creditsUsed: status === "succeeded" ? 10 : 0,
+  };
+}
 
-  it.todo(
-    "flags at most one warm indoor light fixture face as borderline rather than rejecting it",
-  );
+const ALL_SUCCEEDED: OutcomeAnalysis[] = [
+  analysis("skin", "succeeded"),
+  analysis("fitzpatrick", "succeeded"),
+  analysis("attributes", "succeeded"),
+  analysis("face_shape", "succeeded"),
+  analysis("hair_type", "failed"),
+];
 
-  it.todo(
-    "rejects a frame containing more than one face, using the real detector rather than a passed in face count",
-  );
+const LEADER_REFUSED: OutcomeAnalysis[] = [
+  analysis("skin", "failed", { reason: "face_angle", code: "error_face_angle_rightward", elapsedMs: 900 }),
+  analysis("fitzpatrick", "failed", { reason: "face_angle", code: "error_face_angle_rightward", elapsedMs: 900 }),
+  analysis("attributes", "failed", { reason: "face_angle", code: "error_face_angle_rightward", elapsedMs: 4200 }),
+  analysis("face_shape", "failed", { reason: "face_angle", code: "error_face_angle_rightward", elapsedMs: 900 }),
+  analysis("hair_type", "failed"),
+];
 
-  it.todo(
-    "writes precision and recall of accept to evals/results/capture-<git sha>.json",
+const STILL_RUNNING: OutcomeAnalysis[] = [
+  analysis("skin", "pending"),
+  analysis("fitzpatrick", "pending"),
+  analysis("attributes", "running"),
+  analysis("face_shape", "pending"),
+  analysis("hair_type", "failed"),
+];
+
+function row(
+  verdict: OutcomeRow["quality"]["verdict"],
+  analyses: OutcomeAnalysis[],
+  pose: { yaw: number; pitch: number; roll: number } | null = { yaw: 2, pitch: -3, roll: 1 },
+  extra: Partial<OutcomeRow["quality"]> = {},
+): OutcomeRow {
+  return {
+    captureId: `synthetic-${verdict}-${String(analyses[0]?.status)}`,
+    createdAt: "2026-09-23T10:00:00.000Z",
+    quality: {
+      verdict,
+      reason: verdict === "accept" ? null : "facing_away",
+      sharpness: 40,
+      exposure: 120,
+      face_coverage: 0.66,
+      blown_fraction: 0,
+      crushed_fraction: 0,
+      mean_luminance: 120,
+      face_width_ratio: 0.7,
+      pose:
+        pose === null
+          ? null
+          : { yaw_degrees: pose.yaw, pitch_degrees: pose.pitch, roll_degrees: pose.roll },
+      face_source: "model",
+      measured: true,
+      platform: "ios",
+      path: "camera",
+      attempt: 1,
+      face_luma: 0.58,
+      blink: { left: 0.1, right: 0.2 },
+      ...extra,
+    },
+    analyses,
+  };
+}
+
+describe("eval:capture, the fixture half's arithmetic", () => {
+  it("reads the engine's verdict on a frame from the four runnable kinds", () => {
+    expect(engineOutcomeOf(row("accept", ALL_SUCCEEDED))).toBe("accepted");
+    expect(engineOutcomeOf(row("accept", LEADER_REFUSED))).toBe("refused");
+    expect(engineOutcomeOf(row("accept", STILL_RUNNING))).toBe("undetermined");
+    // hair_type cannot run from one selfie, so its failure decides nothing.
+    expect(
+      engineOutcomeOf(
+        row("accept", ALL_SUCCEEDED.map((entry) => (entry.kind === "hair_type" ? analysis("hair_type", "failed") : entry))),
+      ),
+    ).toBe("accepted");
+  });
+
+  it("treats a provider failure as no verdict on the frame", () => {
+    const outage = [
+      analysis("skin", "succeeded"),
+      analysis("fitzpatrick", "failed", { reason: "provider", code: "InternalError", elapsedMs: 1 }),
+      analysis("attributes", "succeeded"),
+      analysis("face_shape", "succeeded"),
+    ];
+    expect(engineOutcomeOf(row("accept", outage))).toBe("undetermined");
+  });
+
+  it("computes precision and recall of accept against the engine", () => {
+    const rows = [
+      row("accept", ALL_SUCCEEDED),
+      row("accept", ALL_SUCCEEDED),
+      row("accept", ALL_SUCCEEDED),
+      row("accept", LEADER_REFUSED, { yaw: 24, pitch: 0, roll: 0 }),
+      row("borderline", ALL_SUCCEEDED, { yaw: 12, pitch: 0, roll: 0 }),
+      row("borderline", LEADER_REFUSED, { yaw: 19, pitch: 0, roll: 0 }),
+      row("accept", STILL_RUNNING),
+    ];
+    const result = precisionRecallOf(rows);
+    // The open reading is not a verdict and is not counted either way.
+    expect(result.n).toBe(6);
+    expect(result.accepts).toBe(4);
+    expect(result.accepted).toBe(4);
+    expect(result.truePositives).toBe(3);
+    expect(result.precision).toBeCloseTo(0.75, 6);
+    expect(result.recall).toBeCloseTo(0.75, 6);
+  });
+
+  it("answers null rather than a division by zero when a side is empty", () => {
+    expect(precisionRecallOf([])).toEqual({
+      n: 0,
+      accepts: 0,
+      accepted: 0,
+      truePositives: 0,
+      precision: null,
+      recall: null,
+    });
+    const onlyRefused = precisionRecallOf([row("borderline", LEADER_REFUSED)]);
+    expect(onlyRefused.precision).toBeNull();
+    expect(onlyRefused.recall).toBeNull();
+  });
+
+  it("buckets acceptance by |yaw| and leaves unmeasured rows out", () => {
+    const rows = [
+      row("accept", ALL_SUCCEEDED, { yaw: 2, pitch: 0, roll: 0 }),
+      row("accept", ALL_SUCCEEDED, { yaw: -4, pitch: 0, roll: 0 }),
+      row("accept", LEADER_REFUSED, { yaw: 12, pitch: 0, roll: 0 }),
+      row("accept", ALL_SUCCEEDED, { yaw: 11, pitch: 0, roll: 0 }),
+      row("accept", ALL_SUCCEEDED, null),
+      row("accept", STILL_RUNNING, { yaw: 1, pitch: 0, roll: 0 }),
+    ];
+    const rates = bucketRates(rows, OUTCOME_PICKERS.absYaw, OUTCOME_BUCKETS.absYaw);
+    expect(rates[0]).toEqual({ label: "0 to 5", n: 2, ok: 2, rate: 1 });
+    const tens = rates.find((rate) => rate.label === "10 to 15");
+    expect(tens).toEqual({ label: "10 to 15", n: 2, ok: 1, rate: 0.5 });
+    const counted = rates.reduce((total, rate) => total + rate.n, 0);
+    expect(counted).toBe(4);
+  });
+
+  it("keeps the pitch buckets signed, because the engine's own presets are", () => {
+    const rates = bucketRates(
+      [
+        row("accept", ALL_SUCCEEDED, { yaw: 0, pitch: -12, roll: 0 }),
+        row("accept", LEADER_REFUSED, { yaw: 0, pitch: 12, roll: 0 }),
+      ],
+      OUTCOME_PICKERS.pitch,
+      OUTCOME_BUCKETS.pitch,
+    );
+    expect(rates.find((rate) => rate.label === "-20 to -10")?.ok).toBe(1);
+    expect(rates.find((rate) => rate.label === "10 to 20")?.ok).toBe(0);
+  });
+
+  it("puts a value on the top edge into the last bucket", () => {
+    const rates = bucketRates(
+      [row("accept", ALL_SUCCEEDED, null, { face_width_ratio: 1 })],
+      OUTCOME_PICKERS.faceWidthRatio,
+      OUTCOME_BUCKETS.faceWidthRatio,
+    );
+    expect(rates[rates.length - 1]?.n).toBe(1);
+  });
+
+  it("lists every refusal with our numbers beside it", () => {
+    const lines = refusalLines([
+      row("accept", ALL_SUCCEEDED),
+      row("borderline", LEADER_REFUSED, { yaw: 19, pitch: 2, roll: -1 }),
+    ]);
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toMatchObject({
+      code: "error_face_angle_rightward",
+      reason: "face_angle",
+      verdict: "borderline",
+      measured: true,
+      yaw: 19,
+      pitch: 2,
+      roll: -1,
+      faceWidthRatio: 0.7,
+      faceLuma: 0.58,
+      blinkMax: 0.2,
+    });
+    expect(refusalCodeCounts([row("borderline", LEADER_REFUSED)])).toEqual([
+      { code: "error_face_angle_rightward", count: 4 },
+    ]);
+  });
+
+  it("reduces a database row the way the export writes it", () => {
+    const first = toOutcomeRow({
+      id: "cap-1",
+      created_at: "2026-09-23T09:00:00.000Z",
+      quality: { verdict: "accept", path: "camera", attempt: 1, face_width_ratio: 0.7 },
+      analyses: [
+        {
+          kind: "attributes",
+          status: "succeeded",
+          provider_task_id: "pc-1",
+          raw: { color: { skin_color: "#997357" }, face_quality: { has_face: true, faceangle: "good" } },
+          credits_used: 20,
+        },
+        {
+          kind: "skin",
+          status: "failed",
+          provider_task_id: null,
+          raw: { refusal: { reason: "face_angle", code: "error_face_angle_rightward", elapsed_ms: 1200 } },
+          credits_used: 0,
+        },
+      ],
+    });
+    expect("row" in first).toBe(true);
+    if ("row" in first) {
+      expect(first.row.analyses[0]).toEqual({
+        kind: "attributes",
+        status: "succeeded",
+        ran: true,
+        refusal: null,
+        faceQuality: { hasFace: true, area: null, frontal: null, lighting: null, faceangle: "good" },
+        creditsUsed: 20,
+      });
+      expect(first.row.analyses[1]).toMatchObject({
+        ran: false,
+        refusal: { reason: "face_angle", code: "error_face_angle_rightward", elapsedMs: 1200 },
+        faceQuality: null,
+      });
+    }
+
+    // A gallery upload, a reframe, an unreadable row and an outage are left out.
+    expect(
+      toOutcomeRow({
+        id: "cap-2",
+        created_at: "x",
+        quality: { verdict: "accept", path: "gallery", attempt: 1 },
+        analyses: [],
+      }),
+    ).toEqual({ skipped: "not_first_camera" });
+    expect(
+      toOutcomeRow({
+        id: "cap-3",
+        created_at: "x",
+        quality: { verdict: "accept", path: "reframe", attempt: 2 },
+        analyses: [],
+      }),
+    ).toEqual({ skipped: "not_first_camera" });
+    expect(
+      toOutcomeRow({ id: "cap-4", created_at: "x", quality: null, analyses: [] }),
+    ).toEqual({ skipped: "unreadable_quality" });
+    expect(
+      toOutcomeRow({
+        id: "cap-5",
+        created_at: "x",
+        quality: { verdict: "accept", path: "camera", attempt: 1 },
+        analyses: [
+          {
+            kind: "skin",
+            status: "failed",
+            provider_task_id: "pc-2",
+            raw: { refusal: { reason: "provider", code: "InternalError" } },
+            credits_used: 0,
+          },
+        ],
+      }),
+    ).toEqual({ skipped: "provider" });
+  });
+
+  it("refuses a malformed export loudly", () => {
+    const good: CaptureOutcomesFile = {
+      format: "aurum.capture-outcomes.v1",
+      exportedAt: "2026-09-23T10:00:00.000Z",
+      filter: { path: "camera", attempt: 1, excludedProviderFailures: 0 },
+      rows: [row("accept", ALL_SUCCEEDED)],
+    };
+    expect(captureOutcomesFileSchema.safeParse(good).success).toBe(true);
+    expect(
+      captureOutcomesFileSchema.safeParse({ ...good, format: "something-else" }).success,
+    ).toBe(false);
+    expect(
+      captureOutcomesFileSchema.safeParse({
+        ...good,
+        rows: [{ ...good.rows[0], quality: { verdict: "maybe" } }],
+      }).success,
+    ).toBe(false);
+    expect(
+      captureOutcomesFileSchema.safeParse({
+        ...good,
+        filter: { path: "gallery", attempt: 1, excludedProviderFailures: 0 },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* The fixture half, on the exported rows                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * docs/05-evals.md, eval:capture: precision and recall of "accept", measured on
+ * the rows the export wrote. The threshold on precision is asserted only once
+ * there are at least a hundred decided rows, because a rate over fewer than
+ * that is a rumour: zero failures in 30 says nothing that would move a
+ * threshold. Below that it is reported and written to evals/results, which is
+ * what a PR attaches.
+ */
+const PRECISION_THRESHOLD = 0.97;
+const ROWS_BEFORE_ASSERTING = 100;
+
+/** Loaded once; a malformed file throws here, which fails the suite loudly. */
+const exported: CaptureOutcomesFile | null = readCaptureOutcomes();
+
+function shortGitSha(): string {
+  try {
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+if (exported === null) {
+  console.log(
+    `eval:capture: the fixture half skipped. No ${CAPTURE_OUTCOMES_RELATIVE_PATH}; run ${CAPTURE_OUTCOMES_EXPORT_COMMAND} with the service role key to export the outcome rows.`,
   );
+}
+
+describe.skipIf(exported === null)("eval:capture, the exported outcome rows", () => {
+  // The describe body still runs when skipped, so an absent file is an empty one here.
+  const file: CaptureOutcomesFile = exported ?? {
+    format: "aurum.capture-outcomes.v1",
+    exportedAt: "",
+    filter: { path: "camera", attempt: 1, excludedProviderFailures: 0 },
+    rows: [],
+  };
+  const result = precisionRecallOf(file.rows);
+
+  it("holds only first camera captures, each parsed against the private schema", () => {
+    expect(file.filter).toMatchObject({ path: "camera", attempt: 1 });
+    for (const entry of file.rows) {
+      expect(entry.quality.path).toBe("camera");
+      expect(entry.quality.attempt).toBe(1);
+    }
+  });
+
+  it("keeps our numbers beside every refusal the engine answered", () => {
+    for (const line of refusalLines(file.rows)) {
+      expect(line.reason).not.toBe("provider");
+      expect(line.verdict).not.toBe("reject");
+    }
+  });
+
+  it("reports precision and recall of accept against the engine", () => {
+    console.log(
+      `eval:capture: ${String(file.rows.length)} rows, ${String(result.n)} decided. precision ${
+        result.precision === null ? "-" : (result.precision * 100).toFixed(1)
+      }%, recall ${result.recall === null ? "-" : (result.recall * 100).toFixed(1)}%.`,
+    );
+    expect(result.n).toBeLessThanOrEqual(file.rows.length);
+  });
+
+  it(`asserts precision at or above ${String(PRECISION_THRESHOLD)} once ${String(ROWS_BEFORE_ASSERTING)} rows are decided`, () => {
+    if (result.n < ROWS_BEFORE_ASSERTING) {
+      console.log(
+        `eval:capture: ${String(result.n)} decided rows is under ${String(ROWS_BEFORE_ASSERTING)}; precision is reported and not asserted.`,
+      );
+      return;
+    }
+    expect(result.precision).not.toBeNull();
+    expect(result.precision ?? 0).toBeGreaterThanOrEqual(PRECISION_THRESHOLD);
+  });
+
+  it("writes precision and recall of accept to evals/results/capture-<git sha>.json", () => {
+    const sha = shortGitSha();
+    const outPath = resolve(REPO_ROOT, "evals", "results", `capture-${sha}.json`);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(
+      outPath,
+      `${JSON.stringify(
+        {
+          sha,
+          exportedAt: file.exportedAt,
+          rows: file.rows.length,
+          ...result,
+          thresholdAsserted: result.n >= ROWS_BEFORE_ASSERTING,
+          precisionThreshold: PRECISION_THRESHOLD,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    expect(existsSync(outPath)).toBe(true);
+  });
 });

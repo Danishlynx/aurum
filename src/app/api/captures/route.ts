@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 
+import { storedCaptureQualityFrom } from "@/lib/shared/capture-quality-stored";
 import { captureCreateRequestSchema } from "@/lib/shared/schemas";
 import type { CaptureCreateRequest } from "@/lib/shared/schemas";
 
@@ -51,18 +52,14 @@ export const dynamic = "force-dynamic";
  * exposure is meanLuminance: the architecture doc names sharpness, exposure, and
  * face coverage, and mean luminance over the measured region is what the gate
  * computes for exposure.
+ *
+ * Every validated field is written (src/lib/shared/capture-quality-stored.ts).
+ * Until 2026-09-23 this function listed eight keys by hand and dropped pose,
+ * faceWidthRatio and faceSource on the floor after the schema had accepted them,
+ * which left the only calibration loop this product has with nothing in it.
  */
 function qualityJson(quality: CaptureCreateRequest["quality"]): Json {
-  return {
-    sharpness: quality.sharpness,
-    exposure: quality.meanLuminance,
-    face_coverage: quality.faceCoverage,
-    verdict: quality.verdict,
-    reason: quality.reason,
-    blown_fraction: quality.blownFraction,
-    crushed_fraction: quality.crushedFraction,
-    mean_luminance: quality.meanLuminance,
-  };
+  return storedCaptureQualityFrom(quality);
 }
 
 // Vercel ends a function at its plan default (10 seconds on Hobby) unless the

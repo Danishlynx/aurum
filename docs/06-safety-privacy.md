@@ -22,6 +22,7 @@ Retention
 - Garment photos are kept while the garment exists; deleting a garment deletes its object.
 - Judge session data is purged 7 days after the session expires. A judge's original selfie goes earlier than that, when the session expires.
 - The scheduled jobs are the only thing that deletes an original: purge_stale_originals daily, and purge_expired_judge_data for everything a judge session owns.
+- The capture gate's numbers (face width ratio, pose angles, brightness, blink, frame size, and the verdict they produced) are kept with the capture in captures.quality, because they are the only way to calibrate the gate against what the engine then did; no pixels and no landmarks are ever stored, and the numbers are shown in "Download my data".
 
 Decision of 2026-09-03, by the founder, on when the default deletion happens. Until this date the original was deleted in flow, as soon as every analysis for the capture was terminal. Every try on in the app (makeup, hairstyle, hair colour, cloth) sends that original as its source image, so the in flow deletion left a real person with a finished reading and no try on: /makeup and /hair could only say "Preview unavailable for this shade." The default is now deletion at the end of the session rather than at the end of processing, which keeps the photo for exactly as long as the person is using the thing it is for and no longer. Nothing else about retention changed: the opt in toggle keeps its meaning, derived data is unaffected, and judge data still goes within 7 days of expiry. Implemented in supabase/migrations/0014_session_scoped_originals.sql, with the in flow deletion removed from src/lib/server/jobs/index.ts and the consent line on /welcome amended to match.
 
@@ -36,7 +37,7 @@ Access
 Person's controls
 
 - /profile shows exactly what is stored, in plain rows.
-- "Download my data" returns JSON of profile, analyses summaries, garments metadata, and looks.
+- "Download my data" returns JSON of profile, the gate's numbers for each capture, analyses summaries, garments metadata, and looks.
 - "Delete everything" requires typing DELETE and removes rows and storage objects in one transaction, then signs the person out. The toast says "Deleted."
 
 Regulatory posture (documented, not legal advice)

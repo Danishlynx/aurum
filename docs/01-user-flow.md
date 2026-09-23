@@ -164,6 +164,10 @@ Sequence (driven by job completion, not timers):
 
 Timing: each step waits for its job. If a job is slow, the status line stays; nothing fakes progress. If a job fails, its step is skipped and the report notes what is missing (see error states in F).
 
+Backgrounded: the screen polls again the moment the tab comes back to the foreground, because nothing advances a reading without it.
+
+Gave up: after three polls in a row that never reached the server, the status line says "The app could not reach the server. Check your connection and try again." with "Check again" as the primary action, which resumes polling the same capture, and "Retake photo" under it. The readings behind the screen are paid for and often finished; a dropped connection never buys them twice.
+
 Reduced motion: masks appear without animation; the status lines still update.
 
 ## F. Skin report (/report)
