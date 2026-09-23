@@ -74,6 +74,57 @@ export async function getSession(): Promise<AppSession | null> {
   return null;
 }
 
+/**
+ * Rebuilds the session for an owner id read off a row, for work that runs with
+ * no request behind it.
+ *
+ * The scheduled reconcile pass (src/lib/server/jobs/reconcile.ts) finds open
+ * jobs by scanning the table, not by serving a person, so there is no cookie
+ * and no JWT to resolve. What it has is jobs.user_id, which is either a
+ * judge_sessions id or an auth.users id (supabase/README.md, "Ownership
+ * model"), and the jobs runner needs the same AppSession the client poll would
+ * have carried: reserve() moves the judge counter for a judge, refund() and
+ * findReservation() look the ledger up by owner type, and the judge's analysis
+ * goes back through releaseAnalysisWhenNothingWasBought only for kind "judge".
+ *
+ * A live judge session answers a judge context, exactly as the cookie path
+ * builds one. Otherwise the owner is treated as a signed in person. That is
+ * also the shape an expired judge session falls back to, because
+ * loadJudgeSession hides an expired row and the ledger still has to settle: a
+ * result found by the pass is stored and its reservation reconciled as spent
+ * at equal units, which writes no row, whatever the owner type says. What the
+ * fallback cannot do is find judge owned ledger rows under the user owner type,
+ * so a refusal found for an expired judge is closed without a refund row; the
+ * ledger then overstates that dead session's spend by the reserved units until
+ * the seven day purge removes its rows, and never understates it. The fallback
+ * is logged when it happens so it can be counted. The profile read is how an
+ * expired judge is told from a person: a person who reached the analyze route
+ * has a profiles row (consent is written there), a judge never does.
+ */
+export async function sessionForOwner(ownerId: string): Promise<AppSession> {
+  const judge = await loadJudgeSession(ownerId);
+  if (judge !== null) {
+    return {
+      kind: "judge",
+      id: judge.id,
+      ownerType: "judge_session",
+      session: judge,
+    };
+  }
+
+  const profile: Profile | null = await getProfile(ownerId);
+  if (profile === null) {
+    console.warn(
+      JSON.stringify({
+        event: "aurum.reconcile_owner_fallback",
+        ownerId,
+        note: "no live judge session and no profile; settling as a user",
+      }),
+    );
+  }
+  return { kind: "user", id: ownerId, ownerType: "user" };
+}
+
 // ---------------------------------------------------------------------------
 // Consent
 // ---------------------------------------------------------------------------

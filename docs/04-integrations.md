@@ -256,6 +256,7 @@ General rules
 - RLS: enabled on every table. Policies: select, insert, update, delete where user_id = auth.uid(). Service role is used only from server modules for judge sessions, seeding, and scheduled purges.
 - Storage: four private buckets (captures, masks, renders, garments). Uploads and reads go through signed URLs created on the server. Bucket policies deny public access.
 - Scheduled jobs (Supabase cron or a Vercel cron route): purge expired judge session data after 7 days; delete original captures older than 24 hours where keep_originals is false and processing is complete (belt and braces for the in flow deletion).
+- Reconcile schedule (pg_cron and pg_net, migration 0016): every minute the job aurum_reconcile runs public.reconcile_open_jobs(), which returns at once when no analysis job is pending or running and otherwise POSTs /api/jobs/reconcile with a bearer, so a reading finishes whether or not the tab is still polling (docs/03-architecture.md, "Jobs", reconcile). The route's URL and the bearer are the Vault secrets aurum_reconcile_url and aurum_reconcile_secret, created once by the human with vault.create_secret and read by the function at call time; the bearer is the same value as JOBS_RECONCILE_SECRET on Vercel, and neither is ever a literal in a migration. Three human steps, written out in supabase/README.md, "Reconcile schedule": enable pg_cron and pg_net, create the two Vault secrets, run the cron.schedule statement. Vercel's own cron runs once a day on the Hobby plan and is not a driver for a job with a 120 second lifetime, which is why this lives in the database.
 
 ## Environment variables
 
@@ -276,6 +277,9 @@ See .env.example at the repo root. Never commit .env. Vercel holds production va
     PROVIDER_CALLS_ENABLED
     DAILY_CAP_PERFECTCORP_UNITS
     DAILY_CAP_SERPAPI_SEARCHES
+    JOBS_RECONCILE_SECRET
+
+JOBS_RECONCILE_SECRET is the bearer POST /api/jobs/reconcile expects from the scheduled driver, and the same value as the Vault secret aurum_reconcile_secret in the Supabase project (the Supabase section above). Optional: unset, the route answers 503 and the app runs as it did before the driver existed, with the guarantee off.
 
 Two more exist for the judge path, both optional and both explained in .env.example.
 
