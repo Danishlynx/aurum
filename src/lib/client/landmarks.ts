@@ -41,6 +41,16 @@
  * Nothing in this module sends anything anywhere. The model is a download and
  * the inference is local; no frame, no landmark and no measurement leaves the
  * device from here.
+ *
+ * On validation. The e2e seam's injected result is parsed with zod
+ * (src/lib/client/landmarks-seam.ts) because it is an arbitrary object a test
+ * put on the window. The model's own result is not: it is the typed return of
+ * a library call in the same process, read on every preview frame, and
+ * readingsFromLandmarkerResult checks the shape it reads by hand (a finite
+ * number where one is expected, a face dropped where it is not) rather than
+ * building 478 landmark objects through a schema three times a second. The
+ * failure mode is the same either way: a face that does not read is left out,
+ * never thrown on.
  */
 
 import { faceReadingFrom, type FaceReading } from "@/lib/shared/face-reading";

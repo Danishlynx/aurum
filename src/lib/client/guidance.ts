@@ -16,15 +16,15 @@
  * promise about what the next tap will do, so every condition the gate can
  * refuse a frame for is a condition this line refuses to say "Good" under.
  *
- * An unmeasured preview, one the landmarker has not answered for, gets three
- * lines and no more: light (over the whole frame), hold, and then a line that
- * says the check did not load and the tap is still theirs. Nothing about a
- * face is said on a frame nothing has looked at.
+ * An unmeasured preview, one the landmarker has not answered for, gets the
+ * two light lines (over the whole frame: too dark, too bright), hold, and then
+ * a line that says the check did not load and the tap is still theirs.
+ * Nothing about a face is said on a frame nothing has looked at.
  */
 
 import { copy } from "@/lib/shared/copy";
 import type { FaceReading } from "@/lib/shared/face-reading";
-import { ovalTouchesEdge } from "@/lib/shared/frame-geometry";
+import { ovalTouchesEdge, type Size } from "@/lib/shared/frame-geometry";
 import {
   FACE_LUMA_BORDERLINE_ABOVE,
   FACE_LUMA_BORDERLINE_BELOW,
@@ -62,6 +62,12 @@ export const MOTION_STILL_AT_OR_BELOW = 14;
 export type LiveFrameStats = {
   /** True when the landmarker answered for this preview frame. */
   readonly measured: boolean;
+  /**
+   * The preview sample the reading is normalized to, in pixels. Its aspect is
+   * what puts the reading's width, a share of the frame WIDTH, onto the short
+   * axis for the live floor (liveWidthRatioOf).
+   */
+  readonly sample: Size;
   /** True when the camera track is wider than it is tall. */
   readonly trackIsLandscape: boolean;
   /** True on a touch device, where a landscape track means a turned phone. */
@@ -85,12 +91,13 @@ export type LiveFrameStats = {
 };
 
 /**
- * The preview width ratio under which the line asks the person to come closer.
+ * The preview width ratio under which the line asks the person to come closer,
+ * measured on the sample's SHORT axis (liveWidthRatioOf).
  *
  * Deliberately far below the engine's own 0.60, because in this build the
  * engine never sees the preview. autoCropBoxFor composes the uploaded frame
  * around the face from whatever the sensor gave it, so a face at 0.40 of the
- * sensor frame's width becomes a face at 0.66 of the upload. The limit is
+ * sensor frame's short axis becomes a face at 0.66 of the upload. The limit is
  * pixels, not framing: under this the crop starts upscaling into a soft frame.
  *
  * The capture-master-frame PR removes the sensor snapshot and the composition
@@ -99,6 +106,26 @@ export type LiveFrameStats = {
  * so that "Move closer" asks for the oval and nothing else.
  */
 export const LIVE_FACE_WIDTH_RATIO_MIN = 0.4;
+
+/**
+ * The reading's cheek to cheek width as a share of the sample's short axis.
+ *
+ * A FaceReading's widthRatio is over the frame WIDTH, which is the right
+ * measure on the portrait master frame and the wrong one on the landscape
+ * track a laptop webcam hands over in this build: on a 16:9 sample a face at
+ * 0.40 of the width has an oval taller than the frame, so a floor read against
+ * the width could never be cleared without the "back" line firing first, and
+ * the line never said ready on a laptop (reviewed 2026-09-23). Until the
+ * master frame PR lands, the floor is read the way the composition step reads
+ * it, against the short axis, which is what the detector's box was measured
+ * against before the landmarker. On a portrait sample the two are the same.
+ */
+export function liveWidthRatioOf(reading: FaceReading, sample: Size): number {
+  if (!(sample.width > 0) || !(sample.height > 0)) {
+    return reading.widthRatio;
+  }
+  return reading.widthRatio * Math.max(1, sample.width / sample.height);
+}
 
 export function guidanceKey(stats: LiveFrameStats): GuidanceKey {
   const { reading } = stats;
@@ -119,7 +146,8 @@ export function guidanceKey(stats: LiveFrameStats): GuidanceKey {
 
   /*
    * Nothing measured this frame. The person still has a tap, and the only
-   * things worth saying are the two that need no face to measure.
+   * things worth saying are the ones that need no face to measure: the two
+   * light lines above, and hold.
    */
   if (!stats.measured) {
     if (stats.motion > MOTION_STILL_AT_OR_BELOW) {
@@ -166,7 +194,10 @@ export function guidanceKey(stats: LiveFrameStats): GuidanceKey {
    * one thing a person can do about a face it could not find is bring it
    * into the oval.
    */
-  if (reading === null || reading.widthRatio < LIVE_FACE_WIDTH_RATIO_MIN) {
+  if (
+    reading === null ||
+    liveWidthRatioOf(reading, stats.sample) < LIVE_FACE_WIDTH_RATIO_MIN
+  ) {
     return "closer";
   }
 

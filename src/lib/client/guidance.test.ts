@@ -23,6 +23,7 @@ import {
   MOTION_STILL_AT_OR_BELOW,
   guidanceKey,
   guidanceLine,
+  liveWidthRatioOf,
   meanLuminanceOf,
   motionBetween,
   type LiveFrameStats,
@@ -67,12 +68,25 @@ function withPose(pose: FacePose | null): FaceReading {
   return { ...OVAL_FACE, pose };
 }
 
+/** The preview sample of a portrait phone track, 3 by 4 at the guidance size. */
+const PORTRAIT_SAMPLE = {
+  width: Math.round((GUIDANCE_SAMPLE_LONG_EDGE * 3) / 4),
+  height: GUIDANCE_SAMPLE_LONG_EDGE,
+} as const;
+
+/** The preview sample of a 16 by 9 laptop webcam track. */
+const LANDSCAPE_SAMPLE = {
+  width: GUIDANCE_SAMPLE_LONG_EDGE,
+  height: Math.round((GUIDANCE_SAMPLE_LONG_EDGE * 9) / 16),
+} as const;
+
 /**
  * A frame with nothing wrong with it: lit, framed, held still, square, on a
  * phone held upright, measured by the landmarker.
  */
 const READY: LiveFrameStats = {
   measured: true,
+  sample: PORTRAIT_SAMPLE,
   trackIsLandscape: false,
   coarsePointer: true,
   frameLuma: 0.5,
@@ -160,6 +174,16 @@ describe("guidanceKey", () => {
       "hold",
     );
     expect(guidanceKey({ ...UNMEASURED, frameLuma: 0.05 })).toBe("light");
+    // Both light lines need no face: a frame blown over its whole area is
+    // said before the hold and the unmeasured lines (docs/01 section D).
+    expect(guidanceKey({ ...UNMEASURED, frameLuma: 0.95 })).toBe("bright");
+    expect(
+      guidanceKey({
+        ...UNMEASURED,
+        frameLuma: FACE_LUMA_BORDERLINE_ABOVE + 0.01,
+        motion: MOTION_STILL_AT_OR_BELOW + 1,
+      }),
+    ).toBe("bright");
     // Nothing a phone held landscape or a stale reading could add.
     expect(guidanceKey({ ...UNMEASURED, trackIsLandscape: true })).toBe(
       "unmeasured",
@@ -245,6 +269,39 @@ describe("guidanceKey", () => {
     );
     expect(guidanceLine({ ...READY, reading: face({ widthRatio: 0.2 }) })).toBe(
       copy.capture.guidance.closer,
+    );
+  });
+
+  /**
+   * The floor is read on the sample's short axis, not its width. A laptop
+   * webcam hands over a landscape track, and a reading's widthRatio is over
+   * the frame width: on a 16 by 9 sample a face at 0.40 of the width has an
+   * oval taller than the frame, so read against the width the line went
+   * closer, then back, and never ready (reviewed 2026-09-23). The composition
+   * step measured the detector's box against the short axis before the
+   * landmarker, and the live floor keeps that parity until the master frame
+   * PR moves the preview onto the frame that is sent.
+   */
+  it("reaches ready on a laptop's landscape sample, with the floor on the short axis", () => {
+    const laptop: LiveFrameStats = {
+      ...READY,
+      sample: LANDSCAPE_SAMPLE,
+      trackIsLandscape: true,
+      coarsePointer: false,
+    };
+    const onLaptop = (widthRatio: number) =>
+      face({ widthRatio, center: { x: 0.5, y: 0.47 }, frame: LANDSCAPE_SAMPLE });
+    // 0.28 of the width is 0.50 of the height: over the floor, inside the
+    // margins.
+    expect(guidanceKey({ ...laptop, reading: onLaptop(0.28) })).toBe("ready");
+    expect(guidanceKey({ ...laptop, reading: onLaptop(0.24) })).toBe("ready");
+    // Under the floor on the short axis (0.20 of the width is 0.36 of it).
+    expect(guidanceKey({ ...laptop, reading: onLaptop(0.2) })).toBe("closer");
+    // Past the top margin on a landscape frame, and still "back", not "closer".
+    expect(guidanceKey({ ...laptop, reading: onLaptop(0.36) })).toBe("back");
+    // The same width read on a portrait sample is under the floor.
+    expect(guidanceKey({ ...READY, reading: face({ widthRatio: 0.28 }) })).toBe(
+      "closer",
     );
   });
 
@@ -511,6 +568,33 @@ describe("the live line and the gate, on the same face", () => {
       expect(verdict.verdict).toBe("accept");
       expect(verdict.failures).toEqual([]);
     }
+  });
+});
+
+describe("liveWidthRatioOf", () => {
+  it("is the reading's width on a portrait or square sample", () => {
+    expect(liveWidthRatioOf(OVAL_FACE, PORTRAIT_SAMPLE)).toBeCloseTo(
+      OVAL_FACE.widthRatio,
+      10,
+    );
+    expect(liveWidthRatioOf(OVAL_FACE, { width: 100, height: 100 })).toBeCloseTo(
+      OVAL_FACE.widthRatio,
+      10,
+    );
+  });
+
+  it("scales the width onto the short axis of a landscape sample", () => {
+    const reading = face({ widthRatio: 0.3, frame: LANDSCAPE_SAMPLE });
+    expect(liveWidthRatioOf(reading, LANDSCAPE_SAMPLE)).toBeCloseTo(
+      (0.3 * LANDSCAPE_SAMPLE.width) / LANDSCAPE_SAMPLE.height,
+      6,
+    );
+  });
+
+  it("falls back to the reading's width on a sample without a size", () => {
+    expect(liveWidthRatioOf(OVAL_FACE, { width: 0, height: 0 })).toBe(
+      OVAL_FACE.widthRatio,
+    );
   });
 });
 

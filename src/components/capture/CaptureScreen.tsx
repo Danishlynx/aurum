@@ -596,6 +596,7 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
 
         const stats: LiveFrameStats = {
           measured: result !== null,
+          sample: sampleSize,
           trackIsLandscape: trackSize.width > trackSize.height,
           coarsePointer: window.matchMedia("(pointer: coarse)").matches,
           frameLuma: meanLuminanceOf(gray) / 255,

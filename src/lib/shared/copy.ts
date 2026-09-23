@@ -1054,13 +1054,19 @@ export const copy = {
 export type Copy = typeof copy;
 
 /**
- * Copy written in house because docs/01-user-flow.md specifies the state but
+ * Copy written in house because docs/01-user-flow.md specified the state but
  * not its words. Each path is dotted from the copy root. The safety eval checks
  * that every path still resolves, so a string cannot be quietly promoted to
  * "from the doc" or deleted without updating this list.
  *
- * Open item for the human: approve or replace every line in this list, then move
- * the approved wording into docs/01-user-flow.md so this list can shrink.
+ * This is the approval queue, not a mirror of the doc. A line written in house
+ * stays listed after docs/01 quotes it (the guidance lines of 2026-09-07 and
+ * 2026-09-23 are quoted there because the doc describes the screen, not
+ * because the wording was approved), and leaves the list only when the human
+ * has approved or replaced it.
+ *
+ * Open item for the human: approve or replace every line in this list, then
+ * remove it here once the approved wording is in docs/01-user-flow.md.
  */
 export const COPY_NOT_IN_FLOW_DOC = [
   "nav.back",
