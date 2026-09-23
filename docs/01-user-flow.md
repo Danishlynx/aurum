@@ -103,33 +103,44 @@ The master frame contract, decided 2026-09-23 and implemented by the capture PRs
 Live guidance (one line at a time, replaced as conditions change, never stacked):
 
 - "Face the light. A window works best."
+- "Too bright. Move out of direct light."
+- "Hold the phone upright."
 - "Look straight at the lens and keep the phone level."
 - "Hold the phone at eye level."
 - "Move closer until your face fills the oval."
+- "Move back a little so your whole face fits."
 - "Hold still."
 - "Good. Tap to capture." (frame turns solid gold)
 
-Order is precedence, and pose comes before framing: no amount of moving closer fixes a head that is turned away from the lens, and the engine refuses the turned head first.
+Order is precedence, and pose comes before framing: no amount of moving closer fixes a head that is turned away from the lens, and the engine refuses the turned head first. Light is measured over the face itself, on the same 0 to 1 scale the engine's own capture SDK uses, and has a top as well as a bottom. "Hold the phone upright" is said only on a touch device whose camera track is landscape.
 
-"Hold the phone at eye level" is a pitch line. When the detector has measured pitch, the line holds only for a pitch the gate would refuse. Where the face sits down the frame is asked only when there is no pitch to read, as a stand in for it, and its threshold is set from where a correctly framed face actually sits (0.62 of the frame height, measured on a phone 2026-09-14) rather than from the middle of the picture.
+"Hold the phone at eye level" is a pitch line and "Look straight at the lens" is a yaw and roll line. Both are read from the head pose the face model solves for (the landmarker's transformation matrix, decoded in src/lib/shared/pose.ts), and both hold only for a pose the gate would refuse. Nothing is inferred from where the face sits in the frame any more.
+
+When the face model has not loaded, the line says so instead of guessing: light over the whole frame, then "Hold still.", then "The face check did not load. You can still take the photo." The tap still works; the frame is offered unmeasured (below).
 
 Who reaches this screen: a device with a consented session. With open access on, a device without one, or whose 24 hour session has run out, is sent to /welcome before it frames a photo, because that is the screen that can mint a session and record the consent (the register call would answer 401 otherwise, and until 2026-09-14 that was shown as "Upload did not complete"). The same two answers from the server after the tap, 401 and 403, also go to /welcome rather than to a retake.
 
 When an upload does stop, the screen says where and what came back, under the documented line: "Stopped while registering the photo. The server answered 500." or "Stopped while saving the photo. No answer came back from the server." A status code is not a sentence a person acts on, but it is what makes a screenshot a diagnosis.
 
-Quality gate after capture (runs client side first, then server side):
+Quality gate after capture (runs client side; the server side check of the stored bytes is a later PR):
 
-- Exactly one face detected, by a real model rather than a colour rule
-- The face at least 60 percent of the frame's short axis in width, which is the rule the engine itself applies. The frame is composed around the face before it is judged, so this is a statement about the composed frame; the live line asks only whether there is enough face to compose (0.40 of the preview width). A face under a quarter of the frame height is refused as too small to crop.
-- Head within the pose window: yaw and roll inside 15 degrees, pitch from minus 20 to plus 10, matching Perfect Corp's own capture profile. A pose outside the window but inside the slack is offered, not refused, and the live line holds only for a pose the gate would refuse.
-- Exposure within range (no blown highlights on the forehead, no crushed shadows)
-- Sharpness measured and recorded, and used only to choose the best frame of the burst. It neither refuses nor flags a frame, and it does not hold the live line.
+- A face is measured by the face model (MediaPipe's FaceLandmarker: 478 landmarks, a solved head pose, the eye blink blendshapes), or the frame is unmeasured because the model did not load. There is nothing in between: no colour rule, no browser detector. An unmeasured frame is never refused; it is offered with "Use it anyway" and the reason "unmeasured", and the engine's own input gate, which is free, decides.
+- On a measured frame, exactly one face. No face, or more than one, is a refusal.
+- The face at least 60 percent of the frame width, cheek to cheek across the model's face oval, which is the rule the engine itself applies and a narrower measure than any detector's box. Under the Camera Kit RELAXED floor of 0.55 the frame is refused as too far; between 0.55 and 0.60 it is offered; above 0.86 it is offered as too close. The frame is composed around the face oval before it is judged, so this is a statement about the composed frame; the live line asks only whether there is enough face to compose (0.40 of the preview width, until the master frame PR moves the preview onto the frame that is sent).
+- The face oval inside the frame's edge margins (3 percent, 8 percent at the top for the hair), else offered as out of bounds, which is what the engine refuses as out of boundary and no crop fixes.
+- Head within the pose window, read from the solved matrix: yaw and roll inside 15 degrees, pitch from minus 20 to plus 10, matching Perfect Corp's own capture profile. A pose outside the window but inside the slack is offered, not refused, and the live line holds only for a pose the gate would refuse.
+- Light over the face oval within range, on a 0 to 1 scale, with today's bands (40, 60, 205 and 225 of 255) until the calibration report moves them; blown highlights and crushed shadows over the oval's box. The eye blink blendshapes and the luma difference between the eyes are recorded in captures.quality and not yet applied.
+- Sharpness measured and recorded, and used only to choose the best frame of the burst. It neither refuses nor flags a frame, there is no reason it could be reported under, and it does not hold the live line.
+
+The reasons a frame can be refused or offered under, in precedence order: unmeasured, no face, multiple faces, too dark, over exposed, face out of bounds, too far, too close, facing away, eyes closed (recorded, applied by a later PR). What refuses outright: no face and multiple faces on a measured frame, the light extremes, a face under the 0.55 floor, and a pose beyond the slack. Everything else is offered.
+
+Amended 2026-09-23. The face detector became the face landmarker, self hosted with its runtime from public/ and pinned by sha256 (docs/04-integrations.md), and the colour threshold fallback was deleted: every threshold it fed was a guess about lit skin, and a gate that measured nothing has no grounds to refuse. The gate now reads the engine's own quantities, cheek to cheek width, a solved pose, light over the face, and stores every one of them for the calibration report.
 
 Amended again 2026-09-14, after a level phone with a face filling the oval sat on "Hold the phone at eye level" and then answered "Move closer" on the tap. Every threshold written against the height of the face box had been calibrated against the old skin colour box, which covered the forehead, the hair and the neck. A detector reports a face, eyebrows to chin, about two thirds of that. So the 60 percent height rule called a well framed face too far, and the pitch estimate's guessed neutral point read a level phone as looking up by about eight degrees, on the axis the engine's budget is tightest. The height rule is gone from the gate and the live line, the pitch neutral is corrected, and neither sharpness nor a borderline pose can hold the line any more. `/capture?debug=1` shows the numbers the line was computed from, so the next threshold is set from a phone rather than from a guess.
 
 Amended 2026-09-07, after a wave of good photographs was being refused. Four things were wrong and all four are fixed in place.
 
-The face detector was `window.FaceDetector`, the Shape Detection API, which Safari has never implemented and Chrome has never shipped on by default. In practice it was never present, so every capture was measured by a YCbCr skin colour threshold instead. That fallback drops deep skin under warm light out of its chroma range and answers "no face", it merges a face with any skin coloured wall behind it, it runs down a lit neck and reports a box larger than the face, and it reads a bare arm as a second person. The app now loads MediaPipe's short range face detector, which also reports the six keypoints the pose window is measured from. The colour threshold survives only as a fallback for a device where the model will not load.
+The face detector was `window.FaceDetector`, the Shape Detection API, which Safari has never implemented and Chrome has never shipped on by default. In practice it was never present, so every capture was measured by a YCbCr skin colour threshold instead. That fallback drops deep skin under warm light out of its chroma range and answers "no face", it merges a face with any skin coloured wall behind it, it runs down a lit neck and reports a box larger than the face, and it reads a bare arm as a second person. The app loaded MediaPipe's short range face detector in its place, with the colour threshold as a fallback for a device where the model would not load; since 2026-09-23 the detector is the landmarker and the fallback is gone (above).
 
 Sharpness was a bare Laplacian variance, which is edge energy, which scales with the contrast of the face being measured. A deeply pigmented face in soft light carries less local contrast than a pale one under the same lamp, so the measurement ran low on exactly the skin tones this product exists to serve and told those people their sharp photograph was blurry. It is now divided by the region's own contrast, which makes it a focus measure rather than a contrast measure, and Perfect Corp publishes no blur or sharpness error code at all, so it refuses nothing.
 
@@ -139,14 +150,14 @@ Pose was not measured at all, and pose is what the engine actually refuses. Ever
 
 Sharpness is measured at one fixed size, on the face, by one function that both the live guidance line and the gate call. Laplacian variance depends on the resolution it is read at, so measuring the preview at one size and the capture at another and comparing both to one threshold is not a comparison: on 2026-09-03 it told a person "Good. Tap to capture." and then called that same frame blurry, every shot.
 
-Failing the sharpness check is borderline and never a refusal. The engine reads its own input gate for free and is the authority on whether a frame is sharp enough, so a soft frame is offered with "Use it anyway" rather than refused. Only face detection (no face, more than one face) and the exposure extremes, which spend a credit on a reading nothing can come of, refuse a frame outright.
+There is no sharpness check. The engine publishes no blur code and reads its own input gate for free, so a soft frame is sent and the engine judges it; the number is recorded with the capture and ranks the frames of the burst, and that is all it does. What refuses a frame outright is listed with the gate above.
 
 Copy for a rejected frame (choose the one matching the failure):
 
 - "Too dark to read your skin. Turn toward the light and try again."
-- "A little blurry. Hold still and tap again."
 - "Move closer so your face fills the oval."
-- Buttons: "Retake" (primary), "Use it anyway" (secondary, only shown for borderline frames, never for failed face detection)
+- "The face check did not load on this device, so the photo was not checked." (offered, never refused)
+- Buttons: "Retake" (primary), "Use it anyway" (secondary, only shown for borderline frames, never for failed face detection on a measured frame)
 
 Behavior: one tap takes a short burst of 5 frames about 90ms apart, not the single frame at the instant of the tap, because the instant of the tap is the instant the finger pressing the glass moves the phone and this product gets one attempt at a reading. Every frame of the burst is composed and measured by the same gate, the best scoring one is sent (frameScore in src/lib/shared/quality.ts, which ranks on pose first, then framing, then light, then sharpness), and the frame frozen on screen becomes the winner. There is still one shutter and it still fires only when it is tapped. On accept, the image is downscaled client side to a 1024px long edge, EXIF stripped, hashed, uploaded to the private captures bucket, and the analysis jobs start. Route to /analyzing.
 

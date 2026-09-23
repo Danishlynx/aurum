@@ -123,6 +123,35 @@ describe("storedCaptureQualityFrom", () => {
     }
   });
 
+  it("leaves out the two measurements a build from 2026-09-23 no longer makes", () => {
+    const stored = storedCaptureQualityFrom({
+      verdict: "accept",
+      reason: null,
+      sharpness: 12.5,
+      blownFraction: 0.01,
+      crushedFraction: 0.02,
+      faceLuma: 0.58,
+      faceWidthRatio: 0.7,
+      measured: true,
+    });
+    expect(stored).not.toHaveProperty("exposure");
+    expect(stored).not.toHaveProperty("mean_luminance");
+    expect(stored).not.toHaveProperty("face_coverage");
+    expect(stored.face_luma).toBe(0.58);
+    expect(stored.measured).toBe(true);
+    // And the request schema takes that body.
+    expect(
+      captureQualitySchema.safeParse({
+        verdict: "accept",
+        reason: null,
+        sharpness: 12.5,
+        blownFraction: 0.01,
+        crushedFraction: 0.02,
+        faceLuma: 0.58,
+      }).success,
+    ).toBe(true);
+  });
+
   it("keeps a measured null apart from a field that was never sent", () => {
     const stored = storedCaptureQualityFrom({ ...MINIMAL, pose: null, blink: null });
     expect(stored).toHaveProperty("pose", null);

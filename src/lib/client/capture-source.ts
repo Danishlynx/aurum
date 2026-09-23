@@ -4,11 +4,11 @@
  *
  * The live failure this exists for. On 2026-09-03 the founder's phone sent a
  * selfie twice and both times the skin analysis answered
- * error_src_face_too_small. That browser has no FaceDetector, so the framing was
- * composed around the skin region heuristic (src/lib/client/face.ts), which had
- * run down the neck and shoulders and reported a box much larger than the face:
- * the crop looked right to us and was loose to the engine. The person was shown
- * a refusal and asked to take the same photo again.
+ * error_src_face_too_small. That browser had no face model loaded, so the
+ * framing was composed around a skin colour heuristic (deleted since), which
+ * had run down the neck and shoulders and reported a box much larger than the
+ * face: the crop looked right to us and was loose to the engine. The person was
+ * shown a refusal and asked to take the same photo again.
  *
  * A refused task is charged nothing (docs/04-integrations.md, "Input errors"),
  * so trying again costs nothing but a few seconds. This module is that retry:
@@ -31,8 +31,7 @@ import {
   type ClientJob,
 } from "@/lib/client/api";
 import { rememberCapturePreview } from "@/lib/client/capture-handoff";
-import { estimateFaceForCapture, SKIN_SAMPLE_LONG_EDGE } from "@/lib/client/face";
-import type { FaceEstimateSource } from "@/lib/client/face";
+import { readFaces } from "@/lib/client/landmarks";
 import { currentPlatform } from "@/lib/client/platform";
 import {
   CAPTURE_JPEG_QUALITY,
@@ -174,12 +173,12 @@ async function runResubmit(
       CAPTURE_LONG_EDGE,
       CAPTURE_MIN_SHORT_EDGE,
     );
-    const { assessment, faceSource } = await assess(canvas);
-    if (assessment.verdict === "reject") {
+    const read = await assess(canvas);
+    if (read.assessment.verdict === "reject") {
       continue;
     }
 
-    const sent = await submit(canvas, assessment, faceSource, attempt);
+    const sent = await submit(canvas, read, attempt);
     if (sent === null) {
       return { ok: false, reason: "request" };
     }
@@ -203,32 +202,39 @@ async function runResubmit(
   return { ok: false, reason: "gate" };
 }
 
-/**
- * The same gate the capture screen runs, on the reframed crop, and which
- * estimator measured it, so the stored row says so.
- */
-async function assess(canvas: HTMLCanvasElement): Promise<{
+/** The gate's reading of one crop, with what the stored row says about it. */
+type GateReading = {
   readonly assessment: CaptureAssessment;
-  readonly faceSource: FaceEstimateSource;
-}> {
-  const full = readImageData(canvas);
-  const sample = readImageData(
-    drawToCanvas(
-      canvas,
-      { width: canvas.width, height: canvas.height },
-      SKIN_SAMPLE_LONG_EDGE,
-    ),
-  );
-  const estimate = await estimateFaceForCapture(canvas, full, sample);
+  /** True when the landmarker measured the crop. */
+  readonly measured: boolean;
+  /** How long the landmarker took, or null when it did not run. */
+  readonly landmarkerMs: number | null;
+};
+
+/**
+ * The same gate the capture screen runs, on the reframed crop: the landmarker
+ * reads the crop, the largest face is judged, and whether anything measured
+ * the frame at all travels with the verdict so the stored row says so.
+ */
+async function assess(canvas: HTMLCanvasElement): Promise<GateReading> {
+  const image = toGrayscale(readImageData(canvas));
+  const result = await readFaces(canvas);
+  const faces = result?.faces ?? [];
+  const largest =
+    faces.length === 0
+      ? null
+      : faces.reduce((best, face) =>
+          face.ovalBox.height > best.ovalBox.height ? face : best,
+        );
   return {
     assessment: assessCapture({
-      image: toGrayscale(full),
-      faceCount: estimate.faceCount,
-      faceBox: estimate.faceBox,
-      pose: estimate.pose ?? null,
-      faceEstimateTrusted: estimate.source !== "skin_region",
+      image,
+      faceCount: faces.length,
+      reading: largest,
+      measured: result !== null,
     }),
-    faceSource: estimate.source,
+    measured: result !== null,
+    landmarkerMs: result === null ? null : result.inferMs,
   };
 }
 
@@ -244,10 +250,10 @@ async function assess(canvas: HTMLCanvasElement): Promise<{
  */
 async function submit(
   canvas: HTMLCanvasElement,
-  assessment: CaptureAssessment,
-  faceSource: FaceEstimateSource,
+  read: GateReading,
   attempt: number,
 ): Promise<string | null> {
+  const { assessment } = read;
   let blob: Blob;
   let sha256: string;
   try {
@@ -259,19 +265,19 @@ async function submit(
 
   /*
    * The calibration fields, written so a reframed row can be told from the
-   * frame the person sent: path "reframe" with its attempt number, and whether a
-   * face model or the colour threshold measured the crop (docs/03, data model).
+   * frame the person sent: path "reframe" with its attempt number, whether the
+   * face model measured the crop, and what it cost (docs/03, data model).
    */
   const quality: CaptureQualityPayload = {
     verdict: assessment.verdict,
     reason: assessment.reason,
     ...assessment.metrics,
-    faceSource,
-    measured: faceSource !== "skin_region",
+    measured: read.measured,
     platform: currentPlatform(),
     path: "reframe",
     // Bounded by hasReframeLeft already; the clamp keeps the schema's 1 to 3.
     attempt: Math.min(3, Math.max(1, attempt)),
+    ...(read.landmarkerMs === null ? {} : { landmarkerMs: read.landmarkerMs }),
   };
   const created = await createCapture({
     sha256,

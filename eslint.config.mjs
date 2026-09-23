@@ -266,6 +266,10 @@ const config = [
       // node_modules, and "eslint ." walks into them; the top level patterns
       // above do not match nested copies.
       ".claude/**",
+      // The face model runtime copied out of node_modules on postinstall
+      // (scripts/prepare-face-model.ts): third party, gitignored, not ours.
+      "public/mediapipe/**",
+      "public/models/**",
       "coverage/**",
       "evals/results/**",
       "playwright-report/**",

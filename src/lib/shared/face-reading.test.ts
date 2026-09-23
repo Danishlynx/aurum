@@ -10,6 +10,7 @@ import {
   LEFT_EYE_LANDMARKS,
   RIGHT_EYE_LANDMARKS,
   evenness,
+  facePixelsIn,
   faceReadingFrom,
   meanLumaInside,
 } from "./face-reading";
@@ -96,15 +97,37 @@ describe("faceReadingFrom", () => {
     expect(tipped?.pose?.rollDegrees ?? 0).toBeCloseTo(-9, 4);
   });
 
-  it("reads a small combined turn to within a degree on every axis", () => {
+  it("reads a combined turn exactly on every axis", () => {
     /*
-     * The decoder is exact about one axis and carries small angle cross terms
-     * for a combined turn; inside the gate's window they stay under a degree.
+     * The decoder is exact for the Rz(roll) Rx(pitch) Ry(yaw) product the
+     * synthetic matrix is built from, since 2026-09-23: until then roll was
+     * read off the wrong pair of elements and a combined turn carried a
+     * spurious roll that grew with yaw times pitch.
      */
     const reading = faceReadingFrom(syntheticFace({ yaw: 6, pitch: -5, roll: 4 }));
-    expect(Math.abs((reading?.pose?.yawDegrees ?? 0) - 6)).toBeLessThan(1);
-    expect(Math.abs((reading?.pose?.pitchDegrees ?? 0) + 5)).toBeLessThan(1);
-    expect(Math.abs((reading?.pose?.rollDegrees ?? 0) - 4)).toBeLessThan(1);
+    expect(reading?.pose?.yawDegrees ?? 0).toBeCloseTo(6, 4);
+    expect(reading?.pose?.pitchDegrees ?? 0).toBeCloseTo(-5, 4);
+    expect(reading?.pose?.rollDegrees ?? 0).toBeCloseTo(4, 4);
+
+    const turnedAndDown = faceReadingFrom(syntheticFace({ yaw: 15, pitch: -20 }));
+    expect(turnedAndDown?.pose?.rollDegrees ?? 99).toBeCloseTo(0, 4);
+  });
+
+  it("puts the oval box, polygon and eye boxes onto any frame's pixels", () => {
+    const face = syntheticFace();
+    const reading = faceReadingFrom(face);
+    expect(reading).not.toBeNull();
+    if (reading === null) {
+      return;
+    }
+    const frame = { width: 300, height: 400 };
+    const pixels = facePixelsIn(reading, frame);
+    expect(pixels.ovalBox.width).toBeCloseTo(FRAME_OVAL_WIDTH * frame.width, 6);
+    expect(pixels.ovalPolygon).toHaveLength(36);
+    expect(pixels.eyeBoxes.left.x).toBeGreaterThan(pixels.eyeBoxes.right.x);
+    const target = ovalBoxIn(frame);
+    expect(pixels.ovalBox.x).toBeCloseTo(target.x, 6);
+    expect(pixels.ovalBox.y).toBeCloseTo(target.y, 6);
   });
 
   it("reads a face away from the target at its own width and centre", () => {

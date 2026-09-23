@@ -33,17 +33,21 @@ import {
   isRetakeFailure,
 } from "@/lib/shared/analysis-failure";
 import { analysisFailureCopy, captureRejectionCopy, copy } from "@/lib/shared/copy";
+import { faceReadingFrom, type FaceReading } from "@/lib/shared/face-reading";
+import { FRAME_OVAL_WIDTH } from "@/lib/shared/frame-geometry";
 import {
   CAPTURE_REASON_PRECEDENCE,
-  FACE_COVERAGE_BORDERLINE_MIN,
-  FACE_COVERAGE_MIN,
+  FACE_WIDTH_RATIO_MAX,
+  FACE_WIDTH_RATIO_MIN,
   assessCapture,
   autoCropBoxFor,
   cropToBox,
+  faceWidthRatio,
   type Box,
   type CaptureRejectionReason,
   type GrayscaleImage,
 } from "@/lib/shared/quality";
+import { syntheticFace } from "../support/synthetic-face";
 
 /**
  * eval:capture, deterministic, runs on every PR.
@@ -69,18 +73,28 @@ import {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const FIXTURES = resolve(REPO_ROOT, "evals", "fixtures");
 
-const FRAME = { width: 120, height: 120 } as const;
 /**
- * A face that satisfies both framing rules at once, which since 2026-09-07 is
- * what "good" means.
- *
- * 72 of 120 is 60 percent of the frame height, exactly our own rule. 74 of 120
- * is 0.617 of the short axis, which clears the engine's own rule that the face
- * be wider than 60 percent of it (FACE_WIDTH_RATIO_MIN). The old box here was 60
- * wide, which is 0.5, and so described a frame this suite called good and the
- * engine would have refused with error_src_face_too_small.
+ * The frame the gate is tested on: 3 by 4, the shape of the master frame
+ * (docs/01-user-flow.md section D), so a face filling the oval sits inside the
+ * edge margins the gate applies.
  */
-const GOOD_FACE_BOX: Box = { x: 23, y: 24, width: 74, height: 72 };
+const FRAME = { width: 90, height: 120 } as const;
+
+/** A reading of a synthetic landmarker result, normalized to that frame. */
+function face(options: Parameters<typeof syntheticFace>[0] = {}): FaceReading {
+  const reading = faceReadingFrom(syntheticFace({ frame: FRAME, ...options }));
+  if (reading === null) {
+    throw new Error("The synthetic face did not read.");
+  }
+  return reading;
+}
+
+/**
+ * A face filling the oval: 0.70 of the frame width cheek to cheek, which is
+ * inside the band the engine asks for (60 to 80 percent), square to the lens,
+ * eyes open. Since 2026-09-23 "good" is a reading, not a box.
+ */
+const GOOD_FACE = face();
 
 function image(
   pixel: (x: number, y: number) => number,
@@ -108,6 +122,15 @@ const blownFrame = image((x, y) => ([250, 252, 255][(x + y) % 3] ?? 252));
 /** No local contrast at all, which is what motion blur converges to. */
 const blurryFrame = image(() => 128);
 
+/** A measured frame with one good face on the given picture. */
+function measured(
+  frame: GrayscaleImage,
+  reading: FaceReading | null = GOOD_FACE,
+  faceCount = reading === null ? 0 : 1,
+): Parameters<typeof assessCapture>[0] {
+  return { image: frame, faceCount, reading, measured: true };
+}
+
 const bad: readonly {
   readonly name: string;
   readonly input: Parameters<typeof assessCapture>[0];
@@ -115,51 +138,49 @@ const bad: readonly {
 }[] = [
   {
     name: "no face",
-    input: { image: goodFrame, faceCount: 0, faceBox: null },
+    input: measured(goodFrame, null),
     reason: "no_face",
   },
   {
     name: "two faces in the frame",
-    input: { image: goodFrame, faceCount: 2, faceBox: GOOD_FACE_BOX },
+    input: measured(goodFrame, GOOD_FACE, 2),
     reason: "multiple_faces",
   },
   {
     name: "too dark",
-    input: { image: darkFrame, faceCount: 1, faceBox: GOOD_FACE_BOX },
+    input: measured(darkFrame),
     reason: "too_dark",
   },
   {
     name: "over exposed",
-    input: { image: blownFrame, faceCount: 1, faceBox: GOOD_FACE_BOX },
+    input: measured(blownFrame),
     reason: "over_exposed",
   },
   {
     /*
-     * Under FACE_COVERAGE_REJECT_BELOW, which since 2026-09-14 is the only
-     * height the gate refuses on: a face this small at sensor size is one no
-     * crop can rescue without upscaling into a frame the engine refuses anyway.
-     * 24 of 120 is a fifth of the frame. Everything between this and the
-     * engine's width rule is the composition step's job, not a refusal.
+     * Under FACE_WIDTH_REJECT_BELOW, the Camera Kit RELAXED floor, which is
+     * the only width the gate refuses on: a face this small at sensor size is
+     * one no crop can rescue without upscaling into a frame the engine refuses
+     * anyway. 0.30 of the frame width, cheek to cheek. Everything between this
+     * and the engine's 0.60 is offered, and the composition step's job.
      */
     name: "face far too small in the frame",
-    input: {
-      image: goodFrame,
-      faceCount: 1,
-      faceBox: { x: 48, y: 48, width: 20, height: 24 },
-    },
+    input: measured(goodFrame, face({ widthRatio: 0.3 })),
     reason: "too_far",
+  },
+  {
+    name: "head turned far past the pose window",
+    input: measured(goodFrame, face({ yaw: 40 })),
+    reason: "facing_away",
   },
 ];
 
 describe("eval:capture, gate logic on synthetic frames", () => {
-  it("accepts a sharp, evenly lit frame with the face at the 60 percent rule", () => {
-    const result = assessCapture({
-      image: goodFrame,
-      faceCount: 1,
-      faceBox: GOOD_FACE_BOX,
-    });
+  it("accepts a sharp, evenly lit frame with the face filling the oval", () => {
+    const result = assessCapture(measured(goodFrame));
     expect(result.verdict).toBe("accept");
     expect(result.reason).toBeNull();
+    expect(result.metrics.faceWidthRatio).toBeCloseTo(FRAME_OVAL_WIDTH, 5);
   });
 
   it.each(bad)("rejects $name with the reason $reason", ({ input, reason }) => {
@@ -175,82 +196,83 @@ describe("eval:capture, gate logic on synthetic frames", () => {
   });
 
   /**
-   * Softness is flagged and never refused, which is a policy and not a
-   * threshold. The engine's own input gate reads the frame for free and is the
-   * authority on whether it is sharp enough; ours guesses from a canvas. When
-   * they disagreed on a real phone the person had no way through at all
-   * (Samsung S26 Ultra, indoors at night, 2026-09-03), so the disagreement is
-   * now settled in the person's favour and the engine gets to answer.
+   * A frame nothing measured is never refused. When the face model has not
+   * loaded there is no face count and no reading, and refusing on that would
+   * be refusing a person's photograph for the state of a download
+   * (docs/03-architecture.md, failure modes). It is offered as unmeasured and
+   * the engine's own input gate, which is free, decides.
    */
+  it("offers an unmeasured frame with use it anyway, never refuses it", () => {
+    const result = assessCapture({
+      image: goodFrame,
+      faceCount: 0,
+      reading: null,
+      measured: false,
+    });
+    expect(result.verdict).toBe("borderline");
+    expect(result.reason).toBe("unmeasured");
+    expect(result.canUseAnyway).toBe(true);
+  });
+
   /**
-   * Softness decides nothing at the gate, since 2026-09-14. It was a borderline
-   * before that, which is a review screen with Retake as the primary answer and
-   * in practice a wall, held against a threshold set from synthetic patterns
-   * that a smooth face could read under at any focus. The engine publishes no
-   * blur code, the burst sends the sharpest of five frames, and the number is
-   * still recorded in the metrics for calibration. So a soft frame is accepted
-   * and the engine, whose input gate is free, judges it.
+   * Softness is recorded and never refused, which is a policy and not a
+   * threshold. The engine's own input gate reads the frame for free and is
+   * the authority on whether it is sharp enough; ours guesses from a canvas.
+   * When they disagreed on a real phone the person had no way through at all
+   * (Samsung S26 Ultra, indoors at night, 2026-09-03), so the disagreement is
+   * settled in the person's favour and the engine gets to answer. Since
+   * 2026-09-23 there is no blurry reason at all: softness ranks the frames of
+   * a burst and lands in the metrics, and that is all it does.
    */
   it("accepts a soft frame at any sharpness, and records the number", () => {
     for (const contrast of [0, 1, 2, 4]) {
       const soft = image((x, y) =>
         (x + y) % 2 === 0 ? 128 - contrast / 2 : 128 + contrast / 2,
       );
-      const result = assessCapture({
-        image: soft,
-        faceCount: 1,
-        faceBox: GOOD_FACE_BOX,
-      });
+      const result = assessCapture(measured(soft));
       expect(result.verdict).toBe("accept");
-      expect(
-        result.failures.some((failure) => failure.reason === "blurry"),
-      ).toBe(false);
+      expect(result.failures).toEqual([]);
       expect(Number.isFinite(result.metrics.sharpness)).toBe(true);
     }
   });
 
   it("accepts the flattest frame there is", () => {
-    const result = assessCapture({
-      image: blurryFrame,
-      faceCount: 1,
-      faceBox: GOOD_FACE_BOX,
-    });
+    const result = assessCapture(measured(blurryFrame));
     expect(result.metrics.sharpness).toBe(0);
     expect(result.verdict).toBe("accept");
   });
 
   it("keeps reject for the frames a credit cannot survive, and no others", () => {
+    const refusable: CaptureRejectionReason[] = [
+      "no_face",
+      "multiple_faces",
+      "too_dark",
+      "over_exposed",
+      "too_far",
+      "facing_away",
+    ];
     for (const entry of bad) {
       const result = assessCapture(entry.input);
       expect(result.verdict).toBe("reject");
       for (const failure of result.failures) {
-        expect(failure.reason === "blurry" ? failure.severity : "borderline").toBe(
-          "borderline",
-        );
+        if (failure.severity === "reject") {
+          expect(refusable).toContain(failure.reason);
+        }
       }
     }
   });
 
   it("never offers use it anyway when face detection failed", () => {
     for (const faceCount of [0, 2, 3]) {
-      const result = assessCapture({
-        image: goodFrame,
-        faceCount,
-        faceBox: faceCount === 0 ? null : GOOD_FACE_BOX,
-      });
+      const result = assessCapture(
+        measured(goodFrame, faceCount === 0 ? null : GOOD_FACE, faceCount),
+      );
       expect(result.canUseAnyway).toBe(false);
     }
   });
 
   it("offers use it anyway on a frame that is only slightly under the framing rule", () => {
-    const height = Math.round(
-      FRAME.height * ((FACE_COVERAGE_MIN + FACE_COVERAGE_BORDERLINE_MIN) / 2),
-    );
-    const result = assessCapture({
-      image: goodFrame,
-      faceCount: 1,
-      faceBox: { x: 30, y: 20, width: 60, height },
-    });
+    const result = assessCapture(measured(goodFrame, face({ widthRatio: 0.58 })));
     expect(result.verdict).toBe("borderline");
     expect(result.reason).toBe("too_far");
     expect(result.canUseAnyway).toBe(true);
@@ -263,16 +285,8 @@ describe("eval:capture, gate logic on synthetic frames", () => {
   });
 
   it("is stable: the same frame always gets the same verdict", () => {
-    const once = assessCapture({
-      image: goodFrame,
-      faceCount: 1,
-      faceBox: GOOD_FACE_BOX,
-    });
-    const twice = assessCapture({
-      image: goodFrame,
-      faceCount: 1,
-      faceBox: GOOD_FACE_BOX,
-    });
+    const once = assessCapture(measured(goodFrame));
+    const twice = assessCapture(measured(goodFrame));
     expect(twice).toEqual(once);
   });
 });
@@ -287,9 +301,11 @@ describe("eval:capture, gate logic on synthetic frames", () => {
  * of the frame height when the analyzers want more than 60. On 2026-09-02 one
  * was sent as it came and the engine answered error_src_face_too_small.
  *
- * autoCropBoxFor is what the upload path does about it. This block runs the same
- * photo through the gate twice, before and after the crop, on the same synthetic
- * frames the rest of the suite uses.
+ * autoCropBoxFor is what the upload path does about it in this build, fed the
+ * landmarker's face oval box in pixels; the capture-master-frame PR replaces
+ * it with masterCropFor. This block runs the same photo through the gate
+ * twice, before and after the crop, with the reading the landmarker would give
+ * for the face at each framing.
  */
 describe("eval:capture, auto framing an uploaded photo", () => {
   const GALLERY = { width: 300, height: 400 } as const;
@@ -301,100 +317,102 @@ describe("eval:capture, auto framing an uploaded photo", () => {
     GALLERY.height,
   );
 
-  /** A face filling this share of the frame height, centered. */
-  function galleryFace(coverage: number): Box {
-    const height = Math.round(GALLERY.height * coverage);
-    const width = Math.round(height * 0.72);
+  /** The face oval's box for a face at this share of the frame width, centered. */
+  function galleryFaceBox(widthRatio: number): Box {
+    const width = Math.round(GALLERY.width * widthRatio);
+    const height = Math.round(width * 1.35);
     return {
       x: Math.round((GALLERY.width - width) / 2),
-      y: Math.round((GALLERY.height - height) / 2),
+      y: Math.round(GALLERY.height * 0.47 - height / 2),
       width,
       height,
     };
   }
 
-  /** The crop, and the face box in the cropped frame's own pixels. */
+  /** The reading the landmarker would give for that face in a frame. */
+  function readingFor(faceBox: Box, frame: { width: number; height: number }): FaceReading {
+    return face({
+      frame,
+      widthRatio: faceBox.width / frame.width,
+      center: {
+        x: (faceBox.x + faceBox.width / 2) / frame.width,
+        y: (faceBox.y + faceBox.height / 2) / frame.height,
+      },
+    });
+  }
+
+  /** The crop, and the face in the cropped frame's own terms. */
   function compose(faceBox: Box): {
     readonly image: GrayscaleImage;
-    readonly faceBox: Box;
+    readonly reading: FaceReading;
   } {
     const crop = autoCropBoxFor({ faceBox, frame: GALLERY });
     if (crop === null) {
       throw new Error("Expected a crop for a face under the framing rule.");
     }
+    const cropped = cropToBox(galleryFrame, crop);
     return {
-      image: cropToBox(galleryFrame, crop),
-      faceBox: {
-        x: faceBox.x - crop.x,
-        y: faceBox.y - crop.y,
-        width: faceBox.width,
-        height: faceBox.height,
-      },
+      image: cropped,
+      reading: readingFor(
+        {
+          x: faceBox.x - crop.x,
+          y: faceBox.y - crop.y,
+          width: faceBox.width,
+          height: faceBox.height,
+        },
+        cropped,
+      ),
     };
   }
 
-  const GALLERY_COVERAGES = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55] as const;
+  const GALLERY_WIDTHS = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55] as const;
 
-  it.each(GALLERY_COVERAGES)(
-    "refuses a face at %s of the frame height as it came",
-    (coverage) => {
-      const result = assessCapture({
-        image: galleryFrame,
-        faceCount: 1,
-        faceBox: galleryFace(coverage),
-      });
+  it.each(GALLERY_WIDTHS)(
+    "does not accept a face at %s of the frame width as it came",
+    (widthRatio) => {
+      const result = assessCapture(
+        measured(galleryFrame, readingFor(galleryFaceBox(widthRatio), GALLERY)),
+      );
       expect(result.verdict).not.toBe("accept");
       expect(result.reason).toBe("too_far");
     },
   );
 
-  it.each(GALLERY_COVERAGES)(
+  it.each(GALLERY_WIDTHS)(
     "accepts the same photo at %s once it is composed around the face",
-    (coverage) => {
-      const composed = compose(galleryFace(coverage));
-      const result = assessCapture({
-        image: composed.image,
-        faceCount: 1,
-        faceBox: composed.faceBox,
-      });
+    (widthRatio) => {
+      const composed = compose(galleryFaceBox(widthRatio));
+      const result = assessCapture(measured(composed.image, composed.reading));
       expect(result.verdict).toBe("accept");
       expect(result.reason).toBeNull();
-      expect(result.metrics.faceCoverage).toBeGreaterThanOrEqual(
-        FACE_COVERAGE_MIN,
+      expect(result.metrics.faceWidthRatio ?? 0).toBeGreaterThanOrEqual(
+        FACE_WIDTH_RATIO_MIN,
+      );
+      expect(result.metrics.faceWidthRatio ?? 1).toBeLessThanOrEqual(
+        FACE_WIDTH_RATIO_MAX,
       );
     },
   );
 
   it("leaves a photo that was already framed well enough alone", () => {
-    /*
-     * "Well enough" now means both rules, so it starts higher than
-     * FACE_COVERAGE_MIN. In this 3 by 4 frame a face of the 0.72 aspect this
-     * helper draws reaches 0.60 of the short axis at about 0.63 of the frame
-     * height, so a face at exactly our height rule is one the engine would still
-     * have refused and is now composed rather than sent as it came.
-     */
-    for (const coverage of [0.65, 0.7, 0.9]) {
+    for (const widthRatio of [0.6, 0.7, 0.8]) {
       expect(
-        autoCropBoxFor({ faceBox: galleryFace(coverage), frame: GALLERY }),
+        autoCropBoxFor({ faceBox: galleryFaceBox(widthRatio), frame: GALLERY }),
       ).toBeNull();
     }
   });
 
   it("has nothing to offer a photo with no face, which stays a refusal", () => {
     expect(autoCropBoxFor({ faceBox: null, frame: GALLERY })).toBeNull();
-    const result = assessCapture({
-      image: galleryFrame,
-      faceCount: 0,
-      faceBox: null,
-    });
+    const result = assessCapture(measured(galleryFrame, null));
     expect(result.verdict).toBe("reject");
     expect(result.reason).toBe("no_face");
     expect(result.canUseAnyway).toBe(false);
   });
 
-  it("keeps the crop inside the picture and portrait", () => {
-    for (const coverage of GALLERY_COVERAGES) {
-      const faceBox = galleryFace(coverage);
+  it("keeps the crop inside the picture and portrait, with the face in the band", () => {
+    for (const widthRatio of GALLERY_WIDTHS) {
+      const faceBox = galleryFaceBox(widthRatio);
       const crop = autoCropBoxFor({ faceBox, frame: GALLERY });
       expect(crop).not.toBeNull();
       const box = crop as Box;
@@ -403,6 +421,7 @@ describe("eval:capture, auto framing an uploaded photo", () => {
       expect(box.x + box.width).toBeLessThanOrEqual(GALLERY.width);
       expect(box.y + box.height).toBeLessThanOrEqual(GALLERY.height);
       expect(box.width).toBeLessThanOrEqual(box.height);
+      expect(faceWidthRatio(faceBox, box)).toBeGreaterThanOrEqual(FACE_WIDTH_RATIO_MIN);
     }
   });
 });

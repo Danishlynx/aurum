@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { rotationRowMajorFor } from "../../../evals/support/synthetic-face";
 import {
-  NEUTRAL_NOSE_POSITION,
   normalizeDegrees,
   poseFromLandmarkerMatrix,
-  poseFromLandmarks,
   poseFromTransformationMatrix,
-  type PoseLandmarks,
 } from "./pose";
 import {
   POSE_PITCH_MAX_DEGREES,
@@ -26,107 +24,10 @@ import {
  * error_face_angle_downward on 2026-09-03. Nothing in the gate could see any of
  * it, so a turned head was sent, charged nothing, refused, and handed back to the
  * person as "try again" with no idea what to change.
+ *
+ * Since 2026-09-23 the only source of a pose is the landmarker's matrix. The
+ * six keypoint heuristic and its tests are gone with the detector it read.
  */
-
-/** A face looking straight into the lens, in the pixels of a 400 by 400 frame. */
-const FRONTAL: PoseLandmarks = {
-  leftEye: { x: 160, y: 170 },
-  rightEye: { x: 240, y: 170 },
-  noseTip: { x: 200, y: 170 + 100 * NEUTRAL_NOSE_POSITION },
-  mouthLeft: { x: 180, y: 270 },
-  mouthRight: { x: 220, y: 270 },
-};
-
-/** Rotates a point about the centre of the frame, to model a tilted phone. */
-function rotate(
-  point: { x: number; y: number },
-  degrees: number,
-  about = { x: 200, y: 220 },
-) {
-  const radians = (degrees * Math.PI) / 180;
-  const cos = Math.cos(radians);
-  const sin = Math.sin(radians);
-  const dx = point.x - about.x;
-  const dy = point.y - about.y;
-  return {
-    x: about.x + dx * cos - dy * sin,
-    y: about.y + dx * sin + dy * cos,
-  };
-}
-
-function rotateAll(landmarks: PoseLandmarks, degrees: number): PoseLandmarks {
-  return {
-    leftEye: rotate(landmarks.leftEye, degrees),
-    rightEye: rotate(landmarks.rightEye, degrees),
-    noseTip: rotate(landmarks.noseTip, degrees),
-    mouthLeft: rotate(landmarks.mouthLeft, degrees),
-    mouthRight: rotate(landmarks.mouthRight, degrees),
-  };
-}
-
-describe("poseFromLandmarks", () => {
-  it("reads a face square to the lens as square", () => {
-    const pose = poseFromLandmarks(FRONTAL);
-    expect(pose).not.toBeNull();
-    expect(pose?.yawDegrees ?? 99).toBeCloseTo(0, 6);
-    expect(pose?.rollDegrees ?? 99).toBeCloseTo(0, 6);
-    expect(pose?.pitchDegrees ?? 99).toBeCloseTo(0, 6);
-  });
-
-  it("reads roll exactly, which is the one angle it does not approximate", () => {
-    for (const degrees of [-30, -15, -5, 5, 15, 30]) {
-      const pose = poseFromLandmarks(rotateAll(FRONTAL, degrees));
-      expect(pose?.rollDegrees ?? 99).toBeCloseTo(degrees, 6);
-    }
-  });
-
-  /**
-   * The property that makes the measurement usable on a handheld phone. A tilted
-   * phone rotates every landmark together, and a naive estimate taken in image
-   * axes reads that rotation as a turned head. It is not one: the head is square
-   * to the lens and the lens is tipped.
-   */
-  it("does not turn a tilted phone into a turned head", () => {
-    for (const degrees of [-25, -10, 10, 25]) {
-      const pose = poseFromLandmarks(rotateAll(FRONTAL, degrees));
-      expect(pose?.yawDegrees ?? 99).toBeCloseTo(0, 4);
-      expect(pose?.pitchDegrees ?? 99).toBeCloseTo(0, 4);
-    }
-  });
-
-  it("reads a nose carried toward one eye as yaw, with the sign of the turn", () => {
-    const turnedRight = poseFromLandmarks({
-      ...FRONTAL,
-      noseTip: { x: 224, y: FRONTAL.noseTip.y },
-    });
-    const turnedLeft = poseFromLandmarks({
-      ...FRONTAL,
-      noseTip: { x: 176, y: FRONTAL.noseTip.y },
-    });
-    expect(turnedRight?.yawDegrees ?? 0).toBeGreaterThan(10);
-    expect(turnedLeft?.yawDegrees ?? 0).toBeLessThan(-10);
-  });
-
-  it("reads a lifted chin as positive pitch and a dropped one as negative", () => {
-    const eyeToMouth = 100;
-    const lookingUp = poseFromLandmarks({
-      ...FRONTAL,
-      noseTip: { x: 200, y: 170 + eyeToMouth * (NEUTRAL_NOSE_POSITION - 0.2) },
-    });
-    const lookingDown = poseFromLandmarks({
-      ...FRONTAL,
-      noseTip: { x: 200, y: 170 + eyeToMouth * (NEUTRAL_NOSE_POSITION + 0.2) },
-    });
-    expect(lookingUp?.pitchDegrees ?? 0).toBeGreaterThan(0);
-    expect(lookingDown?.pitchDegrees ?? 0).toBeLessThan(0);
-  });
-
-  it("refuses to answer when the two eyes are the same point", () => {
-    expect(
-      poseFromLandmarks({ ...FRONTAL, rightEye: { ...FRONTAL.leftEye } }),
-    ).toBeNull();
-  });
-});
 
 const COS_20 = Math.cos((20 * Math.PI) / 180);
 const SIN_20 = Math.sin((20 * Math.PI) / 180);
@@ -212,6 +113,34 @@ describe("poseFromTransformationMatrix", () => {
     expect(pose?.rollDegrees ?? 0).toBeCloseTo(20, 4);
     expect(pose?.yawDegrees ?? 99).toBeCloseTo(0, 4);
     expect(pose?.pitchDegrees ?? 99).toBeCloseTo(0, 4);
+  });
+
+  /**
+   * Exact on a combined turn, since 2026-09-23. Roll used to be read off m4
+   * and m0, which is exact about one axis and not for the Rz(roll) Rx(pitch)
+   * Ry(yaw) decomposition the pitch and yaw reads imply: a head turned 15 and
+   * pitched minus 20 read a roll of 5.24 degrees that was never there, and
+   * the pose window is 15 wide on roll. atan2(-m1, m5) is exact for that
+   * product, so every axis of a combined turn reads back what built it.
+   */
+  it("reads a combined turn exactly, with no roll invented from yaw and pitch", () => {
+    const turnedAndDown = poseFromTransformationMatrix(
+      rotationRowMajorFor(15, -20, 0),
+    );
+    expect(turnedAndDown?.yawDegrees ?? 0).toBeCloseTo(15, 4);
+    expect(turnedAndDown?.pitchDegrees ?? 0).toBeCloseTo(-20, 4);
+    expect(turnedAndDown?.rollDegrees ?? 99).toBeCloseTo(0, 4);
+
+    for (const [yaw, pitch, roll] of [
+      [6, -5, 4],
+      [-12, 8, -9],
+      [25, -18, 14],
+    ] as const) {
+      const pose = poseFromTransformationMatrix(rotationRowMajorFor(yaw, pitch, roll));
+      expect(pose?.yawDegrees ?? 99).toBeCloseTo(yaw, 4);
+      expect(pose?.pitchDegrees ?? 99).toBeCloseTo(pitch, 4);
+      expect(pose?.rollDegrees ?? 99).toBeCloseTo(roll, 4);
+    }
   });
 });
 

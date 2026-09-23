@@ -1,25 +1,49 @@
 /**
- * The capture quality gate, as pure functions over grayscale image data.
+ * The capture quality gate, as pure functions over grayscale image data and a
+ * face reading.
  *
- * docs/01-user-flow.md section D: a frame is good enough to send when a face is
- * detected, roughly frontal, filling at least 60 percent of the frame height,
- * sharpness is above threshold (Laplacian variance), and exposure is in range
- * (no blown highlights on the forehead, no crushed shadows).
+ * docs/01-user-flow.md section D: a frame is good enough to send when the
+ * landmarker measured exactly one face, the face is wide enough in the frame
+ * and inside its edges, the head is roughly square to the lens, and the light
+ * over the face is in range (no blown highlights, no crushed shadows).
  *
  * Failing a check and being refused are different things. Only face detection
- * and the exposure extremes refuse a frame outright. Everything else is
- * borderline: the person is told what is wrong, Retake is the primary answer,
- * and "Use it anyway" is there under it. See assessCapture.
+ * (measured, and no face or more than one), the exposure extremes and a face
+ * far too small refuse a frame outright. Everything else is borderline: the
+ * person is told what is wrong, Retake is the primary answer, and "Use it
+ * anyway" is there under it. A frame the landmarker never measured is
+ * borderline too, with the reason unmeasured, because a gate that measured
+ * nothing has no grounds to refuse anything. See assessCapture.
  *
  * docs/03-architecture.md keeps the deterministic logic pure and shared so the
- * same code runs client side before upload and server side before a credit is
- * spent. Nothing in this file touches the DOM, a canvas, or a provider.
+ * same code can run client side before upload and server side before a credit
+ * is spent. Nothing in this file touches the DOM, a canvas, or a provider.
  *
- * Face detection itself is not here. The caller runs a detector and passes the
- * face count, the face box, and the head position in; this module decides what
- * to do with them.
+ * Face detection itself is not here. The caller runs the landmarker
+ * (src/lib/client/landmarks.ts) and passes the face count and the reading
+ * (src/lib/shared/face-reading.ts) in; this module decides what to do with
+ * them.
+ *
+ * The frame is the master frame contract of src/lib/shared/frame-geometry.ts:
+ * the width bands and the edge margins the gate applies are defined there.
+ * That module imports clampBox from this one, so the constants and functions
+ * it exports are read here only inside function bodies, never at module load,
+ * where the cycle would leave them uninitialised.
  */
 
+import {
+  evenness,
+  facePixelsIn,
+  meanLumaInside,
+  type Blink,
+  type FaceReading,
+} from "./face-reading";
+import {
+  FACE_WIDTH_REJECT_BELOW,
+  FRAME_OVAL_WIDTH,
+  ovalTouchesEdge,
+  type Point,
+} from "./frame-geometry";
 import type { FacePose } from "./pose";
 
 /**
@@ -70,13 +94,12 @@ export type Frame = {
  * makes "Good" and the verdict the same computation on the same face.
  *
  * 96, because both callers reach it by resampling down and neither ever has to
- * resample up. The gate measures the face box inside a 1024px capture, which is
- * 614px tall at the moment it clears FACE_COVERAGE_MIN. The guidance measures
- * the face box inside a preview sample sized in guidance.ts so that the same
- * face clears 96 there too. A face smaller than that on either side is a framing
- * problem, and too_far comes before blurry in CAPTURE_REASON_PRECEDENCE, so
- * sharpness is never the thing a person is told about a face too small to
- * measure it on.
+ * resample up: the gate measures the face oval inside a 1024px capture and the
+ * guidance measures it inside a preview sample sized so that a face wide
+ * enough to send clears 96 there too. A face smaller than that on either side
+ * is a framing problem, and too_far comes long before anything sharpness could
+ * say, so sharpness is never the thing a person is told about a face too small
+ * to measure it on.
  */
 export const SHARPNESS_MEASURE_LONG_EDGE = 96;
 
@@ -84,56 +107,17 @@ export const SHARPNESS_MEASURE_LONG_EDGE = 96;
  * What the normalized ratio is multiplied by before anybody compares it to a
  * threshold. Nothing but readability: it puts a typical face somewhere in the
  * tens rather than at 0.0x, so a logged value can be read at a glance.
+ *
+ * There is no sharpness threshold of any kind. Sharpness is measured, recorded
+ * in the metrics for calibration, and used only to rank the frames of a burst
+ * (frameScore). It refuses nothing and flags nothing: the engine publishes no
+ * blur code (docs/04-integrations.md), and the one threshold this file ever
+ * carried was set from synthetic stripes and called a sharp, deeply pigmented
+ * face blurry on a real phone (2026-09-03). The measurement itself is
+ * contrast normalized since 2026-09-07 (see sharpnessOf) so the recorded
+ * number is a focus measure rather than a contrast measure.
  */
 export const SHARPNESS_SCALE = 100;
-
-/**
- * Below this, at the measurement size above, a frame is borderline. There is no
- * reject threshold for sharpness. That is a decision, not an omission: see
- * assessCapture.
- *
- * RECALIBRATED 2026-09-07, when the measurement changed underneath it.
- *
- * What changed and why. Until this date sharpnessOf returned a bare Laplacian
- * variance, which is an absolute quantity of edge energy. Edge energy scales
- * with the contrast of whatever is being measured, so the number a face produced
- * was as much a reading of that face's contrast as of its focus. Two frames of
- * the same person at the same focus, one in flat window light and one in raking
- * light, read far apart. Worse, and this is the part that made it a product
- * failure rather than a rounding error: a deeply pigmented face in soft light
- * carries less local luminance contrast than a pale one under the same lamp, so
- * the measurement ran systematically low on exactly the skin tones this product
- * exists to serve, and told those people their perfectly sharp photograph was
- * blurry. docs/00-product.md calls tools that do this the problem the product is
- * answering, so shipping one inside the capture screen was not a defect we could
- * leave in place.
- *
- * sharpnessOf now divides that edge energy by the region's own intensity
- * variance. The ratio asks what share of the region's contrast sits at high
- * frequency, which is what focus actually is, and it is invariant to how much
- * contrast the face had to begin with. Blur still moves it, and moves it hard,
- * because defocus attenuates high frequencies far faster than it attenuates the
- * overall spread.
- *
- * What the change is worth, measured on the fixtures these suites already carry.
- * sharpMidtones (levels 60, 120, 180) and dimSharp (levels 30, 45, 60) are the
- * same pattern at the same focus, one of them dim and low contrast. Under the
- * old measurement they read far apart. Under this one they both read 3600.02,
- * which is the property the gate needed and did not have. A square wave of
- * period 8 reads 65.7 in focus, 41.8 under a 3 pixel box blur, 33.2 under 4, and
- * 19.8 under 6.
- *
- * The number below is set from those synthetic patterns rather than from
- * photographs, and it is therefore PROVISIONAL in the strongest sense: it is a
- * shape, not a measurement. It sits low on purpose. The cost of flagging a frame
- * that was fine is a person sent back to the camera for nothing, which is the
- * failure this whole change exists to remove, and the cost of missing a soft
- * frame is a couple of seconds against a provider gate that is free and reads
- * focus better than we do. Setting it from real faces is
- * docs/SUBMISSION-RUNBOOK.md C4, and nothing about it can refuse a frame in the
- * meantime.
- */
-export const SHARPNESS_BORDERLINE_BELOW = 20;
 
 /** A pixel at or above this luminance carries no detail. */
 export const BLOWN_LUMINANCE_AT_OR_ABOVE = 250;
@@ -151,46 +135,46 @@ export const CRUSHED_FRACTION_REJECT_ABOVE = 0.35;
 export const CRUSHED_FRACTION_BORDERLINE_ABOVE = 0.2;
 
 /**
- * Mean luminance catches the frame that is uniformly too dark or too bright
- * without any single pixel being clipped, which is what a phone camera produces
- * indoors at night or against a window.
- * PROVISIONAL, same calibration note as the sharpness thresholds.
+ * The light over the face, on a 0 to 1 scale, measured as the mean luma inside
+ * the face oval polygon (meanLumaInside in src/lib/shared/face-reading.ts), or
+ * over the whole frame when there is no face to measure it on.
+ *
+ * This is the region and the scale the engine's own capture SDK measures face
+ * brightness in (docs/04-integrations.md, the Camera Kit rows: lighting 0.55
+ * to 0.80 RELAXED), so a window behind the person cannot mark the face as lit
+ * and a dark wall cannot mark it as dark. The bands below are today's mean
+ * luminance bands (40, 60, 205 and 225 of 255) mapped onto that scale and
+ * nothing else: the numbers keep their values until the calibration report
+ * (npm run calibration:report) shows the engine refusing on the other side of
+ * one. CAMERA_KIT_RELAXED_LUMA_LOW and HIGH are recorded beside them for that
+ * comparison and are applied nowhere.
  */
-export const MEAN_LUMINANCE_REJECT_BELOW = 40;
-export const MEAN_LUMINANCE_BORDERLINE_BELOW = 60;
-export const MEAN_LUMINANCE_REJECT_ABOVE = 225;
-export const MEAN_LUMINANCE_BORDERLINE_ABOVE = 205;
+export const FACE_LUMA_REJECT_BELOW = 40 / 255;
+export const FACE_LUMA_BORDERLINE_BELOW = 60 / 255;
+export const FACE_LUMA_BORDERLINE_ABOVE = 205 / 255;
+export const FACE_LUMA_REJECT_ABOVE = 225 / 255;
+
+/** Camera Kit's RELAXED lighting band, for the calibration report only. */
+export const CAMERA_KIT_RELAXED_LUMA_LOW = 0.55;
+export const CAMERA_KIT_RELAXED_LUMA_HIGH = 0.8;
 
 /**
- * The face must fill at least 60 percent of the frame height.
- * docs/01-user-flow.md section D, quality gate after capture.
+ * How unevenly the face may be lit, as the luma difference between the two
+ * eyes on the same 0 to 1 scale (evenness in face-reading.ts). Camera Kit's
+ * RELAXED lighting_uneven. RECORDED in the metrics and not applied to the
+ * verdict in this build: the capture-thresholds-engine-terms PR applies it
+ * once the calibration report has rows to set it from.
  */
-export const FACE_COVERAGE_MIN = 0.6;
-/**
- * Below the rule but close to it. The person is offered "Use it anyway".
- * Below FACE_COVERAGE_BORDERLINE_MIN the frame is rejected outright, because a
- * small face wastes a Perfect Corp credit.
- */
-export const FACE_COVERAGE_BORDERLINE_MIN = 0.52;
+export const FACE_LUMA_UNEVEN_BORDERLINE_ABOVE = 0.2;
 
 /**
- * Below this share of the frame height a face is refused as too small, and this
- * is the only thing the height rule still refuses on.
- *
- * Why so low, and why the two constants above no longer decide anything. Both
- * were calibrated against the skin colour box, which covered the forehead, the
- * hair and usually the neck: a head, roughly. MediaPipe reports a face,
- * eyebrows to chin, which is about two thirds of that. Read against the old
- * numbers, every well framed face now measured as too far. The rule the engine
- * applies is about width (FACE_WIDTH_RATIO_MIN), the crop is built to satisfy
- * it, and what remains for height is the case no crop can save: a face a few
- * hundred pixels tall at sensor size, which the crop would have to upscale into
- * a soft frame the engine refuses for free anyway.
- *
- * 0.25 of a 1920 pixel sensor frame is 480 pixels of face, and a crop of that
- * lands right at CAPTURE_MIN_SHORT_EDGE. PROVISIONAL like every threshold here.
+ * An eyeBlink blendshape at or above this reads as a closed eye. The blendshape
+ * midpoint; no published threshold exists. RECORDED in the metrics and not
+ * applied to the verdict in this build: the capture-thresholds-engine-terms PR
+ * applies it, with the burst extension that retakes a blink, once the report
+ * has rows for it.
  */
-export const FACE_COVERAGE_REJECT_BELOW = 0.25;
+export const EYES_CLOSED_AT_OR_ABOVE = 0.5;
 
 // ---------------------------------------------------------------------------
 // The provider's own rule, in the provider's own terms
@@ -210,28 +194,26 @@ export const FACE_COVERAGE_REJECT_BELOW = 0.25;
  * horizontal ratio." So it is the face's width against the image's SHORT axis,
  * and for the portrait frames this app sends, the short axis is the width.
  *
- * Why this is not the same check as FACE_COVERAGE_MIN, and why both now exist.
- * Ours measured face height against frame height. A face is roughly three
- * quarters as wide as it is tall, so a face sitting exactly on our 60 percent
- * height rule inside a 768 by 1024 frame is about 460 pixels wide, which is
- * 0.599 of the width. Our gate passed at precisely the value the engine refuses
- * at. Every frame that cleared our rule by a hair failed theirs, and the face box
- * that decided it came from an estimator that runs down the neck and reports
- * boxes larger than the face, so the error only ever pointed one way.
+ * Since 2026-09-23 the width is cheek to cheek across the landmarker's face
+ * oval over the frame width (FaceReading.widthRatio in
+ * src/lib/shared/face-reading.ts), which is narrower than any detector's box,
+ * so a frame that clears this number clears the engine's by construction. The
+ * old height rule is gone with the box it was written against.
  *
  * The band, not just the floor. The same page asks for "approximately 60 to 80
  * percent of image width", and error_face_position_out_of_boundary is waiting
  * above it for a face that runs off the edge, so this is a window and the gate
  * checks both sides of it.
  *
- * Why nothing here ever refuses a frame, only flags one. A face that is small in
- * the picture is the one framing failure this codebase can fix without asking
- * the person for anything: autoCropBoxFor composes the frame around the face,
- * and it already targets this same ratio (see the width cap in that function).
- * Refusing a photograph we could simply recompose would be choosing to send
- * somebody back to the camera in order to avoid a canvas operation. The height
- * rule above still refuses a face far too small to crop usefully, which is the
- * case where there is genuinely nothing to compose from.
+ * Under this the frame is flagged, not refused: a face that is small in the
+ * picture is a framing failure the composition step can still fix. Under
+ * FACE_WIDTH_REJECT_BELOW (frame-geometry.ts, the Camera Kit RELAXED floor)
+ * it is refused, because a face that small at sensor size is one no crop
+ * rescues without upscaling into a frame the engine refuses anyway.
+ *
+ * Equal to FACE_WIDTH_ENGINE_MIN in frame-geometry.ts, and held equal by a
+ * test rather than by an import, because that module imports this one and a
+ * value read across the cycle at module load would be undefined.
  */
 export const FACE_WIDTH_RATIO_MIN = 0.6;
 
@@ -271,11 +253,11 @@ export const POSE_PITCH_MIN_DEGREES = -20;
  * How far past the window a frame can sit and still be offered rather than
  * refused, and why there is any slack at all.
  *
- * Two reasons, both about the estimate rather than the pose. The landmark
- * estimator in pose.ts is a heuristic with provisional scales on it, and even
- * the accurate path is solving for a head position off a single photograph. And
- * the strictness level the engine is called with is looser than this window, so
- * a frame a little outside it is one the engine may well still read.
+ * Two reasons, both about the estimate rather than the pose. A solved matrix
+ * is still a head position solved off a single photograph, with the noise a
+ * handheld phone puts into it. And the strictness level the engine is called
+ * with is looser than this window, so a frame a little outside it is one the
+ * engine may well still read.
  *
  * So the window is where the line goes green, the window plus this slack is
  * where the frame is offered with "Use it anyway", and past that is where the
@@ -493,9 +475,10 @@ export type ExposureStats = {
 /**
  * Blown highlight and crushed shadow fractions plus the mean.
  *
- * docs/01-user-flow.md names the forehead for highlights. Until face landmarks
- * are wired, assessCapture measures over the face box, which is the closest
- * region we have. Pass a forehead box here once landmarks land.
+ * assessCapture measures these over the face oval's bounding box when there
+ * is a reading and over the whole frame when there is not. The mean here is
+ * over the box; the gate's own light measurement is the mean luma inside the
+ * oval polygon (meanLumaInside), which is the region the engine's SDK reads.
  */
 export function exposureStats(image: GrayscaleImage): ExposureStats {
   assertImage(image);
@@ -525,36 +508,18 @@ export function exposureStats(image: GrayscaleImage): ExposureStats {
   };
 }
 
-export type FaceCoverage = {
-  /** Face box height divided by frame height, 0 to 1. */
-  readonly coverage: number;
-  /** True when coverage meets the 60 percent rule. */
-  readonly meetsMinimum: boolean;
-  /** True when coverage is under the rule but close enough to offer anyway. */
-  readonly isBorderline: boolean;
-};
-
-/**
- * The 60 percent height rule from docs/01-user-flow.md section D.
- * Height only: a frontal face is taller than it is wide, and width varies with
- * hair and head turn, so height is the stable measure.
- */
-export function faceCoverageCheck(faceBox: Box, frame: Frame): FaceCoverage {
-  if (frame.height <= 0) {
-    throw new Error("Frame height must be positive.");
-  }
-  const coverage = faceBox.height / frame.height;
-  return {
-    coverage,
-    meetsMinimum: coverage >= FACE_COVERAGE_MIN,
-    isBorderline:
-      coverage < FACE_COVERAGE_MIN && coverage >= FACE_COVERAGE_BORDERLINE_MIN,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Auto framing
 // ---------------------------------------------------------------------------
+
+/*
+ * Kept for one more build. The capture-master-frame PR replaces this whole
+ * section with masterCropFor in src/lib/shared/frame-geometry.ts, which
+ * composes to the master frame's own geometry. Until then the upload path
+ * feeds it the landmarker's face oval box scaled to pixels, in place of the
+ * detector box it was written against, so the head room it keeps above the
+ * box is generous rather than wrong.
+ */
 
 /**
  * The share of the crop height the face is framed to fill.
@@ -562,21 +527,18 @@ export function faceCoverageCheck(faceBox: Box, frame: Frame): FaceCoverage {
  * 62 percent, which is the oval on the camera screen: it is drawn at h-[62%] of
  * the stage in src/components/capture/CaptureScreen.tsx, and a person who fills
  * it lands a frame the analyzers read. The upload path has no oval to aim at, so
- * this is the number it composes to instead. It sits above FACE_COVERAGE_MIN
- * with room to spare, so a crop that comes out a little loose still clears the
- * rule rather than landing on the line.
+ * this is the number it composes to instead.
  */
 export const AUTO_CROP_FACE_COVERAGE = 0.62;
 
 /**
  * The crop never comes closer to the detected box than this share of it.
  *
- * The face box is approximate. The browser detector returns the face without the
- * hair, and the skin region heuristic in src/lib/client/face.ts returns whatever
- * lit skin happened to connect, which can miss the crown and can spill down the
- * neck. Both are wrong in ways a generous margin covers and a tight crop does
- * not, and a crop that cuts the top off the head buys a worse refusal than the
- * one it was trying to avoid.
+ * The face box is approximate. A detector box stops at the eyebrows, the
+ * landmarker's oval box stops at the hairline, and neither carries the hair.
+ * A generous margin covers that and a tight crop does not, and a crop that
+ * cuts the top off the head buys a worse refusal than the one it was trying
+ * to avoid.
  */
 export const AUTO_CROP_MIN_FACE_MARGIN = 0.4;
 
@@ -657,9 +619,10 @@ export type AutoCropInput = {
  *
  * The rule, in order:
  *
- * 1. No face box, or a face that already meets FACE_COVERAGE_MIN: null. Nothing
- *    is recomposed on a photo that was framed well enough, and a photo with no
- *    face is not a framing problem, it is a refusal the person has to hear.
+ * 1. No face box, or a face already at FACE_WIDTH_RATIO_MIN of the width: null.
+ *    Nothing is recomposed on a photo that was framed well enough, and a photo
+ *    with no face is not a framing problem, it is a refusal the person has to
+ *    hear.
  * 2. Height is the face height divided by AUTO_CROP_FACE_COVERAGE, which is what
  *    puts the face at 62 percent of the result. That is 1.61 times the face box,
  *    so the margin floor is already cleared with room above the crown.
@@ -671,8 +634,7 @@ export type AutoCropInput = {
  *    - never so wide that the face stops filling the width, which is the
  *      framing the engine itself asks for: the facialColorTones constraints in
  *      endpoints.ts say "face width greater than 60 percent of image width", so
- *      the width is capped at the face width over the same 62 percent the
- *      height uses, and the crop satisfies both readings of the rule;
+ *      the width is capped at the face width over AUTO_CROP_FACE_WIDTH_TARGET;
  *    - never wider than the crop is tall. The square is the limit because a
  *      skin region that ran into bare shoulders is wide, and letting it widen
  *      the crop without bound would push the face back under the rule the crop
@@ -769,10 +731,10 @@ export function autoCropBoxFor(input: AutoCropInput): Box | null {
        * Never landscape, whatever the box says. The provider states that "the
        * use of a portrait aspect ratio is strongly recommended over landscape",
        * and a box wider than it is tall is a detection this app should not be
-       * reshaping the picture around: it is the colour threshold fallback
-       * reporting a neck and two shoulders. Capping the width at the height
-       * keeps the frame the shape a face belongs in and trims shoulder rather
-       * than face.
+       * reshaping the picture around (the colour threshold this was written
+       * against reported a neck and two shoulders as one). Capping the width
+       * at the height keeps the frame the shape a face belongs in and trims
+       * shoulder rather than face.
        */
       Math.min(faceBox.width / AUTO_CROP_FACE_WIDTH_TARGET, height),
       frame.width,
@@ -846,13 +808,18 @@ export function autoCropBoxFor(input: AutoCropInput): Box | null {
  * when a frame fails more than one check. The array is both the value set and
  * the precedence, so the two can never disagree.
  *
- * Face first: without one face and its box, no other measurement means
- * anything. Light next: a badly lit frame also measures as unsharp and often as
- * badly framed, so leading with sharpness would send the person to fix the
- * wrong thing. Framing next, because it is one clear instruction. Sharpness
- * last, because it is the measurement most degraded by the other two.
+ * Unmeasured first: a frame the landmarker never looked at has nothing else to
+ * say about a face. Face next: without one face and its reading, no other
+ * measurement means anything. Light next: a badly lit frame also measures as
+ * badly framed, so leading with framing would send the person to fix the wrong
+ * thing. Framing next, because it is one clear instruction, with out of bounds
+ * ahead of the distance lines since a face at the edge is answered by moving
+ * back, not closer. Pose, then the eyes, last, because they are the
+ * measurements most degraded by everything before them. There is no sharpness
+ * reason: softness never decides.
  */
 export const CAPTURE_REASON_PRECEDENCE = [
+  "unmeasured",
   "no_face",
   "multiple_faces",
   "too_dark",
@@ -861,7 +828,7 @@ export const CAPTURE_REASON_PRECEDENCE = [
   "too_far",
   "too_close",
   "facing_away",
-  "blurry",
+  "eyes_closed",
 ] as const;
 
 /**
@@ -879,20 +846,36 @@ export type CaptureFailure = {
   readonly severity: "reject" | "borderline";
 };
 
+/**
+ * Everything the gate measured, recorded whatever the verdict. These are the
+ * calibration numbers captures.quality keeps (docs/03-architecture.md), so a
+ * threshold can be checked against what the engine then did with the frame.
+ * Numbers only: never a pixel, never a landmark.
+ */
 export type CaptureMetrics = {
   readonly sharpness: number;
   readonly blownFraction: number;
   readonly crushedFraction: number;
-  readonly meanLuminance: number;
-  /** Null when there is no face box to measure. */
-  readonly faceCoverage: number | null;
   /**
-   * Face width over the frame's short axis, which is the ratio the engine
-   * measures (FACE_WIDTH_RATIO_MIN). Null when there is no face box.
+   * Mean luma inside the face oval, 0 to 1, or over the whole frame when there
+   * is no face to measure it on.
+   */
+  readonly faceLuma: number;
+  /** The luma difference between the two eyes, 0 to 1. Null without a face. */
+  readonly faceLumaUneven: number | null;
+  /**
+   * Cheek to cheek over the frame width, which is the ratio the engine measures
+   * (FACE_WIDTH_RATIO_MIN). Null when there is no face.
    */
   readonly faceWidthRatio: number | null;
-  /** Null when the detector could not solve for a head position. */
+  /** The face oval's bounding box width over the frame width, 0 to 1. */
+  readonly faceBboxRatio: number | null;
+  /** Where the middle of the face oval sits, both axes 0 to 1. */
+  readonly faceCenter: Point | null;
+  /** Solved from the landmarker's matrix, or null. */
   readonly pose: FacePose | null;
+  /** The eye blink blendshapes, 0 open to 1 closed, or null. */
+  readonly blink: Blink | null;
 };
 
 export type CaptureAssessment = {
@@ -911,42 +894,31 @@ export type CaptureAssessment = {
 
 export type CaptureAssessmentInput = {
   readonly image: GrayscaleImage;
-  /** How many faces the detector found. */
+  /** How many faces the landmarker found. Zero when it did not run. */
   readonly faceCount: number;
-  /** The face box in image pixels, or null when there is no usable face. */
-  readonly faceBox: Box | null;
   /**
-   * The head position, when the detector could solve for one.
-   *
-   * Optional, and absent is not the same as square to the lens: a frame with no
-   * pose is simply not judged on pose, which is what every frame did before
-   * 2026-09-07. A detector that reports one gets the pose checks; one that does
-   * not is no worse off than it was.
+   * The reading of the face to judge (the largest, when there is more than
+   * one), normalized to the frame the landmarker saw, or null when there is no
+   * face. Its polygon and boxes are put onto the image's pixels here.
    */
-  readonly pose?: FacePose | null;
+  readonly reading: FaceReading | null;
   /**
-   * Whether the face count and box came from something that can actually see a
-   * face. Defaults to true, so a caller that does not say keeps the old
-   * behaviour.
+   * True when the landmarker answered for this frame. False when it had not
+   * loaded, or threw, and nothing measured the frame at all.
    *
-   * False means the numbers came from the YCbCr colour threshold in
-   * src/lib/client/face.ts, which is what answers when the detector has not
-   * loaded. That estimator does not find faces; it finds skin coloured blobs. It
-   * misses deep skin under warm light entirely, it merges a face with a wooden
-   * wall behind it, and it reads a bare arm as a second person.
-   *
-   * A guess that wrong is not grounds for refusing to send somebody's
-   * photograph. When it is the only source available, the frame is offered
-   * instead of refused, and the decision is left to the engine's own input gate,
-   * which is free, authoritative, and refuses for nothing when it says no. This
-   * is the same reasoning that already keeps sharpness from refusing a frame.
+   * A frame is measured or unmeasured; nothing in between. An unmeasured frame
+   * is never refused: the gate has no face count to refuse on, and the
+   * engine's own input gate is free, authoritative, and refuses for nothing
+   * when it says no. So the frame is offered with the reason unmeasured and the
+   * decision is left to the engine (docs/03-architecture.md, failure modes).
    */
-  readonly faceEstimateTrusted?: boolean;
+  readonly measured: boolean;
 };
 
 /**
- * Face width over the frame's short axis, which is the ratio the engine gates
- * on. See FACE_WIDTH_RATIO_MIN for why this is not faceCoverageCheck.
+ * Face width over the frame's short axis, for the composition step that still
+ * works from a box (autoCropBoxFor). The gate itself reads the landmarker's
+ * cheek to cheek width (FaceReading.widthRatio).
  */
 export function faceWidthRatio(faceBox: Box, frame: Frame): number {
   const shortAxis = Math.min(frame.width, frame.height);
@@ -1000,131 +972,122 @@ export function poseVerdictFor(pose: FacePose | null | undefined): PoseVerdict {
   return excess <= POSE_SLACK_DEGREES ? "borderline" : "reject";
 }
 
+/** 0 to 1, with anything unmeasurable left as the NaN it arrived as. */
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
 /**
  * Runs the whole gate and returns accept, borderline, or reject with the reason
  * key that names a line in copy.capture.rejection.
  *
- * Sharpness and exposure are measured over the face box when there is one, so a
- * bright window behind the person cannot mark the frame as blown and a busy
- * background cannot mask a soft face. With no face box, the whole frame is
- * measured and the verdict is a reject anyway.
+ * Light is measured inside the face oval when there is a reading, so a bright
+ * window behind the person cannot mark the frame as blown and a dark wall
+ * cannot mark it as dark. Sharpness is measured over the oval's box for the
+ * same reason. With no reading, the whole frame is measured.
  *
  * What can reach "reject", and nothing else can:
  *
- * - no_face and multiple_faces, per docs/01 section D. Without exactly one face
- *   there is no reading to be had, and picking a face out of a group is not a
- *   decision this screen makes.
+ * - no_face and multiple_faces, when the landmarker measured the frame. Without
+ *   exactly one face there is no reading to be had, and picking a face out of
+ *   a group is not a decision this screen makes. An unmeasured frame is not
+ *   refused on either: see CaptureAssessmentInput.measured.
  * - too_dark and over_exposed at the extremes: crushed or blown past the reject
- *   fractions, or a mean luminance outside the reject bounds. Nothing can be
- *   read off a black or a white frame, so sending one spends a credit on a
- *   refusal.
- * - too_far below FACE_COVERAGE_BORDERLINE_MIN, where the engine's own
- *   error_src_face_too_small is waiting.
+ *   fractions, or a face luma outside the reject bands. Nothing can be read off
+ *   a black or a white face, so sending one spends a credit on a refusal.
+ * - too_far below FACE_WIDTH_REJECT_BELOW, where the engine's own
+ *   error_src_face_too_small is certain.
  *
- * Sharpness is deliberately not on that list at any value.
+ * Sharpness is deliberately not on that list at any value, and neither is a
+ * blink or uneven light in this build: both are recorded in the metrics for
+ * the calibration report and applied by the capture-thresholds-engine-terms
+ * PR, which moves every band here into the engine's accept and borderline
+ * tiers once the report has rows to set them from.
  */
 export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment {
-  const { image, faceCount, faceBox } = input;
-  const pose = input.pose ?? null;
+  const { image, faceCount, measured } = input;
   assertImage(image);
 
   const failures: CaptureFailure[] = [];
 
   /*
-   * A face claim is only strong enough to refuse a photograph when it came from
-   * something that can see faces. See faceEstimateTrusted above: when the
-   * detector has not loaded, these two numbers are a colour threshold's opinion,
-   * and the engine's own gate is both better at the question and free to ask.
-   *
-   * multiple_faces is downgraded along with no_face, deliberately, even though
-   * docs/06-safety-privacy.md asks for a frame with two faces to be refused. The
-   * rule is kept, it is just enforced by the party that can actually count: every
-   * face endpoint this app calls is single face only and answers
-   * error_multiple_people, which src/lib/shared/analysis-failure.ts classifies and
-   * turns back into the same sentence this screen would have shown. What is given
-   * up is refusing a bare arm; what is bought is not refusing a person.
+   * A reading is only read when it is the landmarker's. The caller never hands
+   * one in for an unmeasured frame, and if it did, the numbers would not be
+   * this frame's, so they are dropped here rather than trusted.
    */
-  const trusted = input.faceEstimateTrusted ?? true;
-  const faceSeverity: CaptureFailure["severity"] = trusted
-    ? "reject"
-    : "borderline";
-  const hasSingleFace = faceCount === 1 && faceBox !== null;
-  if (faceCount > 1) {
-    failures.push({ reason: "multiple_faces", severity: faceSeverity });
+  const reading = measured ? input.reading : null;
+  const hasSingleFace = faceCount === 1 && reading !== null;
+
+  if (!measured) {
+    failures.push({ reason: "unmeasured", severity: "borderline" });
+  } else if (faceCount > 1) {
+    failures.push({ reason: "multiple_faces", severity: "reject" });
   } else if (!hasSingleFace) {
-    failures.push({ reason: "no_face", severity: faceSeverity });
+    failures.push({ reason: "no_face", severity: "reject" });
   }
 
-  const measured =
-    faceBox !== null && clampBox(faceBox, image) !== null
-      ? cropToBox(image, faceBox)
-      : image;
+  const pixels = reading === null ? null : facePixelsIn(reading, image);
+  const ovalBox =
+    pixels !== null && clampBox(pixels.ovalBox, image) !== null
+      ? pixels.ovalBox
+      : null;
 
-  const exposure = exposureStats(measured);
+  const exposure = exposureStats(
+    ovalBox === null ? image : cropToBox(image, ovalBox),
+  );
   /*
-   * The face box rather than the cropped copy, because sharpnessOf does its own
+   * The oval box rather than the cropped copy, because sharpnessOf does its own
    * cropping and then its own resampling, and the resampling is the whole point:
    * it is what makes this number the same number the live guidance line got off
    * a preview sample of the same face.
    */
-  const sharpness = sharpnessOf(image, faceBox);
-  const coverage =
-    faceBox !== null ? faceCoverageCheck(faceBox, image) : null;
+  const sharpness = sharpnessOf(image, ovalBox);
+  const faceLuma =
+    pixels === null
+      ? meanLumaOf(image)
+      : meanLumaInside(image, pixels.ovalPolygon);
+  const faceLumaUneven =
+    pixels === null
+      ? null
+      : evenness(image, pixels.eyeBoxes.left, pixels.eyeBoxes.right);
 
   if (
     exposure.crushedFraction > CRUSHED_FRACTION_REJECT_ABOVE ||
-    exposure.meanLuminance < MEAN_LUMINANCE_REJECT_BELOW
+    faceLuma < FACE_LUMA_REJECT_BELOW
   ) {
     failures.push({ reason: "too_dark", severity: "reject" });
   } else if (
     exposure.crushedFraction > CRUSHED_FRACTION_BORDERLINE_ABOVE ||
-    exposure.meanLuminance < MEAN_LUMINANCE_BORDERLINE_BELOW
+    faceLuma < FACE_LUMA_BORDERLINE_BELOW
   ) {
     failures.push({ reason: "too_dark", severity: "borderline" });
   }
 
   if (
     exposure.blownFraction > BLOWN_FRACTION_REJECT_ABOVE ||
-    exposure.meanLuminance > MEAN_LUMINANCE_REJECT_ABOVE
+    faceLuma > FACE_LUMA_REJECT_ABOVE
   ) {
     failures.push({ reason: "over_exposed", severity: "reject" });
   } else if (
     exposure.blownFraction > BLOWN_FRACTION_BORDERLINE_ABOVE ||
-    exposure.meanLuminance > MEAN_LUMINANCE_BORDERLINE_ABOVE
+    faceLuma > FACE_LUMA_BORDERLINE_ABOVE
   ) {
     failures.push({ reason: "over_exposed", severity: "borderline" });
   }
 
   /*
-   * Height decides only the hopeless case. Until 2026-09-14 a face under
-   * FACE_COVERAGE_MIN of the frame height was flagged too_far here, and that
-   * contradicted the composition step feeding this gate: autoCropBoxFor builds
-   * the crop from the WIDTH the engine measures, so a face box that is nearly
-   * square (which is what a detector reports for a face without its hair) comes
-   * out of the crop at 0.66 of the width and about 0.58 of the height. The
-   * engine would take that frame. This gate told the person to move closer.
-   *
-   * So the height rule is reduced to what it is actually good for: a face so
-   * small that no crop can rescue it, where the crop would be upscaling a few
-   * hundred pixels into a soft frame the engine refuses anyway. Everything
-   * between that and the width rule below is the composition's job.
+   * The engine's own framing rule, in the engine's own terms: cheek to cheek
+   * over the frame width. Under the RELAXED floor the frame is refused, because
+   * no composition rescues a face that small without upscaling into a frame the
+   * engine refuses anyway. Between the floor and the engine's 0.60 it is
+   * offered: the composition step can still close that gap. Above the top of
+   * the band the face is starting to leave the picture.
    */
-  if (coverage !== null && coverage.coverage < FACE_COVERAGE_REJECT_BELOW) {
-    failures.push({ reason: "too_far", severity: "reject" });
-  }
-
-  /*
-   * The engine's own framing rule, checked in the engine's own terms. This is
-   * the rule that decides too_far, because it is the rule the reading is
-   * refused for, and the height rule above is now only the floor under it.
-   * The two used to sit side by side and could disagree, and they did: the
-   * different statements about the same photograph and the person is served by
-   * both: the height rule is what the oval on the camera screen is drawn to, and
-   * this one is what the reading will actually be refused for.
-   */
-  const widthRatio = faceBox !== null ? faceWidthRatio(faceBox, image) : null;
+  const widthRatio = reading === null ? null : reading.widthRatio;
   if (widthRatio !== null) {
-    if (widthRatio < FACE_WIDTH_RATIO_MIN) {
+    if (widthRatio < FACE_WIDTH_REJECT_BELOW) {
+      failures.push({ reason: "too_far", severity: "reject" });
+    } else if (widthRatio < FACE_WIDTH_RATIO_MIN) {
       failures.push({ reason: "too_far", severity: "borderline" });
     } else if (widthRatio > FACE_WIDTH_RATIO_MAX) {
       failures.push({ reason: "too_close", severity: "borderline" });
@@ -1132,16 +1095,17 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
   }
 
   /*
-   * A face already touching the edge of the picture is the one framing failure
-   * the reframe path cannot answer, because that path only ever crops tighter.
-   * Saying so here, before the upload, is the difference between one instruction
-   * and two wasted attempts (isReframeableFailure in
-   * src/lib/shared/analysis-failure.ts).
+   * A face oval within the frame's edge margins, which is what
+   * error_face_position_out_of_boundary names, asked before the upload. The
+   * reframe path only ever crops tighter, so this is the one framing failure
+   * it cannot answer, and saying so here is the difference between one
+   * instruction and two wasted attempts.
    */
-  if (faceBox !== null && faceIsClipped(faceBox, image)) {
+  if (reading !== null && ovalTouchesEdge(reading.ovalBox, { width: 1, height: 1 })) {
     failures.push({ reason: "face_out_of_bounds", severity: "borderline" });
   }
 
+  const pose = reading === null ? null : reading.pose;
   const poseVerdict = poseVerdictFor(pose);
   if (poseVerdict !== "ok") {
     failures.push({
@@ -1151,36 +1115,35 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
   }
 
   /*
-   * Sharpness is measured and recorded and decides nothing here, since
-   * 2026-09-14.
-   *
-   * It was a borderline before that: never a refusal, but a review screen with
-   * "A little blurry" on it and Retake as the primary answer, which in practice
-   * is a wall, because a person who has just been told their photo is blurry
-   * takes it again rather than pressing the smaller button under it. And the
-   * number that put them there was a threshold set from synthetic stripes and
-   * checkerboards, never from a face. A face is mostly smooth skin; measured at
-   * 96 pixels its high frequency share is small whatever the focus, and there
-   * was every chance that a sharp face read under the line. The S26 Ultra loop
-   * of 2026-09-03 was this measurement with different numbers.
-   *
-   * What replaced it is better on every axis. The shutter takes a burst and
-   * frameScore sends the sharpest frame of it (pickBestFrame), so softness is
-   * handled by choosing rather than by refusing. The engine publishes no blur
-   * code at all, so it is not something a reading is refused for. And the
-   * number still lands in captures.quality, where it can be calibrated against
-   * what the engine actually did with the frame before anybody asks it to
-   * decide anything again.
+   * Recorded, not applied. The blink blendshapes and the eye luma difference
+   * land in the metrics for every frame so the calibration report can put
+   * EYES_CLOSED_AT_OR_ABOVE and FACE_LUMA_UNEVEN_BORDERLINE_ABOVE beside what
+   * the engine did. The capture-thresholds-engine-terms PR applies both, as
+   * borderline, once those rows exist. Sharpness is recorded on the same terms
+   * and decides nothing in any build: the engine publishes no blur code, and the
+   * burst sends the sharpest frame of the tap (frameScore), so softness is
+   * handled by choosing rather than by refusing.
    */
 
   const metrics: CaptureMetrics = {
     sharpness,
     blownFraction: exposure.blownFraction,
     crushedFraction: exposure.crushedFraction,
-    meanLuminance: exposure.meanLuminance,
-    faceCoverage: coverage === null ? null : coverage.coverage,
+    faceLuma,
+    faceLumaUneven,
     faceWidthRatio: widthRatio,
+    /*
+     * Both clamped to the frame: a face oval partly outside the picture has
+     * landmarks beyond it, and a stored share of the frame is meant to be one.
+     * The out of bounds flag above is what records that the face left it.
+     */
+    faceBboxRatio: reading === null ? null : clampUnit(reading.bboxRatio),
+    faceCenter:
+      reading === null
+        ? null
+        : { x: clampUnit(reading.center.x), y: clampUnit(reading.center.y) },
     pose,
+    blink: reading === null ? null : reading.blink,
   };
 
   const rejection = firstByPrecedence(failures, "reject");
@@ -1214,6 +1177,19 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
   };
 }
 
+/** The mean of the whole frame, 0 to 1, for a frame with no face to read. */
+function meanLumaOf(image: GrayscaleImage): number {
+  const { data } = image;
+  if (data.length === 0) {
+    return 0;
+  }
+  let sum = 0;
+  for (let index = 0; index < data.length; index += 1) {
+    sum += data[index] ?? 0;
+  }
+  return sum / data.length / 255;
+}
+
 // ---------------------------------------------------------------------------
 // Choosing between frames
 // ---------------------------------------------------------------------------
@@ -1226,18 +1202,18 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
 const FRAME_SCORE_WIDTH_SPAN = (FACE_WIDTH_RATIO_MAX - FACE_WIDTH_RATIO_MIN) / 2;
 
 /**
- * The middle of the band of mean luminance the gate is willing to send, which is
- * halfway between the two borderline lines. Not the middle of 0 to 255: a frame
- * at 128 is not preferable to one at 130 for any reason except that both are
+ * The middle of the band of face luma the gate is willing to send, which is
+ * halfway between the two borderline lines. Not the middle of 0 to 1: a frame
+ * at 0.50 is not preferable to one at 0.52 for any reason except that both are
  * comfortably inside what an analyzer can read, and this is where that band
  * actually sits.
  */
-export const FRAME_SCORE_LUMINANCE_TARGET =
-  (MEAN_LUMINANCE_BORDERLINE_BELOW + MEAN_LUMINANCE_BORDERLINE_ABOVE) / 2;
+export const FRAME_SCORE_LUMA_TARGET =
+  (FACE_LUMA_BORDERLINE_BELOW + FACE_LUMA_BORDERLINE_ABOVE) / 2;
 
 /** Half that band, so an edge of it is roughly a full unit of badness. */
-const FRAME_SCORE_LUMINANCE_SPAN =
-  (MEAN_LUMINANCE_BORDERLINE_ABOVE - MEAN_LUMINANCE_BORDERLINE_BELOW) / 2;
+const FRAME_SCORE_LUMA_SPAN =
+  (FACE_LUMA_BORDERLINE_ABOVE - FACE_LUMA_BORDERLINE_BELOW) / 2;
 
 /**
  * Pose, the heaviest term, because pose is what the engine actually refuses on.
@@ -1256,26 +1232,41 @@ const FRAME_SCORE_LUMINANCE_SPAN =
 export const FRAME_SCORE_POSE_WEIGHT = 8;
 
 /**
- * Framing next, at half of pose. Face width over the frame's short axis is the
+ * Framing next, at half of pose. Cheek to cheek over the frame width is the
  * engine's other published input rule (FACE_WIDTH_RATIO_MIN), so it can refuse
- * on it too, but it is weighted lower for a reason: autoCropBoxFor has already
- * composed every frame in a burst to AUTO_CROP_FACE_WIDTH_TARGET, so what is
- * left to rank here is the detector disagreeing with itself between frames
- * rather than a framing anybody needs to fix.
+ * on it too, but between frames taken 90ms apart what is left to rank is the
+ * landmarker disagreeing with itself rather than a framing anybody needs to
+ * fix. The target is the oval's own width (FRAME_OVAL_WIDTH in
+ * frame-geometry.ts), read inside frameScore rather than here because of the
+ * import cycle that module's header explains.
  *
  * PROVISIONAL.
  */
 export const FRAME_SCORE_WIDTH_WEIGHT = 4;
 
 /**
- * Light next, at half of framing. The extremes already refuse a frame outright,
- * so this term only ever separates frames the gate was willing to send: between
- * two of those it prefers the one nearer the middle of the band, which is the
- * one an analyzer has the most tone signal in.
+ * The eyes next, between framing and light. A blink is 100 to 400 ms, a burst
+ * spans 360, so one frame of a burst with the eyes shut and another with them
+ * open is the ordinary case, and the engine asks for the eyes open ("front
+ * facing, neutral, mouth closed, eyes open" on the skin family). Between two
+ * frames the gate was willing to send, the one whose eyes are open is worth
+ * more than the one a little better lit and less than the one squarer to the
+ * lens. Measured as the larger of the two blink blendshapes, which is already
+ * 0 to 1.
  *
  * PROVISIONAL.
  */
-export const FRAME_SCORE_LUMINANCE_WEIGHT = 2;
+export const FRAME_SCORE_BLINK_WEIGHT = 3;
+
+/**
+ * Light next. The extremes already refuse a frame outright, so this term only
+ * ever separates frames the gate was willing to send: between two of those it
+ * prefers the one nearer the middle of the band, which is the one an analyzer
+ * has the most tone signal in.
+ *
+ * PROVISIONAL.
+ */
+export const FRAME_SCORE_LUMA_WEIGHT = 2;
 
 /**
  * Sharpness, the lightest term, because the provider does not gate on it.
@@ -1293,20 +1284,20 @@ export const FRAME_SCORE_LUMINANCE_WEIGHT = 2;
 export const FRAME_SCORE_SHARPNESS_WEIGHT = 1;
 
 /**
- * Where extra sharpness stops being worth anything, five times the line below
- * which a frame is called soft.
+ * Where extra sharpness stops being worth anything, on the SHARPNESS_SCALE
+ * measurement.
  *
  * A cap rather than an open scale, because the difference between a sharp frame
  * and a very sharp one is not a difference the engine will ever act on, and
  * without a cap one frame that happened to catch a high contrast edge would
  * outvote pose and framing together.
  *
- * PROVISIONAL, and the one number here most likely to be wrong: it is set from
- * SHARPNESS_BORDERLINE_BELOW, which is itself set from synthetic patterns. If
- * real faces read far above this the term saturates and stops separating frames
- * that it should. docs/SUBMISSION-RUNBOOK.md C4 sets both from real captures.
+ * A literal, since there is no sharpness threshold left to derive it from.
+ * PROVISIONAL, and the one number here most likely to be wrong: if real faces
+ * read far above it the term saturates and stops separating frames that it
+ * should. The calibration report sets it from real captures.
  */
-export const FRAME_SCORE_SHARPNESS_CAP = 5 * SHARPNESS_BORDERLINE_BELOW;
+export const FRAME_SCORE_SHARPNESS_CAP = 100;
 
 /**
  * What a borderline verdict costs, and why it is larger than everything above
@@ -1317,20 +1308,16 @@ export const FRAME_SCORE_SHARPNESS_CAP = 5 * SHARPNESS_BORDERLINE_BELOW;
  * whether to send it anyway. Preferring a borderline frame because it was a
  * little sharper would put somebody in front of "Use it anyway" while a clean
  * frame sat in memory unused, which is the opposite of what a burst is for. So
- * the four terms rank frames within a verdict and never across one, and one
+ * the five terms rank frames within a verdict and never across one, and one
  * more than their combined span is what guarantees it.
  */
 export const FRAME_SCORE_BORDERLINE_PENALTY =
   FRAME_SCORE_POSE_WEIGHT +
   FRAME_SCORE_WIDTH_WEIGHT +
-  FRAME_SCORE_LUMINANCE_WEIGHT +
+  FRAME_SCORE_BLINK_WEIGHT +
+  FRAME_SCORE_LUMA_WEIGHT +
   FRAME_SCORE_SHARPNESS_WEIGHT +
   1;
-
-/** 0 to 1, with anything unmeasurable left as the NaN it arrived as. */
-function clampUnit(value: number): number {
-  return Math.min(1, Math.max(0, value));
-}
 
 /**
  * How good a frame is, relative to every other frame of the same face. Higher is
@@ -1343,18 +1330,18 @@ function clampUnit(value: number): number {
  * taking a short burst and sending the best of it, and this is how the best of
  * it is decided, in the gate's own terms rather than in a new set of them.
  *
- * The shape. Four penalties, each normalized to 0 to 1 over the span that
+ * The shape. Five penalties, each normalized to 0 to 1 over the span that
  * matters for that measurement so the weights above can be read against each
  * other directly, plus a flat penalty for a verdict of borderline. Nothing is
  * rewarded: a perfect frame is 0 and everything else is the distance below it.
  *
- * Two cases where a measurement is simply absent, and both are treated as
- * nothing rather than as something bad. A frame the detector could not solve a
- * pose for is not judged on pose, which is what poseVerdictFor already does. A
- * frame with no face box has no width ratio, and ranking on the absence of a
- * detector's opinion would rank the detector rather than the photograph. Those
- * frames are usually rejects anyway, and when they are not
- * (faceEstimateTrusted false) they already carry the borderline penalty.
+ * Where a measurement is simply absent, it is treated as nothing rather than as
+ * something bad. A frame with no pose is not judged on pose, which is what
+ * poseVerdictFor already does. A frame with no face has no width ratio and no
+ * blink, and ranking on the absence of the landmarker's opinion would rank the
+ * landmarker rather than the photograph. Those frames are usually rejects
+ * anyway, and when they are not (unmeasured) they already carry the borderline
+ * penalty.
  */
 export function frameScore(assessment: CaptureAssessment): number {
   if (assessment.verdict === "reject") {
@@ -1372,13 +1359,17 @@ export function frameScore(assessment: CaptureAssessment): number {
     metrics.faceWidthRatio === null
       ? 0
       : clampUnit(
-          Math.abs(metrics.faceWidthRatio - AUTO_CROP_FACE_WIDTH_TARGET) /
+          Math.abs(metrics.faceWidthRatio - FRAME_OVAL_WIDTH) /
             FRAME_SCORE_WIDTH_SPAN,
         );
 
-  const luminanceBadness = clampUnit(
-    Math.abs(metrics.meanLuminance - FRAME_SCORE_LUMINANCE_TARGET) /
-      FRAME_SCORE_LUMINANCE_SPAN,
+  const blinkBadness =
+    metrics.blink === null
+      ? 0
+      : clampUnit(Math.max(metrics.blink.left, metrics.blink.right));
+
+  const lumaBadness = clampUnit(
+    Math.abs(metrics.faceLuma - FRAME_SCORE_LUMA_TARGET) / FRAME_SCORE_LUMA_SPAN,
   );
 
   const softness =
@@ -1387,7 +1378,8 @@ export function frameScore(assessment: CaptureAssessment): number {
   const penalty =
     FRAME_SCORE_POSE_WEIGHT * poseBadness +
     FRAME_SCORE_WIDTH_WEIGHT * widthBadness +
-    FRAME_SCORE_LUMINANCE_WEIGHT * luminanceBadness +
+    FRAME_SCORE_BLINK_WEIGHT * blinkBadness +
+    FRAME_SCORE_LUMA_WEIGHT * lumaBadness +
     FRAME_SCORE_SHARPNESS_WEIGHT * softness +
     (assessment.verdict === "borderline" ? FRAME_SCORE_BORDERLINE_PENALTY : 0);
 

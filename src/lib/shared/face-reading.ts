@@ -232,6 +232,31 @@ function scaleBoxTo(box: Box, frame: Size): Box {
   };
 }
 
+export type FacePixels = {
+  readonly ovalBox: Box;
+  readonly ovalPolygon: readonly Point[];
+  readonly eyeBoxes: EyeBoxes;
+};
+
+/**
+ * The reading's oval box, oval polygon and eye boxes in the pixels of a given
+ * image, whatever frame the reading was taken with.
+ *
+ * The gate and the live line measure luma over a grayscale copy whose size is
+ * the canvas the landmarker saw, and this is how they put the normalized
+ * reading onto those pixels without trusting that the two sizes agree.
+ */
+export function facePixelsIn(reading: FaceReading, frame: Size): FacePixels {
+  return {
+    ovalBox: scaleBoxTo(reading.ovalBox, frame),
+    ovalPolygon: scalePolygon(reading.ovalPolygon, frame),
+    eyeBoxes: {
+      left: scaleBoxTo(reading.eyeBoxes.left, frame),
+      right: scaleBoxTo(reading.eyeBoxes.right, frame),
+    },
+  };
+}
+
 /**
  * The reading for one face, or null when the landmark list is too short to
  * carry the points this module reads (the landmarker always gives 478; a

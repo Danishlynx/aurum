@@ -1,131 +1,182 @@
 /**
- * A real face detector, in the browser, on the phone the photo is being taken
+ * The face landmarker, in the browser, on the phone the photo is being taken
  * with.
  *
- * What this replaces, and why it had to be replaced. src/lib/client/face.ts
- * asked for window.FaceDetector, the Shape Detection API. Safari has never
- * implemented it, Chrome has never shipped it on by default, and it is behind a
- * flag where it exists at all, so on essentially every phone that constructor is
- * undefined and the app fell through to a YCbCr skin colour threshold. That
- * fallback is what has been deciding, in production, whether a person's face was
- * in the picture and how big it was. Its failures are not subtle and they are not
- * evenly distributed:
+ * What it is. MediaPipe's FaceLandmarker (tasks-vision, IMAGE mode): 478
+ * landmarks per face, a 4 by 4 facial transformation matrix that solves for
+ * the head's pose, and 52 blendshapes, of which the gate reads the two eye
+ * blinks and the jaw. src/lib/shared/face-reading.ts turns one face of that
+ * result into a FaceReading in the engine's own terms (cheek to cheek over the
+ * frame width, the oval's box and centre, the pose from the matrix, the eyes),
+ * and that reading is what the live line and the gate measure.
  *
- * - the chroma box it thresholds on is the Chai and Ngan range, fitted to light
- *   and medium skin. Deep skin under warm indoor light falls outside it, the
- *   largest region comes back empty, and the gate answers no_face and refuses
- *   the frame outright. On the skin tones docs/00-product.md names as the wedge.
- * - any skin coloured background, which is most wooden and beige rooms, connects
- *   to the face and returns one region covering the frame.
- * - the neck and shoulders connect to the face whenever they are lit, which
- *   inflates the box, which is how a frame passed our own rule and came back
- *   error_src_face_too_small from the engine (2026-09-02).
- * - a bare arm is a second region, which reads as a second face and refuses a
- *   solo selfie with "Only your face can be read".
+ * What it replaced, and why. Until 2026-09-23 this module loaded BlazeFace, a
+ * detector: a box whose extent is undocumented and six keypoints a heuristic
+ * turned into a pose with guessed scales. No 60 percent rule could be built on
+ * that box, no pose refusal could be predicted from that heuristic, and when
+ * the detector had not loaded a YCbCr skin colour threshold in face.ts stood
+ * in for it, guessing at faces from lit skin. All of that is gone. A frame is
+ * now measured by the landmarker or it is unmeasured, and an unmeasured frame
+ * is offered to the person as exactly that (assessCapture in
+ * src/lib/shared/quality.ts).
  *
- * What it is replaced with. MediaPipe's short range face detector, which is a
- * real model: a face box and six keypoints (both eyes, the nose tip, the mouth
- * centre, and both ear tragions). The keypoints are what let
- * src/lib/shared/pose.ts estimate yaw, pitch and roll, which is the measurement
- * the gate never had and which every refusal read off the wire has been about.
+ * Where the files come from. The WASM runtime and the .task model are served
+ * from this deployment's public/ folder, put there on postinstall by
+ * scripts/prepare-face-model.ts and pinned by sha256
+ * (src/lib/shared/face-model.ts), so the capture path does not depend on a
+ * third party CDN answering from a phone. The CDN and Google's model host are
+ * the fallback for a deploy whose install could not download the model: the
+ * loader asks for the local model first (one HEAD request) and falls back when
+ * it is missing or will not create.
  *
- * Why the detector and not the landmarker. FaceLandmarker returns a 4 by 4
- * transformation matrix, so it can give an exact head pose rather than an
- * estimate, and pose.ts has the decoder for one. It also carries a 3.7MB model
- * against this one's 230KB, on top of a WASM runtime that is already the largest
- * thing the capture screen loads. The gate is asking a coarse question (is this
- * head within twenty or thirty degrees of square) and POSE_SLACK_DEGREES exists
- * to absorb exactly the uncertainty this trade introduces. If a future build
- * wants the matrix, poseFromTransformationMatrix is already there and this module
- * is the only thing that has to change.
- *
- * Where the files come from. Both are fetched from jsDelivr and Google's model
- * host at a pinned version rather than committed here: the WASM runtime alone is
- * 11.5MB per variant, and this repository is public and is cloned by judges. The
- * cost of that choice is a network dependency at capture time, and it is paid
- * for by the fallback below rather than by the person: a detector that does not
- * load leaves the app exactly where it was before this file existed.
+ * GPU first, then CPU, twice over. The GPU delegate is what makes a detection
+ * cheap enough to run on every preview frame, so it is asked for first. Two
+ * things go wrong with it on real phones. createFromOptions can throw (older
+ * Android WebViews, some iOS builds), which is answered by creating on the CPU
+ * instead. And on iOS Safari a GPU landmarker can create cleanly and then
+ * throw on its first detect ("framebuffer not complete"), which is answered
+ * once: the GPU instance is closed and a CPU one created in its place, and the
+ * frame is read again. A CPU landmarker is slower and still a landmarker.
  *
  * Nothing in this module sends anything anywhere. The model is a download and
  * the inference is local; no frame, no landmark and no measurement leaves the
  * device from here.
  */
 
-import type { Box } from "@/lib/shared/quality";
-import { poseFromLandmarks, type FacePose } from "@/lib/shared/pose";
+import { faceReadingFrom, type FaceReading } from "@/lib/shared/face-reading";
+import {
+  FACE_LANDMARKER_MODEL_LOCAL_PATH,
+  FACE_LANDMARKER_MODEL_URL,
+  MEDIAPIPE_VERSION,
+  MEDIAPIPE_WASM_CDN_URL,
+  MEDIAPIPE_WASM_LOCAL_PATH,
+} from "@/lib/shared/face-model";
+import type { Size } from "@/lib/shared/frame-geometry";
+
+import { injectedLandmarker, type InjectedLandmarker } from "./landmarks-seam";
 
 /**
- * Pinned, because an unpinned model or runtime is a silent behaviour change in
- * the one part of the product that decides whether a photograph is usable.
- *
- * This must equal the @mediapipe/tasks-vision version in package.json. The JS
- * loader comes from the installed package and the WASM runtime it loads comes
- * from the URL below, so a version skew between the two is a broken detector on
- * every phone and a working one on none. src/lib/client/landmarks.test.ts reads
- * package.json and fails when they drift, because nothing else would notice: the
- * mismatch shows up as a model that quietly refuses to load, and the app is
- * built to fall back silently when that happens.
+ * Re exported from face-model.ts, where both the browser loader and the
+ * postinstall script read it. src/lib/client/landmarks.test.ts holds it equal
+ * to package.json, because a skew between the JS loader in node_modules and
+ * the runtime it loads is a landmarker that quietly refuses to initialise.
  */
-export const MEDIAPIPE_VERSION = "1.0.1";
-export const MEDIAPIPE_WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
-export const FACE_DETECTOR_MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
+export { MEDIAPIPE_VERSION };
 
 /** Long enough that a slow network cannot hold the capture screen hostage. */
 export const DETECTOR_LOAD_TIMEOUT_MS = 8_000;
 
-export type DetectedFace = {
-  readonly box: Box;
-  readonly pose: FacePose | null;
-  /** The detector's own confidence, 0 to 1, when it reports one. */
-  readonly score: number | null;
+/**
+ * Deliberately low. A second face in the frame is a refusal
+ * (error_multiple_people is a documented provider failure and every face
+ * endpoint we call is single face only), so the landmarker is asked to be
+ * generous about noticing one rather than confident about it, and the
+ * decision about what to do with two is made in the gate.
+ */
+const MIN_FACE_DETECTION_CONFIDENCE = 0.3;
+
+/** Two, so a second face is seen and refused rather than silently ignored. */
+const MAX_FACES = 2;
+
+export type LandmarkerDelegate = "gpu" | "cpu";
+
+/** Every face in one frame, converted, with what the reading cost. */
+export type FaceReadingsResult = {
+  readonly faces: readonly FaceReading[];
+  /** How long the landmarker took on this frame, in milliseconds. */
+  readonly inferMs: number;
+  readonly delegate: LandmarkerDelegate;
 };
 
-export type DetectionResult = {
-  readonly faces: readonly DetectedFace[];
+/**
+ * The parts of a FaceLandmarkerResult this module reads, typed loosely on
+ * purpose: the result is external input, and a field that is missing or the
+ * wrong shape leaves that face out rather than throwing inside a frame loop.
+ */
+type RawLandmark = { readonly x?: number; readonly y?: number; readonly z?: number };
+
+export type RawLandmarkerResult = {
+  readonly faceLandmarks?: ReadonlyArray<ReadonlyArray<RawLandmark>>;
+  readonly facialTransformationMatrixes?: ReadonlyArray<{
+    readonly data?: ArrayLike<number>;
+  }>;
+  readonly faceBlendshapes?: ReadonlyArray<{
+    readonly categories?: ReadonlyArray<{
+      readonly categoryName?: string;
+      readonly score?: number;
+    }>;
+  }>;
+};
+
+/** The adapter the rest of this module holds: one detect, one close. */
+type Landmarker = {
+  readonly delegate: LandmarkerDelegate;
+  readonly detect: (source: HTMLCanvasElement) => RawLandmarkerResult;
+  readonly close: () => void;
 };
 
 type TasksVision = typeof import("@mediapipe/tasks-vision");
+type WasmFileset = Parameters<TasksVision["FaceLandmarker"]["createFromOptions"]>[0];
 
-type Detector = {
-  detect: (source: HTMLCanvasElement) => {
-    detections?: ReadonlyArray<{
-      boundingBox?: {
-        originX?: number;
-        originY?: number;
-        width?: number;
-        height?: number;
-      };
-      keypoints?: ReadonlyArray<{ x?: number; y?: number }>;
-      categories?: ReadonlyArray<{ score?: number }>;
-    }>;
-  };
-  close?: () => void;
+/** Where the runtime and the model were loaded from. */
+type ModelSource = {
+  readonly label: "local" | "cdn";
+  readonly wasm: string;
+  readonly model: string;
+};
+
+const LOCAL_SOURCE: ModelSource = {
+  label: "local",
+  wasm: MEDIAPIPE_WASM_LOCAL_PATH,
+  model: FACE_LANDMARKER_MODEL_LOCAL_PATH,
+};
+
+const CDN_SOURCE: ModelSource = {
+  label: "cdn",
+  wasm: MEDIAPIPE_WASM_CDN_URL,
+  model: FACE_LANDMARKER_MODEL_URL,
+};
+
+/** A created landmarker with what is needed to create it again on the CPU. */
+type Loaded = {
+  readonly landmarker: Landmarker;
+  readonly vision: TasksVision;
+  readonly fileset: WasmFileset;
+  readonly source: ModelSource;
 };
 
 type LoadState =
   | { readonly kind: "idle" }
-  | { readonly kind: "loading"; readonly promise: Promise<Detector | null> }
-  | { readonly kind: "ready"; readonly detector: Detector }
+  | { readonly kind: "loading"; readonly promise: Promise<Loaded | null> }
+  | {
+      readonly kind: "ready";
+      readonly loaded: Loaded;
+      /** True once a GPU detect has thrown and the CPU was tried in its place. */
+      readonly cpuRetried: boolean;
+    }
   | { readonly kind: "unavailable" };
 
 let state: LoadState = { kind: "idle" };
+
+/** The one CPU replacement in flight, so two frames that throw share it. */
+let replacing: Promise<Landmarker | null> | null = null;
 
 /**
  * Answers null after ms, without abandoning the work.
  *
  * The distinction is the whole point. The caller cannot wait: the capture screen
- * has to draw a guidance line now, on whatever estimate it can get. The download
- * can wait: it is 11.5MB of WASM runtime, it is already in flight, and on a phone
- * on mobile data it routinely takes longer than any timeout a screen can afford.
+ * has to draw a guidance line now, on whatever it can measure. The download
+ * can wait: it is 11.5MB of WASM runtime, it is already in flight, and on a
+ * phone on mobile data it routinely takes longer than any timeout a screen can
+ * afford.
  *
  * Until 2026-09-10 a timeout here resolved null and the caller then recorded the
  * detector as permanently unavailable, so one slow load on one phone turned the
- * real detector off for the whole session and every capture after it ran on the
- * colour threshold. That is the failure mode this product was trying to leave
- * behind, reintroduced by its own loading code and completely silent.
+ * real detector off for the whole session and every capture after it went
+ * unmeasured. That is the failure mode this product was trying to leave behind,
+ * reintroduced by its own loading code and completely silent.
  */
-function raceWithoutCancelling<T>(
+export function raceWithoutCancelling<T>(
   promise: Promise<T>,
   ms: number,
 ): Promise<T | null> {
@@ -146,63 +197,106 @@ function raceWithoutCancelling<T>(
   });
 }
 
-async function createDetector(): Promise<Detector | null> {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  try {
-    const vision: TasksVision = await import("@mediapipe/tasks-vision");
-    const fileset = await vision.FilesetResolver.forVisionTasks(
-      MEDIAPIPE_WASM_URL,
-    );
-    /*
-     * Deliberately low. A second face in the frame is a refusal
-     * (error_multiple_people is a documented provider failure and every face
-     * endpoint we call is single face only), so the detector is asked to be
-     * generous about noticing one rather than confident about it, and the
-     * decision about what to do with two is made in the gate.
-     */
-    const minDetectionConfidence = 0.3;
-
-    /*
-     * GPU first, CPU second, and the second attempt is not optional.
-     *
-     * The GPU delegate is what makes a detection cheap enough to run on every
-     * preview frame, so it is asked for first. But it needs a WebGL context with
-     * the extensions the runtime expects, and on some phones (older Android
-     * WebViews, some iOS builds) createFromOptions throws instead of degrading.
-     * Until 2026-09-14 that throw was caught and the detector was recorded as
-     * unavailable, which sent every frame on that phone to the colour threshold
-     * with no sign anywhere that it had happened. A CPU detector is slower and
-     * still a detector. The colour threshold is not one.
-     */
-    try {
-      const gpu = await vision.FaceDetector.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: FACE_DETECTOR_MODEL_URL, delegate: "GPU" },
-        runningMode: "IMAGE",
-        minDetectionConfidence,
-      });
-      return gpu as unknown as Detector;
-    } catch {
-      const cpu = await vision.FaceDetector.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: FACE_DETECTOR_MODEL_URL, delegate: "CPU" },
-        runningMode: "IMAGE",
-        minDetectionConfidence,
-      });
-      return cpu as unknown as Detector;
-    }
-  } catch {
-    return null;
-  }
+function now(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
 /**
- * Starts loading the detector without waiting for it.
+ * True when this deployment serves the model. One HEAD request: a deploy whose
+ * postinstall could not download the model has no file there, and asking the
+ * runtime to create from a 404 would only fail slower.
+ */
+async function localModelPresent(): Promise<boolean> {
+  try {
+    const response = await fetch(FACE_LANDMARKER_MODEL_LOCAL_PATH, {
+      method: "HEAD",
+      cache: "no-store",
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function createOn(
+  vision: TasksVision,
+  fileset: WasmFileset,
+  model: string,
+  delegate: LandmarkerDelegate,
+): Promise<Landmarker> {
+  const real = await vision.FaceLandmarker.createFromOptions(fileset, {
+    baseOptions: {
+      modelAssetPath: model,
+      delegate: delegate === "gpu" ? "GPU" : "CPU",
+    },
+    runningMode: "IMAGE",
+    numFaces: MAX_FACES,
+    minFaceDetectionConfidence: MIN_FACE_DETECTION_CONFIDENCE,
+    outputFacialTransformationMatrixes: true,
+    outputFaceBlendshapes: true,
+  });
+  return {
+    delegate,
+    detect: (source) => real.detect(source) as RawLandmarkerResult,
+    close: () => {
+      real.close();
+    },
+  };
+}
+
+/** GPU first, CPU second, and the second attempt is not optional. */
+async function createWithCpuFallback(
+  vision: TasksVision,
+  fileset: WasmFileset,
+  model: string,
+): Promise<Landmarker> {
+  try {
+    return await createOn(vision, fileset, model, "gpu");
+  } catch {
+    return createOn(vision, fileset, model, "cpu");
+  }
+}
+
+async function createLandmarker(): Promise<Loaded | null> {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  let vision: TasksVision;
+  try {
+    vision = await import("@mediapipe/tasks-vision");
+  } catch {
+    return null;
+  }
+
+  /*
+   * Local first, CDN second. The local runtime and model are the same bytes
+   * at the same pinned version, served from this deployment; the CDN is where
+   * they came from and is only asked when the deploy has no model of its own
+   * or the local one will not create.
+   */
+  const sources = (await localModelPresent())
+    ? [LOCAL_SOURCE, CDN_SOURCE]
+    : [CDN_SOURCE];
+
+  for (const source of sources) {
+    try {
+      const fileset = await vision.FilesetResolver.forVisionTasks(source.wasm);
+      const landmarker = await createWithCpuFallback(vision, fileset, source.model);
+      return { landmarker, vision, fileset, source };
+    } catch {
+      // The next source, or null when this was the last.
+    }
+  }
+  return null;
+}
+
+/**
+ * Starts loading the landmarker without waiting for it.
  *
  * Called from the consent screen so the model is warm by the time the camera
- * opens. The download is a few hundred kilobytes plus the WASM runtime, and
- * paying for it while somebody is reading the consent copy is the difference
- * between a capture screen that can measure a face and one that cannot.
+ * opens. The download is the WASM runtime plus a 3.7MB model, and paying for it
+ * while somebody is reading the consent copy is the difference between a
+ * capture screen that can measure a face and one that cannot.
  */
 export function warmFaceDetector(): void {
   if (state.kind !== "idle") {
@@ -211,9 +305,21 @@ export function warmFaceDetector(): void {
   void loadFaceDetector();
 }
 
-export async function loadFaceDetector(): Promise<Detector | null> {
+/**
+ * The landmarker, once it has loaded, or null within the caller's budget.
+ *
+ * The e2e seam is consulted first: with NEXT_PUBLIC_AURUM_E2E_SEAMS on and a
+ * result injected on the window, that result stands in for the model's and
+ * goes through the same conversion (src/lib/client/landmarks-seam.ts).
+ */
+export async function loadFaceDetector(): Promise<Landmarker | null> {
+  const injected = injectedLandmarker();
+  if (injected !== null) {
+    return seamLandmarker(injected);
+  }
+
   if (state.kind === "ready") {
-    return state.detector;
+    return state.loaded.landmarker;
   }
   if (state.kind === "unavailable") {
     return null;
@@ -225,18 +331,18 @@ export async function loadFaceDetector(): Promise<Detector | null> {
    * rather than starting their own.
    */
   if (state.kind === "idle") {
-    const load = createDetector().then((detector) => {
+    const load = createLandmarker().then((loaded) => {
       /*
        * Only a real failure latches. A load that simply has not finished stays
        * loading, so the next caller waits on the same promise and picks it up the
        * moment it lands. This is what stops one slow network moment from turning
-       * the detector off for the rest of the session.
+       * the landmarker off for the rest of the session.
        */
       state =
-        detector === null
+        loaded === null
           ? { kind: "unavailable" }
-          : { kind: "ready", detector };
-      return detector;
+          : { kind: "ready", loaded, cpuRetried: false };
+      return loaded;
     });
     state = { kind: "loading", promise: load };
   }
@@ -249,125 +355,182 @@ export async function loadFaceDetector(): Promise<Detector | null> {
    * The caller gets an answer inside its own budget. The download keeps going
    * either way, which is why this races rather than cancels.
    */
-  return raceWithoutCancelling(pending, DETECTOR_LOAD_TIMEOUT_MS);
+  const loaded = await raceWithoutCancelling(pending, DETECTOR_LOAD_TIMEOUT_MS);
+  return loaded === null ? null : loaded.landmarker;
 }
 
-/** True once a real detector is answering, which the gate logs for telemetry. */
+/** True once a real landmarker is answering, which the gate logs for telemetry. */
 export function faceDetectorIsReady(): boolean {
-  return state.kind === "ready";
+  return state.kind === "ready" || injectedLandmarker() !== null;
 }
 
 /** Test seam. Never called by the app. */
 export function resetFaceDetectorForTests(): void {
   state = { kind: "idle" };
-}
-
-function finite(value: number | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  replacing = null;
 }
 
 /**
- * The six keypoints as a pose, or null when they are not all present.
- *
- * BlazeFace reports them in a fixed order (right eye, left eye, nose tip, mouth,
- * right ear tragion, left ear tragion) where "right" is the subject's right and
- * therefore the image's left. Rather than depend on that convention holding, the
- * two eye points are sorted by their x coordinate here, so a build of the model
- * that swapped them would still produce the right roll sign instead of a
- * silently mirrored one.
+ * The iOS case: a GPU landmarker that created cleanly and threw on its first
+ * detect. Closed and replaced with a CPU one, once. A second throw from the
+ * replacement, or a throw from a landmarker that is no longer the current one,
+ * leaves the frame unmeasured and the state as it is.
  */
-export function poseFromDetectorKeypoints(
-  keypoints: ReadonlyArray<{ x?: number; y?: number }> | undefined,
-  frameWidth: number,
-  frameHeight: number,
-): FacePose | null {
-  if (keypoints === undefined || keypoints.length < 4) {
+async function replaceAfterGpuThrow(thrown: Landmarker): Promise<Landmarker | null> {
+  if (state.kind !== "ready" || state.loaded.landmarker !== thrown) {
     return null;
   }
-  const points = keypoints.slice(0, 4).map((point) => {
-    const x = finite(point.x);
-    const y = finite(point.y);
-    if (x === null || y === null) {
+  if (thrown.delegate !== "gpu" || state.cpuRetried) {
+    return null;
+  }
+  if (replacing !== null) {
+    return replacing;
+  }
+  const { loaded } = state;
+  replacing = (async () => {
+    try {
+      thrown.close();
+    } catch {
+      // Already broken; nothing more to release.
+    }
+    try {
+      const cpu = await createOn(
+        loaded.vision,
+        loaded.fileset,
+        loaded.source.model,
+        "cpu",
+      );
+      state = {
+        kind: "ready",
+        loaded: { ...loaded, landmarker: cpu },
+        cpuRetried: true,
+      };
+      return cpu;
+    } catch {
+      state = { kind: "unavailable" };
+      return null;
+    } finally {
+      replacing = null;
+    }
+  })();
+  return replacing;
+}
+
+function finite(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : Number.NaN;
+}
+
+/**
+ * Every face of a landmarker result as a FaceReading, normalized to the frame
+ * the landmarker saw, with the polygon and eye boxes in that frame's pixels.
+ *
+ * faceLandmarks[i] is the i'th face's 478 normalized points,
+ * facialTransformationMatrixes[i].data its column major matrix (which
+ * faceReadingFrom hands to poseFromLandmarkerMatrix), and
+ * faceBlendshapes[i].categories its blendshapes, read by categoryName. A face
+ * whose landmark list is too short to read is left out. Exported for its test
+ * and for nothing else.
+ */
+export function readingsFromLandmarkerResult(
+  raw: RawLandmarkerResult,
+  frame: Size,
+): FaceReading[] {
+  const faces: FaceReading[] = [];
+  const lists = raw.faceLandmarks ?? [];
+  for (let index = 0; index < lists.length; index += 1) {
+    const points = lists[index] ?? [];
+    const landmarks = points.map((point) => ({
+      x: finite(point.x),
+      y: finite(point.y),
+      z: point.z,
+    }));
+
+    const matrixData = raw.facialTransformationMatrixes?.[index]?.data;
+    const matrix =
+      matrixData !== undefined && matrixData.length === 16 ? matrixData : null;
+
+    const categories = raw.faceBlendshapes?.[index]?.categories;
+    let blendshapes: Record<string, number> | null = null;
+    if (categories !== undefined) {
+      blendshapes = {};
+      for (const category of categories) {
+        if (
+          typeof category.categoryName === "string" &&
+          typeof category.score === "number" &&
+          Number.isFinite(category.score)
+        ) {
+          blendshapes[category.categoryName] = category.score;
+        }
+      }
+    }
+
+    const reading = faceReadingFrom({ landmarks, matrix, blendshapes }, frame);
+    if (reading !== null) {
+      faces.push(reading);
+    }
+  }
+  return faces;
+}
+
+/** The injected result shaped as the landmarker's, so it converts the same way. */
+function seamLandmarker(injected: InjectedLandmarker): Landmarker {
+  return {
+    delegate: "cpu",
+    close: () => {},
+    detect: () => ({
+      faceLandmarks: injected.faces.map((face) => face.landmarks),
+      facialTransformationMatrixes: injected.faces.map((face) => ({
+        data: face.matrix ?? undefined,
+      })),
+      faceBlendshapes: injected.faces.map((face) => ({
+        categories:
+          face.blendshapes === null
+            ? undefined
+            : Object.entries(face.blendshapes).map(([categoryName, score]) => ({
+                categoryName,
+                score,
+              })),
+      })),
+    }),
+  };
+}
+
+/**
+ * Every face in the frame, read in the frame's own pixels.
+ *
+ * Returns null, distinctly from an empty list, when there is no landmarker to
+ * ask or the one there is could not read the frame. The caller needs the
+ * difference: an empty list means the model looked and found nothing, which is
+ * a refusal, and null means nothing measured the frame, which is a reason to
+ * offer it as unmeasured rather than to refuse a person's photograph.
+ */
+export async function readFaces(
+  canvas: HTMLCanvasElement,
+): Promise<FaceReadingsResult | null> {
+  const landmarker = await loadFaceDetector();
+  if (landmarker === null) {
+    return null;
+  }
+  const frame: Size = { width: canvas.width, height: canvas.height };
+
+  const started = now();
+  let raw: RawLandmarkerResult;
+  let delegate = landmarker.delegate;
+  try {
+    raw = landmarker.detect(canvas);
+  } catch {
+    const replacement = await replaceAfterGpuThrow(landmarker);
+    if (replacement === null) {
       return null;
     }
-    /*
-     * The detector reports normalized coordinates. Multiplying back into frame
-     * pixels keeps every angle in pose.ts independent of the aspect ratio of
-     * whatever the caller happened to hand in.
-     */
-    return { x: x * frameWidth, y: y * frameHeight };
-  });
-  if (points.some((point) => point === null)) {
-    return null;
-  }
-
-  const [eyeA, eyeB, noseTip, mouth] = points as Array<{
-    x: number;
-    y: number;
-  }>;
-  const leftEye = eyeA.x <= eyeB.x ? eyeA : eyeB;
-  const rightEye = eyeA.x <= eyeB.x ? eyeB : eyeA;
-
-  return poseFromLandmarks({
-    leftEye,
-    rightEye,
-    noseTip,
-    mouthLeft: mouth,
-    mouthRight: mouth,
-  });
-}
-
-/**
- * Every face in the frame, in the frame's own pixels.
- *
- * Returns null, distinctly from an empty list, when there is no detector to ask.
- * The caller needs the difference: an empty list means the model looked and found
- * nothing, which is a refusal, and null means nothing looked, which is a reason
- * to fall back rather than to refuse a person's photograph.
- */
-export async function detectFaces(
-  canvas: HTMLCanvasElement,
-): Promise<DetectionResult | null> {
-  const detector = await loadFaceDetector();
-  if (detector === null) {
-    return null;
-  }
-
-  let raw: ReturnType<Detector["detect"]>;
-  try {
-    raw = detector.detect(canvas);
-  } catch {
-    return null;
-  }
-
-  const detections = raw.detections ?? [];
-  const faces: DetectedFace[] = [];
-
-  for (const detection of detections) {
-    const originX = finite(detection.boundingBox?.originX);
-    const originY = finite(detection.boundingBox?.originY);
-    const width = finite(detection.boundingBox?.width);
-    const height = finite(detection.boundingBox?.height);
-    if (
-      originX === null ||
-      originY === null ||
-      width === null ||
-      height === null ||
-      width <= 0 ||
-      height <= 0
-    ) {
-      continue;
+    try {
+      raw = replacement.detect(canvas);
+    } catch {
+      return null;
     }
-    faces.push({
-      box: { x: originX, y: originY, width, height },
-      pose: poseFromDetectorKeypoints(
-        detection.keypoints,
-        canvas.width,
-        canvas.height,
-      ),
-      score: finite(detection.categories?.[0]?.score),
-    });
+    delegate = replacement.delegate;
   }
+  const inferMs = now() - started;
 
-  return { faces };
+  return { faces: readingsFromLandmarkerResult(raw, frame), inferMs, delegate };
 }

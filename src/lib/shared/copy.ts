@@ -165,6 +165,22 @@ export const copy = {
     guidance: {
       light: "Face the light. A window works best.",
       /**
+       * In house, added 2026-09-23 with the light measured over the face
+       * itself. The engine's own capture SDK has an upper lighting bound as
+       * well as a lower one (docs/04-integrations.md, the Camera Kit rows), so
+       * a face in direct sun fails the same way a dark one does, and the fix
+       * is the opposite of "Face the light".
+       */
+      bright: "Too bright. Move out of direct light.",
+      /**
+       * In house, added 2026-09-23. A phone held landscape hands the camera a
+       * landscape track, and the master frame is portrait: the face the
+       * person sees in the oval is a small share of the frame that is sent.
+       * Said only on a touch device, since a laptop webcam is landscape by
+       * construction and cannot be turned.
+       */
+      upright: "Hold the phone upright.",
+      /**
        * In house, and the sixth line of the same list, added 2026-09-07 when the
        * capture screen gained a detector that can actually measure a head's
        * angle rather than infer it from where a blob sits in the frame.
@@ -198,8 +214,22 @@ export const copy = {
        */
       eyeLevel: "Hold the phone at eye level and look into the lens.",
       closer: "Move closer until your face fills the oval.",
+      /**
+       * In house, added 2026-09-23. The other side of "Move closer": a face
+       * wider than the band the engine reads, or running into the edge of the
+       * frame, is refused by the engine as out of boundary and no crop fixes
+       * it, so the line asks for the one thing that does.
+       */
+      back: "Move back a little so your whole face fits.",
       hold: "Hold still.",
       ready: "Good. Tap to capture.",
+      /**
+       * In house, added 2026-09-23. Said in place of "Good" when the face model
+       * has not loaded, so the person knows the tap is theirs to take and that
+       * nothing on this screen has checked the frame: the engine's own input
+       * gate does that for free (docs/03-architecture.md, failure modes).
+       */
+      unmeasured: "The face check did not load. You can still take the photo.",
     },
     uploadInstead: "Upload instead",
     /**
@@ -222,15 +252,20 @@ export const copy = {
      */
     debug: {
       source: "src",
-      coverage: "cov",
       widthRatio: "w",
+      bbox: "bbox",
+      centerX: "cx",
       centerY: "cy",
       yaw: "yaw",
       pitch: "pitch",
       roll: "roll",
       luminance: "lum",
+      uneven: "uneven",
+      blinkLeft: "blinkL",
+      blinkRight: "blinkR",
       sharpness: "sharp",
       motion: "motion",
+      ms: "ms",
       line: "line",
     },
     /**
@@ -250,7 +285,6 @@ export const copy = {
      */
     rejection: {
       too_dark: "Too dark to read your skin. Turn toward the light and try again.",
-      blurry: "A little blurry. Hold still and tap again.",
       too_far: "Move closer so your face fills the oval.",
       // docs/06-safety-privacy.md, "Purpose limitation".
       multiple_faces:
@@ -273,6 +307,14 @@ export const copy = {
       // taken rather than after the engine has refused it.
       facing_away:
         "Look straight into the lens and hold the phone level, then try again.",
+      // In house. Recorded by the gate and applied by a later build; the line
+      // exists so the reason has words the moment it is applied.
+      eyes_closed: "Your eyes were closed. Look into the lens and try again.",
+      // In house. The face model did not load, so nothing here checked the
+      // frame. It is offered rather than refused: the engine's own input gate
+      // reads it for free (docs/03-architecture.md, failure modes).
+      unmeasured:
+        "The face check did not load on this device, so the photo was not checked.",
     },
     /**
      * In house. docs/01 section D gates a frame on the face being "roughly
@@ -1022,8 +1064,14 @@ export const COPY_NOT_IN_FLOW_DOC = [
   // the retention rule the app actually follows. See the comment at the string.
   "welcome.section1Body",
   "capture.guidance.eyeLevel",
+  "capture.guidance.bright",
+  "capture.guidance.upright",
+  "capture.guidance.back",
+  "capture.guidance.unmeasured",
   "capture.rejection.over_exposed",
   "capture.rejection.no_face",
+  "capture.rejection.eyes_closed",
+  "capture.rejection.unmeasured",
   "capture.cameraUnavailable",
   "capture.shutterLabel",
   "capture.facingAway",
