@@ -69,11 +69,30 @@ export const MASTER_MIN_SHORT_EDGE = 480;
 // ---------------------------------------------------------------------------
 
 /**
- * The target face width, cheek to cheek, as a share of the master frame width.
+ * The target face width as a share of the master frame width: the visible
+ * face, edge to edge at the cheekbones, which is what the oval on the stage is
+ * drawn for and the width the engine's 60 to 80 percent rule is about.
  *
  * Inside 60 to 80, above MODERATE 0.65, margin both sides.
  */
 export const FRAME_OVAL_WIDTH = 0.7;
+
+/**
+ * The landmarker's cheek to cheek span (landmarks 234 to 454) as a share of
+ * the visible face width the oval is drawn for.
+ *
+ * Measured on the founder's Android phone on 2026-09-23: with the face filling
+ * the 0.70 oval on the stage, the span read 0.55, so the mesh's outermost
+ * cheek points sit about a fifth inside the visible edge of the face (the
+ * mesh's face oval stops short of the ears and the hairline). Every width
+ * that leaves src/lib/shared/face-reading.ts is the span divided by this, so
+ * the bands here and the oval stay in the engine's terms and a person who
+ * fills the oval reads 0.70. PROVISIONAL, one phone: the calibration report
+ * compares both numbers against the engine's face_quality words, and this is
+ * the constant that moves when the rows say the engine's box is wider or
+ * narrower than the visible face.
+ */
+export const MESH_FACE_WIDTH_SHARE = 0.79;
 
 /**
  * The oval's height over its width.

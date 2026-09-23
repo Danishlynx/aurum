@@ -35,6 +35,7 @@ const FULL: CaptureQuality = {
   attempt: 1,
   frame: { sourceWidth: 1080, sourceHeight: 1920, masterWidth: 1080, masterHeight: 1440 },
   faceBboxRatio: 0.31,
+  meshWidthRatio: 0.56,
   faceCenter: { x: 0.5, y: 0.47 },
   faceLuma: 0.58,
   faceLumaUneven: 0.05,

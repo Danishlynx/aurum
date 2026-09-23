@@ -13,11 +13,13 @@ import {
   facePixelsIn,
   faceReadingFrom,
   meanLumaInside,
+  visualFaceBoxOf,
 } from "./face-reading";
 import {
   FRAME_FACE_CENTER_X,
   FRAME_FACE_CENTER_Y,
   FRAME_OVAL_WIDTH,
+  MESH_FACE_WIDTH_SHARE,
   ovalBoxIn,
 } from "./frame-geometry";
 import type { GrayscaleImage } from "./quality";
@@ -58,7 +60,13 @@ describe("faceReadingFrom", () => {
       return;
     }
     expect(reading.widthRatio).toBeCloseTo(FRAME_OVAL_WIDTH, 6);
-    expect(reading.bboxRatio).toBeCloseTo(FRAME_OVAL_WIDTH, 6);
+    // The mesh's own span sits inside the visible face by the measured share.
+    expect(reading.meshWidthRatio).toBeCloseTo(
+      FRAME_OVAL_WIDTH * MESH_FACE_WIDTH_SHARE,
+      6,
+    );
+    expect(reading.bboxRatio).toBeCloseTo(FRAME_OVAL_WIDTH * MESH_FACE_WIDTH_SHARE, 6);
+    expect(reading.faceBox.width).toBeCloseTo(FRAME_OVAL_WIDTH, 6);
     expect(reading.center.x).toBeCloseTo(FRAME_FACE_CENTER_X, 6);
     expect(reading.center.y).toBeCloseTo(FRAME_FACE_CENTER_Y, 6);
     expect(reading.pose).not.toBeNull();
@@ -69,16 +77,31 @@ describe("faceReadingFrom", () => {
     expect(reading.jawOpen).toBe(0);
   });
 
-  it("lands the oval box on the frame's target oval, to the pixel", () => {
+  it("lands the visible face box on the frame's target oval, to the pixel", () => {
     const face = syntheticFace();
     const reading = faceReadingFrom(face, face.frame);
     const target = ovalBoxIn(face.frame);
     expect(reading?.pixels).not.toBeNull();
-    const box = reading?.ovalBox;
+    const box = reading?.faceBox;
     expect((box?.x ?? 0) * face.frame.width).toBeCloseTo(target.x, 6);
     expect((box?.y ?? 0) * face.frame.height).toBeCloseTo(target.y, 6);
     expect((box?.width ?? 0) * face.frame.width).toBeCloseTo(target.width, 6);
     expect((box?.height ?? 0) * face.frame.height).toBeCloseTo(target.height, 6);
+    // The mesh oval sits inside it by the share, about the same centre.
+    const mesh = reading?.ovalBox;
+    expect(mesh?.width ?? 0).toBeCloseTo((box?.width ?? 0) * MESH_FACE_WIDTH_SHARE, 6);
+    expect((mesh?.x ?? 0) + (mesh?.width ?? 0) / 2).toBeCloseTo(
+      (box?.x ?? 0) + (box?.width ?? 0) / 2,
+      6,
+    );
+  });
+
+  it("grows the mesh oval into the visible face about its centre", () => {
+    const grown = visualFaceBoxOf({ x: 0.2, y: 0.3, width: 0.4, height: 0.5 });
+    expect(grown.width).toBeCloseTo(0.4 / MESH_FACE_WIDTH_SHARE, 10);
+    expect(grown.height).toBeCloseTo(0.5 / MESH_FACE_WIDTH_SHARE, 10);
+    expect(grown.x + grown.width / 2).toBeCloseTo(0.4, 10);
+    expect(grown.y + grown.height / 2).toBeCloseTo(0.55, 10);
   });
 
   it("reads a turned head as signed yaw, a lifted chin as positive pitch, a tipped head as signed roll", () => {
@@ -122,12 +145,16 @@ describe("faceReadingFrom", () => {
     }
     const frame = { width: 300, height: 400 };
     const pixels = facePixelsIn(reading, frame);
-    expect(pixels.ovalBox.width).toBeCloseTo(FRAME_OVAL_WIDTH * frame.width, 6);
+    expect(pixels.faceBox.width).toBeCloseTo(FRAME_OVAL_WIDTH * frame.width, 6);
+    expect(pixels.ovalBox.width).toBeCloseTo(
+      FRAME_OVAL_WIDTH * MESH_FACE_WIDTH_SHARE * frame.width,
+      6,
+    );
     expect(pixels.ovalPolygon).toHaveLength(36);
     expect(pixels.eyeBoxes.left.x).toBeGreaterThan(pixels.eyeBoxes.right.x);
     const target = ovalBoxIn(frame);
-    expect(pixels.ovalBox.x).toBeCloseTo(target.x, 6);
-    expect(pixels.ovalBox.y).toBeCloseTo(target.y, 6);
+    expect(pixels.faceBox.x).toBeCloseTo(target.x, 6);
+    expect(pixels.faceBox.y).toBeCloseTo(target.y, 6);
   });
 
   it("reads a face away from the target at its own width and centre", () => {
@@ -185,9 +212,16 @@ describe("faceReadingFrom", () => {
     const face = syntheticFace();
     const reading = faceReadingFrom(face, face.frame);
     expect(reading?.pixels?.ovalPolygon).toHaveLength(36);
+    // The mesh cheek sits inside the visible face edge by the measured share.
     const cheekRight = reading?.pixels?.ovalPolygon[FACE_OVAL_LANDMARKS.indexOf(CHEEK_RIGHT)];
     expect(cheekRight?.x ?? 0).toBeCloseTo(
-      face.frame.width * (FRAME_FACE_CENTER_X + FRAME_OVAL_WIDTH / 2),
+      face.frame.width *
+        (FRAME_FACE_CENTER_X + (FRAME_OVAL_WIDTH * MESH_FACE_WIDTH_SHARE) / 2),
+      6,
+    );
+    // The visible face box in pixels reaches the oval's edge.
+    expect(reading?.pixels?.faceBox.x ?? 0).toBeCloseTo(
+      face.frame.width * (FRAME_FACE_CENTER_X - FRAME_OVAL_WIDTH / 2),
       6,
     );
     expect(faceReadingFrom(face)?.pixels).toBeNull();

@@ -24,7 +24,7 @@
  * face (evals/support/synthetic-face.ts) and on a phone.
  */
 
-import type { Point, Size } from "./frame-geometry";
+import { MESH_FACE_WIDTH_SHARE, type Point, type Size } from "./frame-geometry";
 import { poseFromLandmarkerMatrix, type FacePose } from "./pose";
 import type { Box, GrayscaleImage } from "./quality";
 
@@ -106,14 +106,29 @@ export type EyeBoxes = {
 
 export type FaceReading = {
   /**
-   * Cheek to cheek over the frame width: |x of CHEEK_RIGHT minus x of
-   * CHEEK_LEFT| in normalized coordinates, which are already divided by the
-   * frame width. The number the width bands in frame-geometry.ts are about.
+   * The visible face width over the frame width, in the engine's terms: the
+   * cheek to cheek span (meshWidthRatio) divided by MESH_FACE_WIDTH_SHARE,
+   * because the mesh's outermost cheek points sit inside the visible edge of
+   * the face (measured 2026-09-23). The number the width bands in
+   * frame-geometry.ts and the oval on the stage are about.
    */
   readonly widthRatio: number;
+  /**
+   * The raw cheek to cheek span: |x of CHEEK_RIGHT minus x of CHEEK_LEFT| in
+   * normalized coordinates, which are already divided by the frame width.
+   * Stored beside widthRatio so the share can be moved from data.
+   */
+  readonly meshWidthRatio: number;
   /** The bounding box of the face oval contour, normalized 0 to 1. */
   readonly ovalBox: Box;
-  /** ovalBox.width: the oval's extent over the frame width, for the report. */
+  /**
+   * The visible face as a box: ovalBox grown about its centre by the same
+   * share, so its width is widthRatio. The bounds test and the upload composer
+   * read this one, because the engine's out of boundary rule and its width
+   * rule are about the face it sees, not the mesh's oval.
+   */
+  readonly faceBox: Box;
+  /** ovalBox.width: the mesh oval's extent over the frame width, for the report. */
   readonly bboxRatio: number;
   /** The centre of ovalBox, normalized. */
   readonly center: Point;
@@ -133,6 +148,8 @@ export type FaceReading = {
    */
   readonly pixels: {
     readonly frame: Size;
+    /** The visible face box (faceBox) in that frame's pixels. */
+    readonly faceBox: Box;
     readonly ovalPolygon: readonly Point[];
     readonly eyeBoxes: EyeBoxes;
   } | null;
@@ -234,9 +251,27 @@ function scaleBoxTo(box: Box, frame: Size): Box {
 
 export type FacePixels = {
   readonly ovalBox: Box;
+  /** The visible face box (FaceReading.faceBox) in the frame's pixels. */
+  readonly faceBox: Box;
   readonly ovalPolygon: readonly Point[];
   readonly eyeBoxes: EyeBoxes;
 };
+
+/**
+ * The mesh oval's box grown about its centre into the visible face box: the
+ * width and the height both divided by MESH_FACE_WIDTH_SHARE, the centre kept.
+ * Pure geometry on a normalized or a pixel box alike.
+ */
+export function visualFaceBoxOf(ovalBox: Box): Box {
+  const width = ovalBox.width / MESH_FACE_WIDTH_SHARE;
+  const height = ovalBox.height / MESH_FACE_WIDTH_SHARE;
+  return {
+    x: ovalBox.x + ovalBox.width / 2 - width / 2,
+    y: ovalBox.y + ovalBox.height / 2 - height / 2,
+    width,
+    height,
+  };
+}
 
 /**
  * The reading's oval box, oval polygon and eye boxes in the pixels of a given
@@ -249,6 +284,7 @@ export type FacePixels = {
 export function facePixelsIn(reading: FaceReading, frame: Size): FacePixels {
   return {
     ovalBox: scaleBoxTo(reading.ovalBox, frame),
+    faceBox: scaleBoxTo(reading.faceBox, frame),
     ovalPolygon: scalePolygon(reading.ovalPolygon, frame),
     eyeBoxes: {
       left: scaleBoxTo(reading.eyeBoxes.left, frame),
@@ -313,6 +349,7 @@ export function faceReadingFrom(
     frame.height > 0
       ? {
           frame,
+          faceBox: scaleBoxTo(visualFaceBoxOf(ovalBox), frame),
           ovalPolygon: scalePolygon(ovalPolygon, frame),
           eyeBoxes: {
             left: scaleBoxTo(eyeBoxes.left, frame),
@@ -321,9 +358,13 @@ export function faceReadingFrom(
         }
       : null;
 
+  const meshWidthRatio = Math.abs(cheekRight.x - cheekLeft.x);
+
   return {
-    widthRatio: Math.abs(cheekRight.x - cheekLeft.x),
+    widthRatio: meshWidthRatio / MESH_FACE_WIDTH_SHARE,
+    meshWidthRatio,
     ovalBox,
+    faceBox: visualFaceBoxOf(ovalBox),
     bboxRatio: ovalBox.width,
     center: {
       x: ovalBox.x + ovalBox.width / 2,

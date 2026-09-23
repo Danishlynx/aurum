@@ -115,6 +115,13 @@ export const captureQualitySchema = z.object({
    */
   faceWidthRatio: z.number().min(0).nullable().optional(),
   /**
+   * The landmarker's raw cheek to cheek span over the frame width, before it
+   * is divided by MESH_FACE_WIDTH_SHARE to become faceWidthRatio. Stored
+   * beside it so the calibration report can compare both against the engine's
+   * own face_quality words and move the share from data. Added 2026-09-23.
+   */
+  meshWidthRatio: z.number().min(0).nullable().optional(),
+  /**
    * The head position the detector solved for, in degrees, or null when the
    * frame was measured by something that cannot report one.
    *

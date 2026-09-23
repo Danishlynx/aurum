@@ -67,10 +67,19 @@
  * decoded angles inside poseFromLandmarkerMatrix (and the synthetic face's
  * matrix builder and the signed tests with it), never to drop the transpose.
  * The geometric reading of MediaPipe's metric space (x right, y up, z toward
- * the viewer, the face looking along +z) predicts exactly that reversal on all
- * three axes, so expect the check to ask for it. Until the check is written
- * into this file as done, with the phones and the date, the signs here are the
- * convention the code is written to, not a measurement.
+ * the viewer, the face looking along +z) predicted exactly that reversal on all
+ * three axes.
+ *
+ * Done, 2026-09-23, on the founder's Android phone (Chrome, GPU delegate).
+ * Facing the lens the readout was yaw -1, pitch 5, roll 1. Turned toward the
+ * person's own right, with the transpose alone, yaw read +44; turned the other
+ * way, -42. The convention above wants those the other way round, so
+ * poseFromLandmarkerMatrix negates all three decoded angles, pitch and roll on
+ * the same basis (one transposed reading reverses every single axis turn, and
+ * the measured pitch of +5 on a phone held a little below the eyes, which is a
+ * chin slightly down, agrees). The free field check against the engine's own
+ * leftward and rightward codes has not been run yet; the calibration report
+ * carries it when the first turned frame is refused.
  */
 
 export type FacePose = {
@@ -189,7 +198,21 @@ export function poseFromLandmarkerMatrix(
       rowMajor[row * 4 + column] = data[column * 4 + row] ?? Number.NaN;
     }
   }
-  return poseFromTransformationMatrix(rowMajor);
+  const decoded = poseFromTransformationMatrix(rowMajor);
+  if (decoded === null) {
+    return null;
+  }
+  /*
+   * Negated, all three, since the phone check of 2026-09-23 (see "Calibration,
+   * one time" above): the landmarker's matrix carries every turn with the
+   * opposite sign to this file's convention, and a single axis turn reversed is
+   * exactly what the check measured.
+   */
+  return {
+    yawDegrees: normalizeDegrees(-decoded.yawDegrees),
+    pitchDegrees: normalizeDegrees(-decoded.pitchDegrees),
+    rollDegrees: normalizeDegrees(-decoded.rollDegrees),
+  };
 }
 
 /** Wraps an angle into -180 to 180 so a threshold comparison is meaningful. */

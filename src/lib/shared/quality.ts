@@ -571,6 +571,11 @@ export type CaptureMetrics = {
    * (FACE_WIDTH_ENGINE_MIN). Null when there is no face.
    */
   readonly faceWidthRatio: number | null;
+  /**
+   * The landmarker's raw cheek to cheek span over the frame width, before the
+   * MESH_FACE_WIDTH_SHARE that turns it into faceWidthRatio. For the report.
+   */
+  readonly meshWidthRatio: number | null;
   /** The face oval's bounding box width over the frame width, 0 to 1. */
   readonly faceBboxRatio: number | null;
   /** Where the middle of the face oval sits, both axes 0 to 1. */
@@ -791,7 +796,7 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
    * it cannot answer, and saying so here is the difference between one
    * instruction and two wasted attempts.
    */
-  if (reading !== null && ovalTouchesEdge(reading.ovalBox, { width: 1, height: 1 })) {
+  if (reading !== null && ovalTouchesEdge(reading.faceBox, { width: 1, height: 1 })) {
     failures.push({ reason: "face_out_of_bounds", severity: "borderline" });
   }
 
@@ -822,6 +827,7 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
     faceLuma,
     faceLumaUneven,
     faceWidthRatio: widthRatio,
+    meshWidthRatio: reading === null ? null : reading.meshWidthRatio,
     /*
      * Both clamped to the frame: a face oval partly outside the picture has
      * landmarks beyond it, and a stored share of the frame is meant to be one.

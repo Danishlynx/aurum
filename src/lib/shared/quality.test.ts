@@ -9,6 +9,7 @@ import {
   FACE_WIDTH_ENGINE_MIN,
   FACE_WIDTH_REJECT_BELOW,
   FRAME_OVAL_WIDTH,
+  MESH_FACE_WIDTH_SHARE,
 } from "./frame-geometry";
 import type { FacePose } from "./pose";
 import {
@@ -469,7 +470,15 @@ describe("assessCapture", () => {
     expect(result.failures).toEqual([]);
     expect(result.metrics.sharpness).toBeGreaterThan(0);
     expect(result.metrics.faceWidthRatio).toBeCloseTo(FRAME_OVAL_WIDTH, 5);
-    expect(result.metrics.faceBboxRatio).toBeCloseTo(FRAME_OVAL_WIDTH, 5);
+    // The raw mesh numbers sit inside the visible face by the measured share.
+    expect(result.metrics.meshWidthRatio).toBeCloseTo(
+      FRAME_OVAL_WIDTH * MESH_FACE_WIDTH_SHARE,
+      5,
+    );
+    expect(result.metrics.faceBboxRatio).toBeCloseTo(
+      FRAME_OVAL_WIDTH * MESH_FACE_WIDTH_SHARE,
+      5,
+    );
     expect(result.metrics.faceCenter?.x ?? 0).toBeCloseTo(0.5, 5);
     expect(result.metrics.faceCenter?.y ?? 0).toBeCloseTo(0.47, 5);
     // Light over the face, on the engine's 0 to 1 scale: the pattern's mean.
@@ -831,7 +840,8 @@ describe("assessCapture", () => {
     const result = assessCapture(
       measuredWith(sharpMidtones(90, 120), face({ center: { x: 1.1, y: 0.5 } })),
     );
-    expect(result.metrics.faceCenter).toEqual({ x: 1, y: 0.5 });
+    expect(result.metrics.faceCenter?.x).toBe(1);
+    expect(result.metrics.faceCenter?.y ?? 0).toBeCloseTo(0.5, 10);
     expect(result.reason).toBe("face_out_of_bounds");
   });
 
@@ -882,7 +892,8 @@ function reading(
         overrides.faceWidthRatio === undefined
           ? FRAME_OVAL_WIDTH
           : overrides.faceWidthRatio,
-      faceBboxRatio: FRAME_OVAL_WIDTH,
+      meshWidthRatio: FRAME_OVAL_WIDTH * MESH_FACE_WIDTH_SHARE,
+      faceBboxRatio: FRAME_OVAL_WIDTH * MESH_FACE_WIDTH_SHARE,
       faceCenter: { x: 0.5, y: 0.47 },
       pose: overrides.pose ?? null,
       blink: overrides.blink === undefined ? { left: 0, right: 0 } : overrides.blink,
