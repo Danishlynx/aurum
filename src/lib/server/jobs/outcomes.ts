@@ -9,11 +9,18 @@ import { isSupabaseConfigured } from "../env";
  * The one go reading rate, read from the capture_outcomes view (migration
  * 0015) for /api/judge/stats.
  *
- * The definition, from docs/05-evals.md: over first camera captures (path
- * camera, attempt 1) that the client accepted and a face model measured, with
- * no provider failure touching them, the share where all four runnable readings
- * succeeded and the profile pointed at the capture within 120 seconds. A cache
- * hit never makes a captures row, so it is out by construction.
+ * The definition, from docs/05-evals.md and the view: over first camera
+ * captures (path camera, attempt 1) that the client accepted and a face model
+ * measured, with no provider failure touching them, the share where all four
+ * runnable readings succeeded, the last of them within 120 seconds of the
+ * capture, and a profile points at the capture. A cache hit never makes a
+ * captures row, so it is out by construction. A capture whose analyze never
+ * ran has no readings and counts as a miss: the person took the photo and got
+ * nothing, which is exactly what the rate is for.
+ *
+ * The window is the last seven days, less the last 120 seconds. A capture
+ * younger than the job lifetime is still being read, and counting it would
+ * report every capture in flight as a miss until its readings landed.
  *
  * Null whenever the view cannot be read: no Supabase project, a project the
  * migration has not reached, or a query that failed. The stats route reports
@@ -21,6 +28,9 @@ import { isSupabaseConfigured } from "../env";
  */
 
 export const ONE_GO_WINDOW_DAYS = 7;
+
+/** The 120 second clock of the view, JOB_LIFETIME_MS in src/lib/server/jobs. */
+export const ONE_GO_SETTLE_MS = 120_000;
 
 export interface OneGoWindow {
   /** Rows in the window that qualify (first camera capture, accepted, measured). */
@@ -64,11 +74,13 @@ export async function readOneGoStats(now: Date = new Date()): Promise<OneGoStats
     return null;
   }
   const since = new Date(now.getTime() - ONE_GO_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const settled = new Date(now.getTime() - ONE_GO_SETTLE_MS);
   try {
     const result = await serviceClient()
       .from("capture_outcomes")
       .select("one_go, provider_failed")
       .gte("created_at", since.toISOString())
+      .lt("created_at", settled.toISOString())
       .eq("path", "camera")
       .eq("attempt", 1)
       .eq("verdict", "accept")

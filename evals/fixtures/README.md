@@ -55,27 +55,15 @@ human labeled Fitzpatrick type, undertone, and hair type. eval:consistency
 compares provider output against these labels
 (docs/05-evals.md, suite eval:consistency).
 
-### evals/fixtures/captures-bad
+### Bad captures
 
-One photo per failure the capture gate has to catch. Name each file for the
-failure so a test report reads plainly:
-
-- `blurry.jpg`: taken while moving, no sharp edge anywhere on the face
-- `dark.jpg`: taken indoors at night with no light on the face
-- `over-exposed.jpg`: taken with a window directly behind the phone, forehead
-  clipped to white
-- `off-center.jpg`: face at the edge of the frame
-- `partial-face.jpg`: half the face outside the frame
-- `no-face.jpg`: a room, a wall, anything with no face in it
-- `printed-photo.jpg`: a photograph of a printed photograph, the presentation
-  attack case
-- `two-faces.jpg`: two people in the frame, which docs/06-safety-privacy.md
-  requires be rejected because the app only ever processes the signed in
-  person's face
-
-`two-faces.jpg` needs a second consenting person or a synthetic face composited
-in. If neither is available, generate it with Perfect Corp's tools and note that
-in the consent record.
+There is no `captures-bad` folder and no suite reads one. The failures the gate
+has to catch (dark, over exposed, off center, partial face, no face, turned
+away, eyes closed, two faces) are exercised two ways: `evals/capture/capture.test.ts`
+builds a synthetic frame per category, which proves the decision logic and the
+reason precedence, and the exported outcome rows under `private` (below) put
+the engine's own refusal beside the numbers the gate measured on a real frame,
+which is what proves or moves a threshold (docs/05-evals.md, eval:capture).
 
 ### evals/fixtures/garments
 
@@ -149,15 +137,14 @@ borderline boundaries.
 They do not prove the thresholds. `SHARPNESS_BORDERLINE_BELOW`, read at
 `SHARPNESS_MEASURE_LONG_EDGE`, the exposure fractions, and the mean luminance
 bounds in `quality.ts` are numbers about real photographs. They get their real
-values from the first run of eval:capture against `faces` and `captures-bad`,
-against the threshold in docs/05-evals.md: every bad capture rejected, every good
-light face accepted, at most one indoor light face borderline.
+values from the exported outcome rows in `private/capture-outcomes.json` and
+the calibration report over them (`npm run calibration:report`), against the
+bar in docs/05-evals.md: a constant moves only when the report says the engine
+refuses on the other side of it.
 
-Read "rejected" there as "not accepted". Sharpness has no reject threshold: a
-soft frame is borderline at every value and is offered with "Use it anyway",
-because the engine's own input gate reads the frame for free and is the
-authority. A fixture pass measures blur against the borderline line, not against
-a refusal.
+Sharpness has no reject threshold: a soft frame is borderline at every value
+and is offered with "Use it anyway", because the engine's own input gate reads
+the frame for free and is the authority.
 
-Until then, treat a passing eval:capture as evidence about the code, not about
-the camera.
+Until the export exists on the machine running it, treat a passing eval:capture
+as evidence about the code, not about the camera.

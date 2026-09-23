@@ -5,8 +5,9 @@
  * scripts/export-capture-outcomes.ts, gitignored) and prints, for each number
  * the gate measures, the engine's acceptance rate by bucket: absolute yaw,
  * signed pitch, absolute roll, face width ratio, face luma over the oval, and
- * the blink maximum. Then every refusal code the engine answered, each with the
- * numbers we measured on the frame it refused.
+ * the blink maximum; before those, the engine's acceptance of the frames we
+ * accepted, per platform (ios, android, desktop). Then every refusal code the
+ * engine answered, each with the numbers we measured on the frame it refused.
  *
  * This is how a threshold moves. A constant in src/lib/shared/quality.ts is
  * changed only when a row of this report says the engine refuses on the other
@@ -32,6 +33,7 @@ import {
   OUTCOME_BUCKETS,
   OUTCOME_PICKERS,
   bucketRates,
+  platformRates,
   precisionRecallOf,
   readCaptureOutcomes,
   refusalCodeCounts,
@@ -82,6 +84,13 @@ export function buildCalibrationReport(file: CaptureOutcomesFile, sha: string) {
     rowsRead: rows.length,
     excludedProviderFailures: file.filter.excludedProviderFailures,
     precisionRecall: precisionRecallOf(rows),
+    /**
+     * Acceptance per kind of camera, over the rows the client accepted. Each
+     * platform frames the face differently (src/lib/client/platform.ts), so a
+     * rate that looks fine on average can hide one platform the gate gets
+     * wrong; docs/05-evals.md asks for the breakdown.
+     */
+    byPlatform: platformRates(rows.filter((row) => row.quality.verdict === "accept")),
     buckets: {
       absYaw: bucketRates(rows, OUTCOME_PICKERS.absYaw, OUTCOME_BUCKETS.absYaw),
       pitch: bucketRates(rows, OUTCOME_PICKERS.pitch, OUTCOME_BUCKETS.pitch),
@@ -115,6 +124,10 @@ export function renderCalibrationReport(
     `Precision (engine accepted | we accepted): ${percent(pr.precision).trim()}. Recall (we accepted | engine accepted): ${percent(pr.recall).trim()}.`,
   );
   lines.push("");
+  lines.push(
+    ...table("Engine acceptance of our accepted frames, by platform", report.byPlatform),
+    "",
+  );
   lines.push(...table("Acceptance by |yaw| (degrees)", report.buckets.absYaw), "");
   lines.push(...table("Acceptance by pitch (degrees, signed)", report.buckets.pitch), "");
   lines.push(...table("Acceptance by |roll| (degrees)", report.buckets.absRoll), "");

@@ -87,7 +87,7 @@ from public.captures c
 left join runnable r on r.capture_id = c.id;
 
 comment on view public.capture_outcomes is
-  'One row per capture, numbers and category words only: when it was taken, platform, path, attempt, the client verdict, whether a face model measured it, whether all four runnable readings succeeded, whether a provider failure touched it, whether the profile points at it, whether the last reading landed within 120 seconds, one_go (all of the above), and the units charged. Read by /api/judge/stats and the calibration report.';
+  'One row per capture, numbers and category words only: when it was taken, platform, path, attempt, the client verdict, whether a face model measured it, all_runnable_succeeded, provider_failed, profile_points_at_capture, readings_within_120s, one_go, and the units charged. one_go is all_runnable_succeeded and profile_points_at_capture and readings_within_120s; it does not look at provider_failed, which the reader excludes on its own (a provider outage says nothing about the frame). Read by /api/judge/stats and the calibration report.';
 
 -- Not reachable from the browser. The view is owned by the migration role and
 -- reads the underlying tables without their row level security, which is

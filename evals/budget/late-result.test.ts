@@ -32,6 +32,9 @@ const CAPTURE_ID = "11111111-1111-4111-8111-111111111111";
 const ANALYSIS_ID = "22222222-2222-4222-8222-222222222222";
 const JOB_ID = "33333333-3333-4333-8333-333333333333";
 const TASK_ID = "pc-task-late";
+/** A follower of the leader above, written at analyze time and never started. */
+const FOLLOWER_ANALYSIS_ID = "44444444-4444-4444-8444-444444444444";
+const FOLLOWER_JOB_ID = "55555555-5555-4555-8555-555555555555";
 
 /** Well past the 120 second lifetime. */
 const CREATED_AT = new Date(Date.now() - 300_000).toISOString();
@@ -70,6 +73,34 @@ function jobRow() {
   };
 }
 
+function followerAnalysisRow() {
+  return {
+    ...analysisRow(),
+    id: FOLLOWER_ANALYSIS_ID,
+    kind: "skin" as const,
+    status: "pending" as const,
+    provider_task_id: null,
+    credits_used: 0,
+  };
+}
+
+function followerJobRow() {
+  return {
+    ...jobRow(),
+    id: FOLLOWER_JOB_ID,
+    subject_id: FOLLOWER_ANALYSIS_ID,
+    status: "pending" as const,
+    provider_task_id: null,
+    attempts: 0,
+  };
+}
+
+/** What listAnalyses and listJobsForSubjects answer; a test may add the follower. */
+let analysisRows: Array<ReturnType<typeof analysisRow> | ReturnType<typeof followerAnalysisRow>> = [
+  analysisRow(),
+];
+let jobRows: Array<ReturnType<typeof jobRow> | ReturnType<typeof followerJobRow>> = [jobRow()];
+
 const capture = {
   id: CAPTURE_ID,
   user_id: OWNER,
@@ -90,7 +121,14 @@ const session = { kind: "user" as const, id: OWNER, ownerType: "user" as const }
 /* ------------------------------------------------------------------ */
 
 const updateAnalysis = vi.fn(async () => undefined);
-const updateJob = vi.fn(async () => null);
+/** The status each job row was last written with, for the start claim below. */
+const jobStatusById = new Map<string, string>();
+const updateJob = vi.fn(async (id: string, patch: { status?: string }) => {
+  if (patch.status !== undefined) {
+    jobStatusById.set(id, patch.status);
+  }
+  return null;
+});
 const findJobForSubject = vi.fn(async () => null);
 
 vi.mock("@/lib/server/db", () => ({
@@ -99,24 +137,48 @@ vi.mock("@/lib/server/db", () => ({
     (findJobForSubject as unknown as (...a: unknown[]) => unknown)(...args),
   getCapture: async () => capture,
   insertJob: vi.fn(),
-  listAnalyses: async () => [analysisRow()],
-  listJobsForSubjects: async () => [jobRow()],
+  listAnalyses: async () => analysisRows,
+  listJobsForSubjects: async () => jobRows,
   updateAnalysis: (...args: unknown[]) =>
     (updateAnalysis as unknown as (...a: unknown[]) => unknown)(...args),
   updateJob: (...args: unknown[]) =>
     (updateJob as unknown as (...a: unknown[]) => unknown)(...args),
 }));
 
-/** The claim always wins: this suite is about what happens after it. */
+/**
+ * The poll claim always wins: this suite is about what happens after it. The
+ * start claim (advanceFanOut, "status = pending") is the one thing the chain
+ * has to answer honestly, because the follower test below depends on a job
+ * that was just closed no longer being startable. So the chain remembers the
+ * filters of the current statement and refuses a pending claim on a job whose
+ * status was written as anything else.
+ */
 vi.mock("@/lib/server/db/service", () => {
   const chain: Record<string, unknown> = {};
+  let filters: Array<readonly [string, unknown]> = [];
   const self = () => chain;
   Object.assign(chain, {
-    update: self,
-    eq: self,
+    update: () => {
+      filters = [];
+      return chain;
+    },
+    eq: (column: string, value: unknown) => {
+      filters.push([column, value] as const);
+      return chain;
+    },
     is: self,
     select: self,
-    maybeSingle: async () => ({ data: { id: JOB_ID }, error: null }),
+    maybeSingle: async () => {
+      const id = filters.find(([column]) => column === "id")?.[1];
+      const wantsPending = filters.some(
+        ([column, value]) => column === "status" && value === "pending",
+      );
+      const status = typeof id === "string" ? jobStatusById.get(id) : undefined;
+      if (wantsPending && status !== undefined && status !== "pending") {
+        return { data: null, error: null };
+      }
+      return { data: { id: id ?? JOB_ID }, error: null };
+    },
   });
   return {
     serviceClient: () => ({ from: () => chain }),
@@ -146,7 +208,9 @@ const reservation = {
 };
 
 vi.mock("@/lib/server/credits", () => ({
-  findReservation: async () => reservation,
+  /** Only the leader ever reserved anything; a follower never started. */
+  findReservation: async (args: { subjectId: string }) =>
+    args.subjectId === ANALYSIS_ID ? reservation : null,
   refund: (...args: unknown[]) =>
     (refund as unknown as (...a: unknown[]) => unknown)(...args),
   reconcile: (...args: unknown[]) =>
@@ -179,6 +243,8 @@ vi.mock("@/lib/server/providers/perfectcorp", () => ({
 }));
 
 const readTask = vi.fn();
+const startTask = vi.fn();
+const uploadCapture = vi.fn();
 
 vi.mock("@/lib/server/jobs/analysis", () => ({
   normalize: () => ({
@@ -191,8 +257,10 @@ vi.mock("@/lib/server/jobs/analysis", () => ({
   readTask: (...args: unknown[]) =>
     (readTask as unknown as (...a: unknown[]) => unknown)(...args),
   requiresMorePhotos: (kind: string) => kind === "hair_type",
-  startTask: vi.fn(),
-  uploadCapture: vi.fn(),
+  startTask: (...args: unknown[]) =>
+    (startTask as unknown as (...a: unknown[]) => unknown)(...args),
+  uploadCapture: (...args: unknown[]) =>
+    (uploadCapture as unknown as (...a: unknown[]) => unknown)(...args),
 }));
 
 const { pollCaptureJobs, JOB_LIFETIME_MS } = await import("@/lib/server/jobs");
@@ -220,7 +288,18 @@ beforeEach(() => {
   refund.mockClear();
   reconcile.mockClear();
   readTask.mockReset();
+  startTask.mockReset();
+  uploadCapture.mockReset();
+  jobStatusById.clear();
+  analysisRows = [analysisRow()];
+  jobRows = [jobRow()];
 });
+
+function patchesFor(analysisId: string): Array<Record<string, unknown>> {
+  return updateAnalysis.mock.calls
+    .filter((call) => (call as unknown[])[0] === analysisId)
+    .map((call) => (call as unknown[])[1] as Record<string, unknown>);
+}
 
 /* ------------------------------------------------------------------ */
 /* The branch                                                          */
@@ -321,5 +400,70 @@ describe("eval:budget, a job past its lifetime", () => {
       status: "failed",
       error: copy.errors.providerTimeout,
     });
+  });
+
+  it("closes as charged when the last read fails for a reason that is not transient", async () => {
+    /*
+     * A 400 on the status GET (the provider no longer serves the task, or the
+     * envelope did not parse) says nothing about whether the task ran. Before
+     * the review of 2026-09-23 this throw reached failJob and refunded a task
+     * the provider may well have charged for. An unknown result is a charged
+     * one, which is failChargedJob's own rule.
+     */
+    readTask.mockRejectedValue(
+      new ProviderError({
+        provider: "perfectcorp",
+        code: "provider_error",
+        status: 400,
+        message: "task not found",
+      }),
+    );
+    await pollCaptureJobs({ session, capture });
+
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(refund).not.toHaveBeenCalled();
+    expect(analysisPatches()[0]).toMatchObject({
+      status: "failed",
+      credits_used: 20,
+      error: copy.errors.providerTimeout,
+    });
+    expect(updateJob).toHaveBeenCalledWith(JOB_ID, {
+      status: "failed",
+      error: copy.errors.providerTimeout,
+      attempts: 2,
+    });
+  });
+
+  it("closes the follower of a late leader unstarted and unpaid, and never starts it", async () => {
+    /*
+     * Every job of a capture is written at analyze time, so a follower is as old
+     * as its leader and expires in the same pass. The leader's late result is
+     * kept and paid for; the follower, which has no task and no reservation, is
+     * closed with the timeout line and credits_used 0, and the fan out that
+     * follows a leader success finds it no longer pending and leaves it alone.
+     */
+    analysisRows = [analysisRow(), followerAnalysisRow()];
+    jobRows = [jobRow(), followerJobRow()];
+    readTask.mockResolvedValue(snapshot("succeeded"));
+    await pollCaptureJobs({ session, capture });
+
+    // The leader: stored, reconciled, never refunded.
+    expect(patchesFor(ANALYSIS_ID)[0]).toMatchObject({ status: "succeeded", credits_used: 20 });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(refund).not.toHaveBeenCalled();
+
+    // The follower: closed, charged nothing, because nothing was reserved.
+    expect(patchesFor(FOLLOWER_ANALYSIS_ID)).toEqual([
+      { status: "failed", error: copy.errors.providerTimeout, credits_used: 0 },
+    ]);
+    expect(updateJob).toHaveBeenCalledWith(FOLLOWER_JOB_ID, {
+      status: "failed",
+      error: copy.errors.providerTimeout,
+      attempts: 2,
+    });
+
+    // And no unit was spent starting it: no upload, no task.
+    expect(uploadCapture).not.toHaveBeenCalled();
+    expect(startTask).not.toHaveBeenCalled();
   });
 });

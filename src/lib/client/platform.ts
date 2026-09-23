@@ -2,12 +2,14 @@
  * Which kind of device took the frame, for the calibration column and nothing
  * else.
  *
- * The one go reading rate is stratified by platform (docs/05-evals.md), because
- * the three kinds of camera behave differently: an iPhone front stream reports
- * the landscape sensor size for its first frames and then the portrait one, an
- * Android track swaps on rotation, and a laptop webcam is a wide 16:9 strip. A
- * threshold that holds on one of them can fail on another, so a stored row says
- * which one measured it.
+ * The calibration report breaks the engine's acceptance of our accepted frames
+ * down by platform (docs/05-evals.md, eval:capture), because the three kinds
+ * of camera behave differently: an iPhone front stream reports the landscape
+ * sensor size for its first frames and then the portrait one, an Android track
+ * swaps on rotation, and a laptop webcam is a wide 16:9 strip. A threshold that
+ * holds on one of them can fail on another, so a stored row says which one
+ * measured it, and the capture_outcomes view carries the word so the one go
+ * rate can be read per platform too.
  *
  * The user agent string is the only input and the answer is one of three words.
  * It is not a fingerprint: nothing finer than "phone from Apple, phone from

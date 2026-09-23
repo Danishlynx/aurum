@@ -1151,8 +1151,16 @@ export async function pollCaptureJobs(
      * one that has.
      *
      * A job that never started (a follower still pending, no task, no
-     * reservation) has nothing to read and settles nothing, because there is
-     * nothing to settle.
+     * reservation) has nothing to read: past the lifetime it is closed with the
+     * timeout line and credits_used 0, because nothing was reserved for it. That
+     * is also what becomes of the followers of a leader whose result landed
+     * late. Every job of a capture is written at analyze time, so the followers
+     * are as old as the leader and expire in the same pass; the late leader is
+     * stored and paid for, its followers are closed unstarted and unpaid, and
+     * the profile is not built from that capture. Starting them would be worse:
+     * they would expire on the very next poll and be closed as charged. A
+     * follower lifetime measured from its own start belongs with the reconcile
+     * work (docs/03-architecture.md, Jobs).
      */
     const expired = Date.now() - Date.parse(job.created_at) > JOB_LIFETIME_MS;
 
@@ -1296,13 +1304,23 @@ export async function pollCaptureJobs(
     } catch (thrown) {
       const transient = isProviderError(thrown) && thrown.isTransient;
       /*
-       * The last read past the lifetime did not answer either. The task is in
-       * the same state it was in before the read, still at the provider and
-       * still going to be charged, so it is closed exactly as it was before the
-       * final read existed. A transient error here is the one case where the
-       * lifetime, not the task, has the final word.
+       * The last read past the lifetime did not answer either. Whatever threw
+       * (a 15 second timeout, a 5xx, a 4xx for a task the provider no longer
+       * serves, a key that stopped working, a status envelope that did not
+       * parse), the task's state is unknown, and an unknown task is one the
+       * provider may well have finished and charged for. So it is closed exactly
+       * as it was before the final read existed: as charged, with the timeout
+       * line. The lifetime, not the task, has the final word here.
+       *
+       * This is tested on expired alone, and deliberately not on transient. Until
+       * the review of 2026-09-23 only a transient error took this branch, and
+       * every other throw fell through to failJob below, which refunds. That
+       * refund was new money: before the final read existed an expired job was
+       * closed charged without any read at all, so a rotated key or a 400 on the
+       * status GET had turned "we do not know" into "we were not charged", which
+       * is the same lie failChargedJob exists to stop telling.
        */
-      if (transient && expired) {
+      if (expired) {
         await failChargedJob({
           session: input.session,
           job,

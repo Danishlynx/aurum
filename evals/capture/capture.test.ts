@@ -17,6 +17,7 @@ import {
   bucketRates,
   captureOutcomesFileSchema,
   engineOutcomeOf,
+  platformRates,
   precisionRecallOf,
   readCaptureOutcomes,
   refusalCodeCounts,
@@ -51,8 +52,8 @@ import {
  * The suite has two halves.
  *
  * The half that runs now exercises the pure gate in src/lib/shared/quality.ts
- * against synthetic images, one per failure category in
- * evals/fixtures/captures-bad. Synthetic data is enough to prove the decision
+ * against synthetic images, one per failure category the gate names (there is
+ * no photo folder for them). Synthetic data is enough to prove the decision
  * logic, the reason precedence, and the accept and borderline boundaries. It is
  * not enough to prove the thresholds, which are numbers about real photographs.
  *
@@ -675,6 +676,22 @@ describe("eval:capture, the fixture half's arithmetic", () => {
     expect(tens).toEqual({ label: "10 to 15", n: 2, ok: 1, rate: 0.5 });
     const counted = rates.reduce((total, rate) => total + rate.n, 0);
     expect(counted).toBe(4);
+  });
+
+  it("breaks acceptance down by platform and keeps rows without one as unknown", () => {
+    const rates = platformRates([
+      row("accept", ALL_SUCCEEDED, undefined, { platform: "ios" }),
+      row("accept", LEADER_REFUSED, undefined, { platform: "ios" }),
+      row("accept", ALL_SUCCEEDED, undefined, { platform: "android" }),
+      row("accept", ALL_SUCCEEDED, undefined, { platform: undefined }),
+      // Not decided, so it lands in no platform's count.
+      row("accept", STILL_RUNNING, undefined, { platform: "desktop" }),
+    ]);
+    expect(rates.map((rate) => rate.label)).toEqual(["ios", "android", "desktop", "unknown"]);
+    expect(rates[0]).toEqual({ label: "ios", n: 2, ok: 1, rate: 0.5 });
+    expect(rates[1]).toEqual({ label: "android", n: 1, ok: 1, rate: 1 });
+    expect(rates[2]).toEqual({ label: "desktop", n: 0, ok: 0, rate: null });
+    expect(rates[3]).toEqual({ label: "unknown", n: 1, ok: 1, rate: 1 });
   });
 
   it("keeps the pitch buckets signed, because the engine's own presets are", () => {

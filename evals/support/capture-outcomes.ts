@@ -260,6 +260,43 @@ function formatEdge(edge: number | undefined): string {
   return String(edge);
 }
 
+/** The platforms a row can name, in the order the report prints them. */
+export const OUTCOME_PLATFORMS = ["ios", "android", "desktop"] as const;
+
+/**
+ * Acceptance by platform: of the rows the engine gave a verdict on, taken on
+ * each kind of camera, how many it accepted in full. The same arithmetic as
+ * bucketRates over a word instead of a number, so a threshold that holds on a
+ * phone and fails on a webcam shows up as two rates rather than one average. A
+ * row from before platform was recorded is listed as "unknown" rather than
+ * dropped, so the table adds up to the decided rows.
+ */
+export function platformRates(rows: readonly OutcomeRow[]): BucketRate[] {
+  const counts = new Map<string, { n: number; ok: number }>(
+    [...OUTCOME_PLATFORMS, "unknown"].map((platform) => [platform, { n: 0, ok: 0 }]),
+  );
+  for (const row of rows) {
+    const outcome = engineOutcomeOf(row);
+    if (outcome === "undetermined") {
+      continue;
+    }
+    const bucket = counts.get(row.quality.platform ?? "unknown");
+    if (bucket === undefined) {
+      continue;
+    }
+    bucket.n += 1;
+    if (outcome === "accepted") {
+      bucket.ok += 1;
+    }
+  }
+  return [...counts.entries()].map(([label, bucket]) => ({
+    label,
+    n: bucket.n,
+    ok: bucket.ok,
+    rate: bucket.n === 0 ? null : bucket.ok / bucket.n,
+  }));
+}
+
 /** The pickers the report and the eval bucket on, in one place. */
 export const OUTCOME_PICKERS = {
   absYaw: (row: OutcomeRow): number | null =>

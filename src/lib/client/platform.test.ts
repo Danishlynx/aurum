@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { currentPlatform, platformFromUserAgent } from "./platform";
 
@@ -44,7 +44,28 @@ describe("platformFromUserAgent", () => {
     expect(platformFromUserAgent("something android-studio")).toBe("desktop");
   });
 
-  it("answers desktop where there is no navigator at all", () => {
-    expect(currentPlatform()).toBe("desktop");
+  describe("currentPlatform", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("answers desktop where there is no navigator at all", () => {
+      // Node 22 defines a global navigator whose userAgent is "Node.js/22", so
+      // without the stub this would pass through the regex path and prove
+      // nothing about the guard.
+      vi.stubGlobal("navigator", undefined);
+      expect(typeof navigator).toBe("undefined");
+      expect(currentPlatform()).toBe("desktop");
+    });
+
+    it("answers desktop for a navigator with no user agent string", () => {
+      vi.stubGlobal("navigator", {});
+      expect(currentPlatform()).toBe("desktop");
+    });
+
+    it("reads the browser's user agent when there is one", () => {
+      vi.stubGlobal("navigator", { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X)" });
+      expect(currentPlatform()).toBe("ios");
+    });
   });
 });
