@@ -35,11 +35,15 @@ export type ApiFailureKind =
   /** 429. A judge session or a daily cap is exhausted. */
   | "capped"
   /**
-   * 409. The stored photo is not one the server can send: it failed the read
-   * at analyze (not a JPEG, a size other than the registered one, outside the
-   * engine's limits, a different digest), or it was never stored at all. The
+   * 409, from any route. Only the analyze route gives it the meaning the name
+   * carries: the stored photo is not one the server can send (it failed the
+   * read at analyze: not a JPEG, a size other than the registered one, outside
+   * the engine's limits, a different digest, or never stored at all), and the
    * way out is a new photo, so the capture screen shows it as an upload that
-   * did not complete, with the step and status under it.
+   * did not complete with the step and status under it. Other routes answer
+   * 409 for their own conflicts (a missing original on a render, a full
+   * wardrobe); a consumer that switches on this kind must know which route it
+   * called.
    */
   | "unreadable"
   /** The response arrived but did not match its schema. */
