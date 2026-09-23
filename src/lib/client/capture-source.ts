@@ -1,4 +1,4 @@
-﻿/**
+/**
  * The photo the capture screen sent, kept in memory in case the engine refuses
  * the way it was framed.
  *
@@ -12,9 +12,18 @@
  *
  * A refused task is charged nothing (docs/04-integrations.md, "Input errors"),
  * so trying again costs nothing but a few seconds. This module is that retry:
- * the source frame is held here, /analyzing asks for a tighter crop of it when a
- * refusal is one a crop could fix, and the person sees one status line instead
- * of a dead end. After the last attempt the honest refusal is what shows.
+ * the master frame is held here, /analyzing asks for a tighter crop of it when
+ * a refusal is one a crop could fix, and the person sees one status line
+ * instead of a dead end. After the one retry the honest refusal is what shows.
+ *
+ * The frame held is the master frame itself (src/lib/shared/frame-geometry.ts):
+ * the 3:4 canvas the capture screen uploaded, at its native size. The retry is
+ * reframeBoxFor from the same module, one bounded step, a concentric 3:4 box
+ * keeping 0.76 of both dimensions centred on the face centre the gate read
+ * when the frame was sent, which by construction contains the target oval and
+ * its margins. The crop is drawn with the engine's floor, so a frame that was
+ * already at the 480 px short edge is scaled back up to it rather than sent to
+ * a certain refusal.
  *
  * In memory, and only in memory. The frame is pixels of a person's face, so it
  * is never written to storage of any kind: a reload of /analyzing finds nothing
@@ -35,8 +44,6 @@ import { readFaces } from "@/lib/client/landmarks";
 import { currentPlatform } from "@/lib/client/platform";
 import {
   CAPTURE_JPEG_QUALITY,
-  CAPTURE_LONG_EDGE,
-  CAPTURE_MIN_SHORT_EDGE,
   PREVIEW_JPEG_QUALITY,
   PREVIEW_LONG_EDGE,
   drawCropToCanvas,
@@ -47,14 +54,28 @@ import {
   toGrayscale,
   toJpegBlob,
 } from "@/lib/client/image";
+import {
+  BURST_MEASURE_LONG_EDGE,
+  FRAME_GEOMETRY_VERSION,
+  MASTER_MAX_LONG_EDGE,
+  MASTER_MIN_SHORT_EDGE,
+  reframeBoxFor,
+  type Point,
+} from "@/lib/shared/frame-geometry";
 import { assessCapture } from "@/lib/shared/quality";
 import type { CaptureAssessment } from "@/lib/shared/quality";
-import { hasReframeLeft, reframeBoxFor } from "@/lib/shared/reframe";
+import { hasReframeLeft } from "@/lib/shared/reframe";
 
 type HeldSource = {
-  /** The photo as it was decoded, upright and free of EXIF. */
+  /** The master frame as it was sent, upright and free of EXIF. */
   readonly canvas: HTMLCanvasElement;
-  /** 1 for the frame the person sent, 2 and 3 for the reframes. */
+  /**
+   * Where the gate read the face's centre in that canvas's pixels, or null
+   * when the frame was sent without a reading (unmeasured, "Use it anyway").
+   * The retry centres its crop here; without it, on the frame's target centre.
+   */
+  readonly faceCenter: Point | null;
+  /** 1 for the frame the person sent, 2 for the reframe. */
   readonly attempt: number;
   /** The capture the current attempt was sent as, null before it is created. */
   readonly captureId: string | null;
@@ -67,9 +88,15 @@ type HeldSource = {
  */
 let held: HeldSource | null = null;
 
-/** Keeps the frame about to be sent. Called once per photo, before upload. */
-export function rememberCaptureSource(canvas: HTMLCanvasElement): void {
-  held = { canvas, attempt: 1, captureId: null };
+/**
+ * Keeps the frame about to be sent, with the face centre the gate read in its
+ * pixels. Called once per photo, before upload.
+ */
+export function rememberCaptureSource(
+  canvas: HTMLCanvasElement,
+  faceCenter: Point | null = null,
+): void {
+  held = { canvas, faceCenter, attempt: 1, captureId: null };
 }
 
 /** Ties the held frame to the capture id the server gave it. */
@@ -96,23 +123,13 @@ export function canReframeCapture(captureId: string): boolean {
  * Why a retry did not happen:
  *
  * - no_source: nothing is held for this capture, so there is nothing to send.
- * - gate: every remaining crop failed our own gate, so none of them was sent.
+ * - gate: the crop failed our own gate, so it was not sent.
  * - request: the crop was good and the server could not take it.
  */
 export type ReframeOutcome =
   | { readonly ok: true; readonly captureId: string }
   | { readonly ok: false; readonly reason: "no_source" | "gate" | "request" };
 
-/**
- * Sends the held photo again, cropped tighter, as a new capture.
- *
- * Each attempt is spent the moment it is tried, whatever happens to it, so this
- * cannot loop: three attempts is three, counting the one the person took.
- *
- * A crop our own gate rejects is never sent (docs/04-integrations.md: never send
- * a photo that failed the gate, which the route enforces as well). It costs
- * nothing to find out, so the next, tighter crop is tried instead of giving up.
- */
 /**
  * The capture id a resubmit is currently running for, or null.
  *
@@ -131,6 +148,18 @@ export type ReframeOutcome =
  */
 let resubmitting: string | null = null;
 
+/**
+ * Sends the held photo again, cropped tighter, as a new capture.
+ *
+ * The attempt is spent the moment it is tried, whatever happens to it, so this
+ * cannot loop: two attempts is two, counting the one the person took.
+ *
+ * A crop our own gate rejects is never sent (docs/04-integrations.md: never send
+ * a photo that failed the gate, which the route enforces as well). Only a
+ * reject stops it: the reframed crop keeps about 0.03 of its height above the
+ * oval by construction, so the gate's bounds check answers borderline on it by
+ * design, and a borderline crop is exactly what this retry exists to send.
+ */
 export async function resubmitReframedCapture(
   captureId: string,
 ): Promise<ReframeOutcome> {
@@ -153,37 +182,37 @@ async function runResubmit(
   captureId: string,
   source: HeldSource,
 ): Promise<ReframeOutcome> {
-
   let attempt = source.attempt;
   while (hasReframeLeft(attempt)) {
     attempt += 1;
     held = { ...source, attempt };
 
-    const box = reframeBoxFor({
-      frame: { width: source.canvas.width, height: source.canvas.height },
-      attempt,
-    });
-    if (box === null) {
-      break;
-    }
+    const frame = { width: source.canvas.width, height: source.canvas.height };
+    const box = reframeBoxFor(frame, source.faceCenter ?? undefined);
 
+    /*
+     * Drawn with the engine's cap and floor, like every frame that is sent.
+     * On a phone the master frame is 1080 by 1440 and the crop 820 by 1094,
+     * well inside both; on the smallest master frame (480 by 640) the crop is
+     * 365 by 486 and is scaled back up to the 480 floor.
+     */
     const canvas = drawCropToCanvas(
       source.canvas,
       box,
-      CAPTURE_LONG_EDGE,
-      CAPTURE_MIN_SHORT_EDGE,
+      MASTER_MAX_LONG_EDGE,
+      MASTER_MIN_SHORT_EDGE,
     );
     const read = await assess(canvas);
     if (read.assessment.verdict === "reject") {
       continue;
     }
 
-    const sent = await submit(canvas, read, attempt);
+    const sent = await submit(canvas, read, attempt, frame);
     if (sent === null) {
       return { ok: false, reason: "request" };
     }
 
-    held = { canvas: source.canvas, attempt, captureId: sent };
+    held = { ...source, attempt, captureId: sent };
     // The reveal opens on the frame that is being read, which is now the crop.
     rememberCapturePreview(
       sent,
@@ -215,10 +244,20 @@ type GateReading = {
  * The same gate the capture screen runs, on the reframed crop: the landmarker
  * reads the crop, the largest face is judged, and whether anything measured
  * the frame at all travels with the verdict so the stored row says so.
+ *
+ * Measured once, on a BURST_MEASURE_LONG_EDGE copy, the way the capture screen
+ * measures a burst frame: the gate never reads pixels at master size.
  */
 async function assess(canvas: HTMLCanvasElement): Promise<GateReading> {
-  const image = toGrayscale(readImageData(canvas));
-  const result = await readFaces(canvas);
+  const copy = drawToCanvas(
+    canvas,
+    { width: canvas.width, height: canvas.height },
+    BURST_MEASURE_LONG_EDGE,
+  );
+  const image = toGrayscale(readImageData(copy));
+  const result = await readFaces(copy);
+  copy.width = 0;
+  copy.height = 0;
   const faces = result?.faces ?? [];
   const largest =
     faces.length === 0
@@ -252,6 +291,7 @@ async function submit(
   canvas: HTMLCanvasElement,
   read: GateReading,
   attempt: number,
+  source: { readonly width: number; readonly height: number },
 ): Promise<string | null> {
   const { assessment } = read;
   let blob: Blob;
@@ -266,7 +306,8 @@ async function submit(
   /*
    * The calibration fields, written so a reframed row can be told from the
    * frame the person sent: path "reframe" with its attempt number, whether the
-   * face model measured the crop, and what it cost (docs/03, data model).
+   * face model measured the crop, what it cost, and the sizes: the master
+   * frame it was cut from and the crop that was sent (docs/03, data model).
    */
   const quality: CaptureQualityPayload = {
     verdict: assessment.verdict,
@@ -277,6 +318,13 @@ async function submit(
     path: "reframe",
     // Bounded by hasReframeLeft already; the clamp keeps the schema's 1 to 3.
     attempt: Math.min(3, Math.max(1, attempt)),
+    frame: {
+      sourceWidth: source.width,
+      sourceHeight: source.height,
+      masterWidth: canvas.width,
+      masterHeight: canvas.height,
+    },
+    frameGeometryVersion: FRAME_GEOMETRY_VERSION,
     ...(read.landmarkerMs === null ? {} : { landmarkerMs: read.landmarkerMs }),
   };
   const created = await createCapture({
@@ -339,4 +387,3 @@ export async function startAnalysisWithOneRetry(
   }
   return startAnalysis(captureId);
 }
-

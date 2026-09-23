@@ -34,15 +34,16 @@ import {
 } from "@/lib/shared/analysis-failure";
 import { analysisFailureCopy, captureRejectionCopy, copy } from "@/lib/shared/copy";
 import { faceReadingFrom, type FaceReading } from "@/lib/shared/face-reading";
-import { FRAME_OVAL_WIDTH } from "@/lib/shared/frame-geometry";
+import {
+  FACE_WIDTH_ENGINE_MIN,
+  FRAME_OVAL_WIDTH,
+  masterCropFor,
+} from "@/lib/shared/frame-geometry";
 import {
   CAPTURE_REASON_PRECEDENCE,
   FACE_WIDTH_RATIO_MAX,
-  FACE_WIDTH_RATIO_MIN,
   assessCapture,
-  autoCropBoxFor,
   cropToBox,
-  faceWidthRatio,
   type Box,
   type CaptureRejectionReason,
   type GrayscaleImage,
@@ -301,11 +302,13 @@ describe("eval:capture, gate logic on synthetic frames", () => {
  * of the frame height when the analyzers want more than 60. On 2026-09-02 one
  * was sent as it came and the engine answered error_src_face_too_small.
  *
- * autoCropBoxFor is what the upload path does about it in this build, fed the
- * landmarker's face oval box in pixels; the capture-master-frame PR replaces
- * it with masterCropFor. This block runs the same photo through the gate
- * twice, before and after the crop, with the reading the landmarker would give
- * for the face at each framing.
+ * masterCropFor (src/lib/shared/frame-geometry.ts) is what the upload path
+ * does about it: the landmarker's face oval box, in the photo's pixels,
+ * composed into the master geometry with the face at the oval's width and
+ * centre. This block runs the same photo through the gate twice, before and
+ * after the crop, with the reading the landmarker would give for the face at
+ * each framing. The crop's own invariants (3:4, never narrower than the face,
+ * whole pixels, inside the source) are proven in frame-geometry.test.ts.
  */
 describe("eval:capture, auto framing an uploaded photo", () => {
   const GALLERY = { width: 300, height: 400 } as const;
@@ -343,15 +346,17 @@ describe("eval:capture, auto framing an uploaded photo", () => {
 
   /** The crop, and the face in the cropped frame's own terms. */
   function compose(faceBox: Box): {
+    readonly crop: Box;
     readonly image: GrayscaleImage;
     readonly reading: FaceReading;
   } {
-    const crop = autoCropBoxFor({ faceBox, frame: GALLERY });
+    const crop = masterCropFor(faceBox, GALLERY);
     if (crop === null) {
-      throw new Error("Expected a crop for a face under the framing rule.");
+      throw new Error("Expected a crop for a face the landmarker found.");
     }
     const cropped = cropToBox(galleryFrame, crop);
     return {
+      crop,
       image: cropped,
       reading: readingFor(
         {
@@ -386,24 +391,38 @@ describe("eval:capture, auto framing an uploaded photo", () => {
       expect(result.verdict).toBe("accept");
       expect(result.reason).toBeNull();
       expect(result.metrics.faceWidthRatio ?? 0).toBeGreaterThanOrEqual(
-        FACE_WIDTH_RATIO_MIN,
+        FACE_WIDTH_ENGINE_MIN,
       );
       expect(result.metrics.faceWidthRatio ?? 1).toBeLessThanOrEqual(
         FACE_WIDTH_RATIO_MAX,
       );
+      // At the oval's own width, which is what the composer aims for.
+      expect(result.metrics.faceWidthRatio ?? 0).toBeCloseTo(FRAME_OVAL_WIDTH, 1);
     },
   );
 
-  it("leaves a photo that was already framed well enough alone", () => {
-    for (const widthRatio of [0.6, 0.7, 0.8]) {
-      expect(
-        autoCropBoxFor({ faceBox: galleryFaceBox(widthRatio), frame: GALLERY }),
-      ).toBeNull();
+  /**
+   * A photo already framed well enough is composed to the same geometry
+   * rather than left alone: the crop is at most the photo, keeps the face
+   * inside the band, and the gate accepts it before and after. (A face at
+   * 0.80 of a 3:4 frame centred at the target sits into the top margin and
+   * is offered as out of bounds whatever the crop does; the gate's own tests
+   * pin that.)
+   */
+  it("keeps a photo that was already framed well enough in the band", () => {
+    for (const widthRatio of [0.6, 0.65, 0.7]) {
+      const faceBox = galleryFaceBox(widthRatio);
+      const before = assessCapture(measured(galleryFrame, readingFor(faceBox, GALLERY)));
+      expect(before.verdict).toBe("accept");
+      const composed = compose(faceBox);
+      const after = assessCapture(measured(composed.image, composed.reading));
+      expect(after.verdict).toBe("accept");
+      expect(composed.crop.width).toBeLessThanOrEqual(GALLERY.width);
+      expect(composed.crop.height).toBeLessThanOrEqual(GALLERY.height);
     }
   });
 
   it("has nothing to offer a photo with no face, which stays a refusal", () => {
-    expect(autoCropBoxFor({ faceBox: null, frame: GALLERY })).toBeNull();
     const result = assessCapture(measured(galleryFrame, null));
     expect(result.verdict).toBe("reject");
     expect(result.reason).toBe("no_face");
@@ -413,15 +432,18 @@ describe("eval:capture, auto framing an uploaded photo", () => {
   it("keeps the crop inside the picture and portrait, with the face in the band", () => {
     for (const widthRatio of GALLERY_WIDTHS) {
       const faceBox = galleryFaceBox(widthRatio);
-      const crop = autoCropBoxFor({ faceBox, frame: GALLERY });
-      expect(crop).not.toBeNull();
-      const box = crop as Box;
+      const box = masterCropFor(faceBox, GALLERY);
+      expect(box).not.toBeNull();
+      if (box === null) {
+        continue;
+      }
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.y).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(GALLERY.width);
       expect(box.y + box.height).toBeLessThanOrEqual(GALLERY.height);
       expect(box.width).toBeLessThanOrEqual(box.height);
-      expect(faceWidthRatio(faceBox, box)).toBeGreaterThanOrEqual(FACE_WIDTH_RATIO_MIN);
+      expect(faceBox.width / box.width).toBeGreaterThanOrEqual(FACE_WIDTH_ENGINE_MIN);
+      expect(faceBox.width / box.width).toBeLessThanOrEqual(FACE_WIDTH_RATIO_MAX);
     }
   });
 });

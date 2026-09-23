@@ -9,12 +9,17 @@
  * fixes a turned head; then distance, which is one clear instruction; then
  * stillness; then ready.
  *
- * These are the live measurements taken off the preview, read from the same
+ * These are the live measurements taken off the preview, which since the
+ * master frame landed is the master crop of the video at
+ * GUIDANCE_SAMPLE_LONG_EDGE: the same 3:4 frame the shutter sends, so a width
+ * read here is the width the engine will read. They come from the same
  * FaceReading the gate reads (src/lib/shared/face-reading.ts). The gate that
  * decides what happens to the frame runs in src/lib/shared/quality.ts, and the
  * two are held to the same thresholds on purpose: "Good. Tap to capture." is a
  * promise about what the next tap will do, so every condition the gate can
  * refuse a frame for is a condition this line refuses to say "Good" under.
+ * After READY_HOLD_MS of "ready" the screen turns the oval solid and takes the
+ * photo itself (docs/01-user-flow.md section D); the tap works at any time.
  *
  * An unmeasured preview, one the landmarker has not answered for, gets the
  * two light lines (over the whole frame: too dark, too bright), hold, and then
@@ -24,17 +29,26 @@
 
 import { copy } from "@/lib/shared/copy";
 import type { FaceReading } from "@/lib/shared/face-reading";
-import { ovalTouchesEdge, type Size } from "@/lib/shared/frame-geometry";
+import {
+  FACE_WIDTH_BORDERLINE_ABOVE,
+  FACE_WIDTH_BORDERLINE_BELOW,
+  ovalTouchesEdge,
+  type Size,
+} from "@/lib/shared/frame-geometry";
 import {
   FACE_LUMA_BORDERLINE_ABOVE,
   FACE_LUMA_BORDERLINE_BELOW,
-  FACE_WIDTH_RATIO_MAX,
   POSE_PITCH_MAX_DEGREES,
   POSE_PITCH_MIN_DEGREES,
   poseVerdictFor,
 } from "@/lib/shared/quality";
 import type { GrayscaleImage } from "@/lib/shared/quality";
 
+/**
+ * Every line the screen can show under the oval. guidanceKey below returns all
+ * of them but "taking", which the capture screen sets itself once the line has
+ * read "ready" for READY_HOLD_MS and the countdown to the auto capture runs.
+ */
 export type GuidanceKey = keyof typeof copy.capture.guidance;
 
 /**
@@ -63,9 +77,10 @@ export type LiveFrameStats = {
   /** True when the landmarker answered for this preview frame. */
   readonly measured: boolean;
   /**
-   * The preview sample the reading is normalized to, in pixels. Its aspect is
-   * what puts the reading's width, a share of the frame WIDTH, onto the short
-   * axis for the live floor (liveWidthRatioOf).
+   * The preview sample the reading is normalized to, in pixels. Since the
+   * master frame landed this is a 3:4 master crop on every device, so the
+   * reading's width is already a share of the short axis; the field stays so
+   * liveWidthRatioOf can say so rather than assume it.
    */
   readonly sample: Size;
   /** True when the camera track is wider than it is tall. */
@@ -91,34 +106,16 @@ export type LiveFrameStats = {
 };
 
 /**
- * The preview width ratio under which the line asks the person to come closer,
- * measured on the sample's SHORT axis (liveWidthRatioOf).
- *
- * Deliberately far below the engine's own 0.60, because in this build the
- * engine never sees the preview. autoCropBoxFor composes the uploaded frame
- * around the face from whatever the sensor gave it, so a face at 0.40 of the
- * sensor frame's short axis becomes a face at 0.66 of the upload. The limit is
- * pixels, not framing: under this the crop starts upscaling into a soft frame.
- *
- * The capture-master-frame PR removes the sensor snapshot and the composition
- * step, measures the preview on the master frame the person sees, and moves
- * this floor to FACE_WIDTH_BORDERLINE_BELOW in src/lib/shared/frame-geometry.ts,
- * so that "Move closer" asks for the oval and nothing else.
- */
-export const LIVE_FACE_WIDTH_RATIO_MIN = 0.4;
-
-/**
  * The reading's cheek to cheek width as a share of the sample's short axis.
  *
- * A FaceReading's widthRatio is over the frame WIDTH, which is the right
- * measure on the portrait master frame and the wrong one on the landscape
- * track a laptop webcam hands over in this build: on a 16:9 sample a face at
- * 0.40 of the width has an oval taller than the frame, so a floor read against
- * the width could never be cleared without the "back" line firing first, and
- * the line never said ready on a laptop (reviewed 2026-09-23). Until the
- * master frame PR lands, the floor is read the way the composition step reads
- * it, against the short axis, which is what the detector's box was measured
- * against before the landmarker. On a portrait sample the two are the same.
+ * A FaceReading's widthRatio is over the frame WIDTH, which is the engine's
+ * measure on a portrait frame ("Portrait mode: horizontal ratio. Landscape
+ * mode: vertical ratio.", docs/04-integrations.md). The live sample is the
+ * master crop, which is 3:4 on every device, so on it this is the identity
+ * and the floor below is the oval's own band. The function is kept for the
+ * one thing it states: the floor is read against the short axis, whatever
+ * shape a sample has. A landscape master never exists; a landscape sample is
+ * answered anyway rather than assumed away.
  */
 export function liveWidthRatioOf(reading: FaceReading, sample: Size): number {
   if (!(sample.width > 0) || !(sample.height > 0)) {
@@ -189,26 +186,30 @@ export function guidanceKey(stats: LiveFrameStats): GuidanceKey {
   }
 
   /*
-   * No face, or a face too small to compose from, is "Move closer". No face
-   * at all reads the same way on purpose: the landmarker did look, and the
-   * one thing a person can do about a face it could not find is bring it
-   * into the oval.
+   * No face, or a face under the oval's band, is "Move closer". The sample IS
+   * the master frame the upload will be, so the floor is the band's own lower
+   * edge (FACE_WIDTH_BORDERLINE_BELOW, 0.64: the engine's 0.60 with the same
+   * margin the oval sits above MODERATE), and "Move closer" asks for the oval
+   * and nothing else. No face at all reads the same way on purpose: the
+   * landmarker did look, and the one thing a person can do about a face it
+   * could not find is bring it into the oval.
    */
   if (
     reading === null ||
-    liveWidthRatioOf(reading, stats.sample) < LIVE_FACE_WIDTH_RATIO_MIN
+    liveWidthRatioOf(reading, stats.sample) < FACE_WIDTH_BORDERLINE_BELOW
   ) {
     return "closer";
   }
 
   /*
-   * The other side. A face wider than the band the engine reads, or one whose
-   * oval runs into the frame's edge margins, is refused by the engine as out
-   * of boundary and no crop fixes it. The edge test is the gate's own
-   * (ovalTouchesEdge), on the normalized oval box against a unit frame.
+   * The other side. A face wider than the band (FACE_WIDTH_BORDERLINE_ABOVE,
+   * 0.85), or one whose oval runs into the frame's edge margins, is refused by
+   * the engine as out of boundary and no crop fixes it. The edge test is the
+   * gate's own (ovalTouchesEdge), on the normalized oval box against a unit
+   * frame.
    */
   if (
-    reading.widthRatio > FACE_WIDTH_RATIO_MAX ||
+    reading.widthRatio > FACE_WIDTH_BORDERLINE_ABOVE ||
     ovalTouchesEdge(reading.ovalBox, { width: 1, height: 1 })
   ) {
     return "back";

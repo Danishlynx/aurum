@@ -18,6 +18,10 @@ import {
   resubmitReframedCapture,
 } from "@/lib/client/capture-source";
 import { copy } from "@/lib/shared/copy";
+import {
+  FRAME_FACE_CENTER_X,
+  FRAME_FACE_CENTER_Y,
+} from "@/lib/shared/frame-geometry";
 
 /**
  * E. Analyzing, docs/01-user-flow.md section E.
@@ -26,6 +30,14 @@ import { copy } from "@/lib/shared/copy";
  * vignette, which is the one gradient the design system allows. As the skin
  * analysis returns, its mask blooms over the face in translucent Leaf gold and
  * settles. Below it, one line of status.
+ *
+ * Mirrored, the way the person framed it. The still is the master frame the
+ * capture screen uploaded, un mirrored, and the mask the engine returns is
+ * aligned to that same un mirrored frame. One wrapper carries scale-x-[-1]
+ * around both, so the person sees the mirror image they framed in the oval and
+ * the mask stays on the pixels it was measured on. The vignette is centred on
+ * the oval's centre in the master frame (FRAME_FACE_CENTER_X and _Y,
+ * src/lib/shared/frame-geometry.ts), which is where the face is.
  *
  * Every step is driven by job completion, never by a timer: the poll is the only
  * clock, the status line for a set of jobs is a pure function of that set
@@ -45,8 +57,8 @@ import { copy } from "@/lib/shared/copy";
  * fails: the step is skipped and the report says what is missing.
  *
  * One thing happens before a refusal is shown: a capture every core reading of
- * which was refused over its framing is sent back cropped tighter, up to twice,
- * and this screen follows it. See the poll below. It costs nothing (a refused
+ * which was refused over its framing is sent back cropped tighter, once, and
+ * this screen follows it. See the poll below. It costs nothing (a refused
  * task is charged nothing) and it is the difference between a person being told
  * their photo was no good and a person getting their reading.
  *
@@ -68,6 +80,13 @@ const FAILURES_BEFORE_GIVING_UP = 3;
  * problem.
  */
 const STRAGGLER_POLLS_AFTER_CORE = 20;
+
+/**
+ * The vignette, centred where the oval puts the face in the master frame. The
+ * still fills the box by object-cover with its height, so a share of the
+ * frame's height is a share of the box's, and the centre lands on the face.
+ */
+const VIGNETTE = `radial-gradient(circle at ${String(FRAME_FACE_CENTER_X * 100)}% ${String(FRAME_FACE_CENTER_Y * 100)}%, transparent 30%, var(--canvas) 100%)`;
 
 export function AnalyzingScreen() {
   const router = useRouter();
@@ -304,24 +323,29 @@ export function AnalyzingScreen() {
         is aligned to the picture, so the picture has to keep its shape.
       */}
       <div className="relative flex w-full max-w-[var(--column-max)] flex-1 flex-col justify-end overflow-hidden bg-surface">
-        {preview !== null ? (
-          // The person's own frame. Every word that describes it is on the
-          // screen already, so an alt text would only repeat the status line.
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={preview}
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover"
-          />
-        ) : null}
-        {masksBloom ? <RevealMask maskUrl={maskUrl} /> : null}
+        {/*
+          The one mirrored wrapper: the still and the mask together, so the
+          pair the person sees is the mirror image they framed and the mask
+          stays aligned to the still it was measured on. The still and the
+          mask layer share this box, and only this box, as their offset parent.
+        */}
+        <div className="absolute inset-0 scale-x-[-1]">
+          {preview !== null ? (
+            // The person's own frame. Every word that describes it is on the
+            // screen already, so an alt text would only repeat the status line.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={preview}
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          ) : null}
+          {masksBloom ? <RevealMask maskUrl={maskUrl} /> : null}
+        </div>
         <div
           aria-hidden="true"
           className="absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(circle at 50% 42%, transparent 30%, var(--canvas) 100%)",
-          }}
+          style={{ background: VIGNETTE }}
         />
         <div className="relative pb-12 pt-8">
           <Column className="flex flex-col gap-6">

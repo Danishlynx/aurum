@@ -257,6 +257,7 @@ test.describe("the reveal when the engine refuses the photo", () => {
         height: element.offsetHeight,
       });
       const style = getComputedStyle(layer);
+      const wrapper = photo.parentElement;
       return {
         image: style.maskImage,
         mode: style.maskMode,
@@ -264,6 +265,11 @@ test.describe("the reveal when the engine refuses the photo", () => {
         layer: boxOf(layer),
         photo: boxOf(photo),
         sameParent: layer.offsetParent === photo.offsetParent,
+        wrapperTransform:
+          wrapper === null ? null : getComputedStyle(wrapper).transform,
+        wrapperHoldsLayer: wrapper !== null && wrapper.contains(layer),
+        photoTransform: getComputedStyle(photo).transform,
+        layerTransform: style.transform,
       };
     });
 
@@ -275,6 +281,17 @@ test.describe("the reveal when the engine refuses the photo", () => {
     // picture the mask was measured on.
     expect(geometry?.sameParent).toBe(true);
     expect(geometry?.layer).toEqual(geometry?.photo);
+
+    /*
+     * Mirrored together, docs/01-user-flow.md section E: the person sees the
+     * mirror image they framed, and the mask, aligned to the un mirrored
+     * upload, is mirrored with the still so the pair stays aligned. One
+     * wrapper carries the flip; the still carries none of its own, and the
+     * mask layer's only transform is its bloom.
+     */
+    expect(geometry?.wrapperHoldsLayer).toBe(true);
+    expect(geometry?.wrapperTransform).toBe("matrix(-1, 0, 0, 1, 0, 0)");
+    expect(geometry?.photoTransform).toBe("none");
   });
 
   /**

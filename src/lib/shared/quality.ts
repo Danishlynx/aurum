@@ -25,12 +25,14 @@
  * them.
  *
  * The frame is the master frame contract of src/lib/shared/frame-geometry.ts:
- * the width bands and the edge margins the gate applies are defined there.
- * That module imports clampBox from this one, so the constants and functions
- * it exports are read here only inside function bodies, never at module load,
- * where the cycle would leave them uninitialised.
+ * the width bands and the edge margins the gate applies are defined there and
+ * imported here. Box, Frame and clampBox live in src/lib/shared/box.ts, a
+ * leaf both modules read, so there is no cycle between the gate and the
+ * geometry; they are re exported from here for the callers that always found
+ * them here.
  */
 
+import { clampBox, type Box, type Frame } from "./box";
 import {
   evenness,
   facePixelsIn,
@@ -39,12 +41,16 @@ import {
   type FaceReading,
 } from "./face-reading";
 import {
+  FACE_WIDTH_ENGINE_MIN,
   FACE_WIDTH_REJECT_BELOW,
   FRAME_OVAL_WIDTH,
   ovalTouchesEdge,
   type Point,
 } from "./frame-geometry";
 import type { FacePose } from "./pose";
+
+export { clampBox };
+export type { Box, Frame };
 
 /**
  * A single channel image. data holds luminance 0 to 255, row major, length
@@ -53,20 +59,6 @@ import type { FacePose } from "./pose";
  */
 export type GrayscaleImage = {
   readonly data: ArrayLike<number>;
-  readonly width: number;
-  readonly height: number;
-};
-
-/** A rectangle in image pixels, origin top left. */
-export type Box = {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-};
-
-/** The frame the face was detected in. */
-export type Frame = {
   readonly width: number;
   readonly height: number;
 };
@@ -80,8 +72,9 @@ export type Frame = {
  *
  * Laplacian variance is not a property of a photograph, it is a property of a
  * photograph at a resolution. Resampling smaller averages sensor noise away and
- * carries the same edge across fewer pixels, so one frame reads one number at a
- * 1024px long edge and quite another at a small preview sample. Two places in
+ * carries the same edge across fewer pixels, so one frame reads one number at
+ * the burst's 512px measure copy and quite another at a small preview sample.
+ * Two places in
  * this app ask "is this sharp": the live line under the oval and this gate.
  * Measured at their own sizes they cannot share a threshold, and on 2026-09-03
  * they did not. On a Samsung S26 Ultra indoors at night the live line read
@@ -94,9 +87,10 @@ export type Frame = {
  * makes "Good" and the verdict the same computation on the same face.
  *
  * 96, because both callers reach it by resampling down and neither ever has to
- * resample up: the gate measures the face oval inside a 1024px capture and the
- * guidance measures it inside a preview sample sized so that a face wide
- * enough to send clears 96 there too. A face smaller than that on either side
+ * resample up: the gate measures the face oval inside the burst's 512px copy
+ * of the master frame (BURST_MEASURE_LONG_EDGE) and the guidance measures it
+ * inside a 384px master sample (GUIDANCE_SAMPLE_LONG_EDGE), both sized so that
+ * a face wide enough to send clears 96. A face smaller than that on either side
  * is a framing problem, and too_far comes long before anything sharpness could
  * say, so sharpness is never the thing a person is told about a face too small
  * to measure it on.
@@ -180,8 +174,9 @@ export const EYES_CLOSED_AT_OR_ABOVE = 0.5;
 // The provider's own rule, in the provider's own terms
 // ---------------------------------------------------------------------------
 
-/**
- * The rule the engine actually applies, which is not the one above.
+/*
+ * The rule the engine actually applies is FACE_WIDTH_ENGINE_MIN in
+ * src/lib/shared/frame-geometry.ts, imported above and applied below.
  *
  * Read verbatim off ai_skin_analysis, ai_face_analyzer and ai_skin_tone_analysis
  * on 2026-09-07, where it appears as a warning block on all three:
@@ -192,34 +187,35 @@ export const EYES_CLOSED_AT_OR_ABOVE = 0.5;
  * and refined by the Camera Kit quality configuration on the same page, which
  * states how the ratio is taken: "Landscape mode: vertical ratio. Portrait mode:
  * horizontal ratio." So it is the face's width against the image's SHORT axis,
- * and for the portrait frames this app sends, the short axis is the width.
+ * and for the portrait master frame this app sends, the short axis is the
+ * width.
  *
  * Since 2026-09-23 the width is cheek to cheek across the landmarker's face
  * oval over the frame width (FaceReading.widthRatio in
  * src/lib/shared/face-reading.ts), which is narrower than any detector's box,
  * so a frame that clears this number clears the engine's by construction. The
- * old height rule is gone with the box it was written against.
+ * old height rule is gone with the box it was written against, and since the
+ * master frame landed the frame it is measured on is the frame that is sent.
  *
  * The band, not just the floor. The same page asks for "approximately 60 to 80
  * percent of image width", and error_face_position_out_of_boundary is waiting
  * above it for a face that runs off the edge, so this is a window and the gate
  * checks both sides of it.
  *
- * Under this the frame is flagged, not refused: a face that is small in the
- * picture is a framing failure the composition step can still fix. Under
- * FACE_WIDTH_REJECT_BELOW (frame-geometry.ts, the Camera Kit RELAXED floor)
- * it is refused, because a face that small at sensor size is one no crop
- * rescues without upscaling into a frame the engine refuses anyway.
- *
- * Equal to FACE_WIDTH_ENGINE_MIN in frame-geometry.ts, and held equal by a
- * test rather than by an import, because that module imports this one and a
- * value read across the cycle at module load would be undefined.
+ * Under the engine's floor the frame is flagged, not refused: a face that is
+ * small in the picture is a framing failure the upload path's composition
+ * (masterCropFor) can still fix. Under FACE_WIDTH_REJECT_BELOW
+ * (frame-geometry.ts, the Camera Kit RELAXED floor) it is refused, because a
+ * face that small is one no crop rescues without upscaling into a frame the
+ * engine refuses anyway.
  */
-export const FACE_WIDTH_RATIO_MIN = 0.6;
 
 /**
  * The top of the documented band. Above it the face starts leaving the frame,
  * and error_face_position_out_of_boundary is what the engine answers with.
+ * The live line asks for "back" a little under this, at
+ * FACE_WIDTH_BORDERLINE_ABOVE in frame-geometry.ts; the
+ * capture-thresholds-engine-terms PR folds this constant into that band.
  */
 export const FACE_WIDTH_RATIO_MAX = 0.86;
 
@@ -292,18 +288,6 @@ export function scaleBox(box: Box, scale: number): Box {
     width: box.width * scale,
     height: box.height * scale,
   };
-}
-
-/** Clamps a box to the image bounds. Returns null when nothing is left. */
-export function clampBox(box: Box, frame: Frame): Box | null {
-  const left = Math.max(0, Math.floor(box.x));
-  const top = Math.max(0, Math.floor(box.y));
-  const right = Math.min(frame.width, Math.ceil(box.x + box.width));
-  const bottom = Math.min(frame.height, Math.ceil(box.y + box.height));
-  if (right <= left || bottom <= top) {
-    return null;
-  }
-  return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
 /** Copies the pixels inside a box into a new image. */
@@ -423,7 +407,7 @@ export function resampleToLongEdge(
  * Crop to the region when there is one, so a busy background cannot stand in for
  * a soft face and a plain wall cannot make a sharp one look soft. Then resample
  * to SHARPNESS_MEASURE_LONG_EDGE, so the number does not depend on whether the
- * caller happened to be holding a 1024px capture or a preview sample. Then
+ * caller happened to be holding a burst measure copy or a preview sample. Then
  * measure. Both callers, the live guidance line and the gate, do exactly this.
  */
 export function sharpnessOf(
@@ -508,296 +492,15 @@ export function exposureStats(image: GrayscaleImage): ExposureStats {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Auto framing
-// ---------------------------------------------------------------------------
-
 /*
- * Kept for one more build. The capture-master-frame PR replaces this whole
- * section with masterCropFor in src/lib/shared/frame-geometry.ts, which
- * composes to the master frame's own geometry. Until then the upload path
- * feeds it the landmarker's face oval box scaled to pixels, in place of the
- * detector box it was written against, so the head room it keeps above the
- * box is generous rather than wrong.
+ * There is no auto framing here any more. Until 2026-09-23 this file composed
+ * the upload around a face box (autoCropBoxFor and six AUTO_CROP_* constants,
+ * derived from a detector box and the oval as it was then drawn). The master
+ * frame replaced it: the camera path sends the master frame itself, and the
+ * upload path composes a gallery photo into the same geometry with
+ * masterCropFor in src/lib/shared/frame-geometry.ts, whose invariants are
+ * proven in frame-geometry.test.ts.
  */
-
-/**
- * The share of the crop height the face is framed to fill.
- *
- * 62 percent, which is the oval on the camera screen: it is drawn at h-[62%] of
- * the stage in src/components/capture/CaptureScreen.tsx, and a person who fills
- * it lands a frame the analyzers read. The upload path has no oval to aim at, so
- * this is the number it composes to instead.
- */
-export const AUTO_CROP_FACE_COVERAGE = 0.62;
-
-/**
- * The crop never comes closer to the detected box than this share of it.
- *
- * The face box is approximate. A detector box stops at the eyebrows, the
- * landmarker's oval box stops at the hairline, and neither carries the hair.
- * A generous margin covers that and a tight crop does not, and a crop that
- * cuts the top off the head buys a worse refusal than the one it was trying
- * to avoid.
- */
-export const AUTO_CROP_MIN_FACE_MARGIN = 0.4;
-
-/**
- * Where the composed crop puts the face, as a share of the crop's width.
- *
- * This is the number the engine actually measures (FACE_WIDTH_RATIO_MIN, "the
- * width of the face needs to be greater than 60 percent of the width of the
- * image"), so it is the number the crop is built from rather than one it
- * happens to satisfy.
- *
- * 0.66 sits inside the provider's documented band of roughly 60 to 80 percent,
- * near the bottom of it. Low on purpose: every point higher is a tighter crop,
- * and a tighter crop is what cuts a forehead off. The floor is 0.60 and the
- * margin above it absorbs the rounding that clampBox does when the box is
- * turned into whole pixels.
- */
-export const AUTO_CROP_FACE_WIDTH_TARGET = 0.66;
-
-/**
- * How much room is kept above the face box, as a share of its height, for the
- * forehead and the hair.
- *
- * A face box is not a head, and the difference is what broke the framing on
- * 2026-09-10. MediaPipe reports eyebrows to chin; a head with hair on it extends
- * roughly half a face height further up. Keeping 0.45 of a face height above the
- * box covers the forehead and most of the hair, and the crop is placed to honour
- * it rather than centring and hoping.
- *
- * PROVISIONAL, in the same sense as every other number in this file: it is
- * derived from where a detector puts its box and from the provider's "forehead
- * fully revealed", not from measurements over a set of real faces. It errs
- * loose, because the two failures are not symmetric. A crop that is too loose is
- * refused with error_src_face_too_small, which costs nothing and which the
- * reframe path answers by cropping tighter. A crop that is too tight cuts a
- * person's forehead off, and no retry recovers it.
- */
-export const AUTO_CROP_HEAD_ROOM_ABOVE = 0.45;
-
-/**
- * How much room is kept below the face box, as a share of its height.
- *
- * Small, and not zero. The jaw needs somewhere to sit: a crop that ends exactly
- * at the bottom of the face box is a face touching the edge of its own picture,
- * which is what error_face_position_out_of_boundary names and which the gate
- * flags as face_out_of_bounds before it is ever sent.
- *
- * It is a quarter of the room kept above because the two sides are not worth the
- * same. Above the face is forehead and hair and the provider asks for both;
- * below it is chin, neck and shoulders, and a reading needs none of them.
- */
-export const AUTO_CROP_CHIN_ROOM_BELOW = 0.12;
-
-/**
- * Width over height the crop aims for: 3 by 4, the portrait shape a phone
- * already takes and the shape the capture stage shows a frame in. It is where
- * the width starts, not where it always ends: the two margins below can pull it
- * either way, and a crop is never allowed to come out landscape.
- */
-export const AUTO_CROP_ASPECT = 0.75;
-
-export type AutoCropInput = {
-  /** The face box in frame pixels, or null when no face was found. */
-  readonly faceBox: Box | null;
-  readonly frame: Frame;
-};
-
-/**
- * The crop that recomposes a photo around the face it contains, or null when
- * there is nothing to do.
- *
- * Why it exists. The camera path guides framing with the oval; the upload path
- * has no way to ask a photo already in the gallery to have been taken closer. A
- * phone gallery selfie carries the face at 30 to 50 percent of the frame height,
- * the analyzers want more than 60, and on 2026-09-02 one such upload was sent
- * anyway and came back error_src_face_too_small. So the upload path composes the
- * frame itself rather than refusing a photo that has a perfectly good face in it.
- *
- * The rule, in order:
- *
- * 1. No face box, or a face already at FACE_WIDTH_RATIO_MIN of the width: null.
- *    Nothing is recomposed on a photo that was framed well enough, and a photo
- *    with no face is not a framing problem, it is a refusal the person has to
- *    hear.
- * 2. Height is the face height divided by AUTO_CROP_FACE_COVERAGE, which is what
- *    puts the face at 62 percent of the result. That is 1.61 times the face box,
- *    so the margin floor is already cleared with room above the crown.
- * 3. Width starts at that height taken at AUTO_CROP_ASPECT, and is then held
- *    between three limits:
- *
- *    - never closer to the sides of the box than the margin floor, because the
- *      box is approximate and the hair is usually outside it;
- *    - never so wide that the face stops filling the width, which is the
- *      framing the engine itself asks for: the facialColorTones constraints in
- *      endpoints.ts say "face width greater than 60 percent of image width", so
- *      the width is capped at the face width over AUTO_CROP_FACE_WIDTH_TARGET;
- *    - never wider than the crop is tall. The square is the limit because a
- *      skin region that ran into bare shoulders is wide, and letting it widen
- *      the crop without bound would push the face back under the rule the crop
- *      exists to satisfy. What gets trimmed at that limit is shoulder, not face.
- *
- *    and then floored at the width of the face box itself, which outranks all
- *    three: a crop narrower than the face is a face cut down the side, and no
- *    framing rule is worth that.
- *
- * 4. Centered on the face box, slid back inside the picture rather than shrunk,
- *    and clamped to the frame.
- *
- * Pure geometry: no canvas, no pixels. The caller draws it.
- */
-export function autoCropBoxFor(input: AutoCropInput): Box | null {
-  const { faceBox, frame } = input;
-  if (faceBox === null) {
-    return null;
-  }
-  if (frame.width <= 0 || frame.height <= 0) {
-    return null;
-  }
-  if (faceBox.width <= 0 || faceBox.height <= 0) {
-    return null;
-  }
-  /*
-   * A face box wider than the picture it came from cannot be composed around.
-   * Every crop below is at least as wide as the box, so there is nothing left to
-   * cut that would not be face, and null keeps the caller on the untouched
-   * frame. It is a detection that has gone wrong rather than a framing problem:
-   * the gate answers for the frame, and the engine answers for the photograph.
-   */
-  if (faceBox.width > frame.width) {
-    return null;
-  }
-  /*
-   * Both rules have to be satisfied before there is nothing to do, and until
-   * 2026-09-07 only the first of them was checked here.
-   *
-   * The height rule is ours and the width rule is the engine's, and they are not
-   * the same statement about a photograph. Take the front camera's usual 3 by 4
-   * frame at 768 by 1024, and a person filling the oval exactly: the face is 635
-   * pixels tall, which clears the 62 percent the oval is drawn to, and about 432
-   * wide, which is 0.56 of the short axis. The engine wants more than 0.60 and
-   * refuses at that number. So the frame passed this function untouched, was sent
-   * whole, and came back error_src_face_too_small, and the only thing offered to
-   * the person was a suggestion that they take it again.
-   *
-   * Checking the width ratio here means the composition step now fires on exactly
-   * the frames the engine would have refused for framing, camera and gallery
-   * alike, and the crop it produces targets AUTO_CROP_FACE_COVERAGE, which clears
-   * FACE_WIDTH_RATIO_MIN with margin rather than landing on it.
-   */
-  /*
-   * Width only, since 2026-09-14. The height rule used to be asked here as well,
-   * and for a nearly square face box it could never be satisfied by a crop that
-   * is built from the width, so a frame the engine would take was recomposed
-   * again on every pass. The engine's rule is the one that decides whether there
-   * is anything to do.
-   */
-  const widthRatio = faceWidthRatio(faceBox, frame);
-  if (widthRatio >= FACE_WIDTH_RATIO_MIN) {
-    return null;
-  }
-
-  /*
-   * The width is what the engine measures, so the width is what the crop is
-   * built from. Everything else follows.
-   *
-   * AUTO_CROP_FACE_WIDTH_TARGET sits just inside the provider's own band rather
-   * than in the middle of it, deliberately. Aiming higher would make the crop
-   * tighter, and a tighter crop is the thing that cuts a forehead off.
-   */
-  const height = Math.min(
-    faceBox.width / AUTO_CROP_FACE_WIDTH_TARGET / AUTO_CROP_ASPECT,
-    frame.height,
-  );
-  /*
-   * The floor is the face itself, and it outranks every cap above it.
-   *
-   * Each of those caps is there to stop a crop being too loose, and two of them
-   * can take the width below the width of the face box: the picture's own width
-   * on a frame narrower than the crop wants, and the height cap on a landscape
-   * frame with a wide box. A width under faceBox.width is a crop that cuts a
-   * face in half down the side, which is the one framing mistake no retry
-   * recovers and is strictly worse than the thing the caps exist to prevent.
-   * A face left a little too large in the frame is answered by the gate as
-   * too_close and by the engine as a refusal, both of which are free.
-   */
-  const width = Math.max(
-    faceBox.width,
-    Math.min(
-      /*
-       * Never landscape, whatever the box says. The provider states that "the
-       * use of a portrait aspect ratio is strongly recommended over landscape",
-       * and a box wider than it is tall is a detection this app should not be
-       * reshaping the picture around (the colour threshold this was written
-       * against reported a neck and two shoulders as one). Capping the width
-       * at the height keeps the frame the shape a face belongs in and trims
-       * shoulder rather than face.
-       */
-      Math.min(faceBox.width / AUTO_CROP_FACE_WIDTH_TARGET, height),
-      frame.width,
-    ),
-  );
-
-  const centerX = faceBox.x + faceBox.width / 2;
-
-  /*
-   * Vertically the crop is NOT centred on the face box, and this is the fix for
-   * the refusals of 2026-09-10.
-   *
-   * A face box is not a head. The detector this app used until 2026-09-07 was a
-   * skin colour threshold whose box already ran up over the forehead and down
-   * the neck, so centring on it happened to leave room for hair. MediaPipe's box
-   * is a real face box: eyebrows to chin, cheek to cheek, and nothing else. The
-   * geometry was never re derived when the detector changed, so the same
-   * centring left only 0.3 face heights above the box, the crown and part of the
-   * forehead were cut off, and the engine, which asks for the forehead to be
-   * fully revealed, answered that it could not read the face.
-   *
-   * So the room above and below the box is now asked for by name.
-   * AUTO_CROP_HEAD_ROOM_ABOVE is the share of a face height kept above the box
-   * for forehead and hair, and the crop is placed to honour it wherever the
-   * height allows. What is left goes below, where it is neck and shoulders and
-   * where losing some costs nothing.
-   *
-   * The asymmetry is the whole point. Above the face is where a crop can fail;
-   * below it is where a crop can be generous for free.
-   */
-  const spare = Math.max(0, height - faceBox.height);
-  const wantAbove = faceBox.height * AUTO_CROP_HEAD_ROOM_ABOVE;
-  const wantBelow = faceBox.height * AUTO_CROP_CHIN_ROOM_BELOW;
-  /*
-   * Shared out rather than taken. Spending the whole spare height on the
-   * forehead puts the chin exactly on the bottom edge, which is a face touching
-   * the boundary of its own picture and is what
-   * error_face_position_out_of_boundary names. The split keeps the asymmetry
-   * (most of it goes above, where a crop can fail) while always leaving the jaw
-   * somewhere to sit.
-   */
-  const wanted = wantAbove + wantBelow;
-  const roomAbove =
-    wanted <= 0 ? 0 : Math.min(wantAbove, (spare * wantAbove) / wanted);
-  const desiredTop = faceBox.y - roomAbove;
-
-  const x = Math.min(Math.max(centerX - width / 2, 0), Math.max(0, frame.width - width));
-  const y = Math.min(Math.max(desiredTop, 0), Math.max(0, frame.height - height));
-
-  const crop = clampBox({ x, y, width, height }, frame);
-  if (crop === null) {
-    return null;
-  }
-  /*
-   * A box that covers the whole picture is not a crop. Returning null says so,
-   * which keeps the caller on the untouched frame and off a redraw that would
-   * only cost a canvas pass.
-   */
-  if (crop.width >= frame.width && crop.height >= frame.height) {
-    return null;
-  }
-  return crop;
-}
 
 // ---------------------------------------------------------------------------
 // The gate
@@ -865,7 +568,7 @@ export type CaptureMetrics = {
   readonly faceLumaUneven: number | null;
   /**
    * Cheek to cheek over the frame width, which is the ratio the engine measures
-   * (FACE_WIDTH_RATIO_MIN). Null when there is no face.
+   * (FACE_WIDTH_ENGINE_MIN). Null when there is no face.
    */
   readonly faceWidthRatio: number | null;
   /** The face oval's bounding box width over the frame width, 0 to 1. */
@@ -914,19 +617,6 @@ export type CaptureAssessmentInput = {
    */
   readonly measured: boolean;
 };
-
-/**
- * Face width over the frame's short axis, for the composition step that still
- * works from a box (autoCropBoxFor). The gate itself reads the landmarker's
- * cheek to cheek width (FaceReading.widthRatio).
- */
-export function faceWidthRatio(faceBox: Box, frame: Frame): number {
-  const shortAxis = Math.min(frame.width, frame.height);
-  if (shortAxis <= 0) {
-    throw new Error("Frame width and height must be positive.");
-  }
-  return faceBox.width / shortAxis;
-}
 
 /**
  * True when any edge of the face box has reached the edge of the frame, which is
@@ -1087,7 +777,7 @@ export function assessCapture(input: CaptureAssessmentInput): CaptureAssessment 
   if (widthRatio !== null) {
     if (widthRatio < FACE_WIDTH_REJECT_BELOW) {
       failures.push({ reason: "too_far", severity: "reject" });
-    } else if (widthRatio < FACE_WIDTH_RATIO_MIN) {
+    } else if (widthRatio < FACE_WIDTH_ENGINE_MIN) {
       failures.push({ reason: "too_far", severity: "borderline" });
     } else if (widthRatio > FACE_WIDTH_RATIO_MAX) {
       failures.push({ reason: "too_close", severity: "borderline" });
@@ -1199,7 +889,7 @@ function meanLumaOf(image: GrayscaleImage): number {
  * documented band, so a frame sitting on either edge of what the engine accepts
  * carries roughly a full unit of badness.
  */
-const FRAME_SCORE_WIDTH_SPAN = (FACE_WIDTH_RATIO_MAX - FACE_WIDTH_RATIO_MIN) / 2;
+const FRAME_SCORE_WIDTH_SPAN = (FACE_WIDTH_RATIO_MAX - FACE_WIDTH_ENGINE_MIN) / 2;
 
 /**
  * The middle of the band of face luma the gate is willing to send, which is
@@ -1233,12 +923,11 @@ export const FRAME_SCORE_POSE_WEIGHT = 8;
 
 /**
  * Framing next, at half of pose. Cheek to cheek over the frame width is the
- * engine's other published input rule (FACE_WIDTH_RATIO_MIN), so it can refuse
- * on it too, but between frames taken 90ms apart what is left to rank is the
- * landmarker disagreeing with itself rather than a framing anybody needs to
- * fix. The target is the oval's own width (FRAME_OVAL_WIDTH in
- * frame-geometry.ts), read inside frameScore rather than here because of the
- * import cycle that module's header explains.
+ * engine's other published input rule (FACE_WIDTH_ENGINE_MIN), so it can
+ * refuse on it too, but between frames taken 90ms apart what is left to rank
+ * is the landmarker disagreeing with itself rather than a framing anybody
+ * needs to fix. The target is the oval's own width (FRAME_OVAL_WIDTH in
+ * frame-geometry.ts).
  *
  * PROVISIONAL.
  */

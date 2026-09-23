@@ -18,19 +18,18 @@
  * and the Camera Kit presets the numbers below are derived from.
  *
  * Pure: no DOM, no canvas, no pixels. Every function here is geometry over
- * numbers; the capture screen and src/lib/client/image.ts will draw what this
- * module computes once the master frame lands (the capture-master-frame PR).
- * Box comes from src/lib/shared/quality.ts and Size is an alias of its Frame
- * type, so the gate and the geometry speak the same coordinates. The crops this
- * module returns are in source pixels: the drawing step enforces
- * MASTER_MIN_SHORT_EDGE and MASTER_MAX_LONG_EDGE on the encoded frame, not the
- * geometry.
+ * numbers; the capture screen draws what this module computes through
+ * src/lib/client/image.ts (drawMasterCrop, drawCropToCanvas). Box, Size and
+ * clampBox come from src/lib/shared/box.ts, the leaf module the gate reads
+ * them from as well, so the gate and the geometry speak the same coordinates
+ * and neither module imports the other. The crops this module returns are in
+ * source pixels: the drawing step enforces MASTER_MIN_SHORT_EDGE and
+ * MASTER_MAX_LONG_EDGE on the encoded frame, not the geometry.
  */
 
-import { clampBox, type Box, type Frame } from "./quality";
+import { clampBox, type Box, type Size } from "./box";
 
-/** Width and height of a track, a frame, or a source photo, in its pixels. */
-export type Size = Frame;
+export type { Size };
 
 /** A point in the same pixels as the frame it is read against. */
 export type Point = {

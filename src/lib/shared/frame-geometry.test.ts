@@ -96,9 +96,19 @@ describe("masterRectFor", () => {
     expect(rect.width === track.width || rect.height === track.height).toBe(true);
   });
 
-  it("gives the fake e2e device's 640 by 480 track a 360 by 480 frame", () => {
+  it("gives a 640 by 480 webcam track a 360 by 480 frame", () => {
     expect(masterRectFor({ width: 640, height: 480 })).toEqual({
       x: 140,
+      y: 0,
+      width: 360,
+      height: 480,
+    });
+  });
+
+  it("keeps the e2e flat camera's 360 by 480 portrait track whole", () => {
+    // e2e/support/flat-camera.ts: the draw then lifts it to 480 by 640.
+    expect(masterRectFor({ width: 360, height: 480 })).toEqual({
+      x: 0,
       y: 0,
       width: 360,
       height: 480,

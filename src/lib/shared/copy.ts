@@ -222,7 +222,21 @@ export const copy = {
        */
       back: "Move back a little so your whole face fits.",
       hold: "Hold still.",
+      /**
+       * docs/01 section D. The tap still works at any time; after
+       * READY_HOLD_MS of this line the oval turns solid, the line below takes
+       * over and the photo takes itself (src/lib/shared/frame-geometry.ts).
+       */
       ready: "Good. Tap to capture.",
+      /**
+       * In house, added 2026-09-23 with the auto capture. Shown, with the oval
+       * solid, for the AUTO_CAPTURE_COUNTDOWN_MS between the ready hold and
+       * the shutter firing itself, so the person knows the photo is about to
+       * be taken and holds the frame rather than reaching for the button.
+       * Never returned by guidanceKey: the capture screen sets it from the
+       * hold timer, and it cancels the moment the line leaves "ready".
+       */
+      taking: "Good. Hold still.",
       /**
        * In house, added 2026-09-23. Said in place of "Good" when the face model
        * has not loaded, so the person knows the tap is theirs to take and that
@@ -251,6 +265,9 @@ export const copy = {
      * Not a screen a person is meant to see, and not in docs/01 for that reason.
      */
     debug: {
+      /** The size the camera granted, and the master rect cut from it. */
+      track: "track",
+      master: "master",
       source: "src",
       widthRatio: "w",
       bbox: "bbox",
@@ -984,6 +1001,16 @@ export const copy = {
     uploadFailed:
       "Upload did not complete. Your photo was not saved. Try again.",
     /**
+     * In house, added 2026-09-23. A picked file the browser cannot decode
+     * whose header says HEIC or HEIF (src/lib/shared/image-format.ts). Nothing
+     * was uploaded, so uploadFailed would be untrue; the line says what the
+     * problem is and the two ways out. iOS converts to JPEG on its own when
+     * the file input accepts image/* (src/components/capture/UploadInstead.tsx),
+     * so this is the desktop browser handed an iPhone original.
+     */
+    unsupportedImageFormat:
+      "This photo format cannot be read here. Pick a JPEG or take a new one.",
+    /**
      * In house. The second line under uploadFailed and requestFailed on the
      * capture screen: which step stopped and what the server said. Added
      * 2026-09-14 after a phone showed "Upload did not complete" with nothing
@@ -1083,6 +1110,7 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "capture.guidance.bright",
   "capture.guidance.upright",
   "capture.guidance.back",
+  "capture.guidance.taking",
   "capture.guidance.unmeasured",
   "capture.rejection.over_exposed",
   "capture.rejection.no_face",
@@ -1179,6 +1207,7 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "errors.sessionMissing",
   "errors.uploadFailedDetailTemplate",
   "errors.uploadFailedNoAnswerTemplate",
+  "errors.unsupportedImageFormat",
   "errors.captureUnreadable",
   "common.close",
   "privacy.points.0",

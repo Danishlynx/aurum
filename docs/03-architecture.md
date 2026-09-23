@@ -5,8 +5,8 @@
     ┌────────────────────────────┐
     │  Phone browser (PWA)        │
     │  Next.js client components  │
-    │  camera, quality gate,      │
-    │  downscale, hash, poll      │
+    │  camera, master frame,      │
+    │  quality gate, hash, poll   │
     └──────────────┬─────────────┘
                    │ https, JSON, signed upload URLs
     ┌──────────────▼─────────────┐
@@ -35,7 +35,7 @@ Principles
 
 ## Request flow for a capture
 
-1. Client runs the quality gate (a face reading from the landmarker, framing, pose and light; sharpness is recorded and decides nothing). On pass, it downscales to a 1024px long edge, strips EXIF, computes SHA 256, and calls POST /api/captures with the hash.
+1. Client draws the master frame (docs/01-user-flow.md section D: the largest centred 3:4 crop of the camera track, at native size with the long edge capped at 1440 and the short edge floored at 480; an uploaded photo is composed into the same geometry around its face) and runs the quality gate on it (a face reading from the landmarker, framing, pose and light; sharpness is recorded and decides nothing). On pass, it encodes that frame as JPEG, which strips EXIF, computes SHA 256, and calls POST /api/captures with the hash, the frame's size and every number the gate measured.
 2. Server checks captures for the hash. If it exists and belongs to this person, it returns the existing capture and its analyses (cache hit, zero credits). Otherwise it returns a signed upload URL for the private captures bucket.
 3. Client uploads. Client calls POST /api/captures/{id}/analyze.
 4. Before anything is reserved, the server reads the stored object and validates its bytes: a JPEG, header dimensions equal to the registered ones, at least 480 px on the short side, at most 2560 px on the long side, at most 10 MB, and a digest equal to the row. A failure is a 409 capture_unreadable with no reservation and no task. Then the server fans out the independent analyses as jobs in parallel: skin analysis, Fitzpatrick, face attributes (skin tone, eye and hair color), face shape, hair type. Each job records its provider task id. Credits are reserved in the ledger before the calls and reconciled after.
@@ -218,7 +218,7 @@ The five capture analyses run in parallel from the same uploaded object. Perfect
 - Vercel project with production on main and previews on every PR.
 - Environment variables set in Vercel, never committed. See .env.example.
 - Region: pick the Vercel region closest to the Supabase project.
-- Images: the browser downscales before upload. The server never decodes images except to store mask and render outputs from providers.
+- Images: the browser cuts the master frame before upload (3:4, long edge at most 1440, short edge at least 480; nothing is downscaled to 1024 any more). The server never decodes images except to validate a capture's JPEG header before analyze and to store mask and render outputs from providers.
 - Next.js image optimization is used only for product thumbnails and renders through signed URLs with a short cache.
 
 ## Observability

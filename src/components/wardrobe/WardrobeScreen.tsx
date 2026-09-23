@@ -7,7 +7,7 @@ import { ButtonLink } from "@/components/ui/Button";
 import { Toast } from "@/components/ui/Toast";
 import {
   CAPTURE_JPEG_QUALITY,
-  CAPTURE_LONG_EDGE,
+  GARMENT_LONG_EDGE,
   decodeImageFile,
   drawToCanvas,
   toJpegBlob,
@@ -114,7 +114,7 @@ function placeholderGarments(count: number): GarmentView[] {
 async function encodeGarmentPhoto(file: File): Promise<Blob | null> {
   try {
     const decoded = await decodeImageFile(file);
-    const canvas = drawToCanvas(decoded.source, decoded.size, CAPTURE_LONG_EDGE);
+    const canvas = drawToCanvas(decoded.source, decoded.size, GARMENT_LONG_EDGE);
     decoded.release();
     return await toJpegBlob(canvas, CAPTURE_JPEG_QUALITY);
   } catch {
