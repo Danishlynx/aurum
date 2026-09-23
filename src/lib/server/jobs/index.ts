@@ -61,12 +61,14 @@ import {
 /**
  * The job lifecycle from docs/03-architecture.md, "Jobs".
  *
- * create   reserve credits, start the provider task, store provider_task_id,
- *          status running
+ * create   reserve credits, start the provider task, store provider_task_id
+ *          on the job row first and the analysis row second, status running
  * poll     for each running job last polled more than a second ago, ask the
  *          provider, validate with zod, store the normalized result, mark
  *          succeeded and reconcile; on failure mark failed with a human
- *          readable error and refund
+ *          readable error and refund. Driven by GET /api/jobs while a tab is
+ *          watching, and by POST /api/jobs/reconcile every minute for every
+ *          open job nobody is watching (./reconcile.ts)
  * retry    one automatic retry for a transient failure, attempts capped at 2
  * idempotency  creating a job for a subject that already has one running
  *          returns the running job
@@ -684,12 +686,32 @@ async function startKinds(args: {
       try {
         const task = await startTask({ kind: entry.kind, fileId: args.fileId });
         args.onProviderCall?.(1);
-        await updateAnalysis(entry.analysis.id, {
-          status: "running",
-          provider_task_id: task.taskId,
-          credits_used: entry.reservationUnits,
-          error: null,
-        });
+        /*
+         * The job row first, then the analysis row, and the order is the point.
+         *
+         * The task exists at the provider from this line on, charged whether or
+         * not anything ever reads it, and the only thing that makes it readable
+         * is jobs.provider_task_id: pollCaptureJobs and the scheduled reconcile
+         * pass (src/lib/server/jobs/reconcile.ts) both start from the job row.
+         * Until 2026-09-23 the analysis row was written first, so a process
+         * killed between the two writes left an analysis that said running with
+         * a task id and no job row at all. Nothing listed it, nothing polled it,
+         * and a second analyze call found no job and started the reading again
+         * at full price. With the job row written first the same kill leaves a
+         * running job pointing at the task and an analysis still pending, which
+         * is exactly the shape the next poll, or the reconcile pass a minute
+         * later, settles by reading the task and storing what it finds. The
+         * window that remains is between the provider's answer and this write,
+         * and no ordering can close it (docs/03-architecture.md, "Failure modes").
+         *
+         * The analysis write is guarded on updated_at because the job row is
+         * now visible to a poll before the analysis row records the start. A
+         * poll that reads the task and settles it in that gap writes the result
+         * to the analysis; an unconditional write here would then put "running"
+         * back over it. The guard makes this write lose that race rather than
+         * win it, and the loss is logged rather than treated as a failure: the
+         * reading is stored and paid for, which is what a start is for.
+         */
         await writeJob({
           ownerId,
           subjectId: entry.analysis.id,
@@ -698,6 +720,26 @@ async function startKinds(args: {
           attempts,
           error: null,
         });
+        const recorded = await updateAnalysis(
+          entry.analysis.id,
+          {
+            status: "running",
+            provider_task_id: task.taskId,
+            credits_used: entry.reservationUnits,
+            error: null,
+          },
+          { unchangedSince: entry.analysis.updated_at },
+        );
+        if (recorded === false) {
+          console.warn(
+            JSON.stringify({
+              event: "aurum.analysis_start_superseded",
+              captureId: entry.analysis.capture_id,
+              kind: entry.kind,
+              note: "a poll settled the task before the start was recorded",
+            }),
+          );
+        }
       } catch (thrown) {
         await refundFor(args.session, entry.analysis.id);
         const message = messageForFailure(thrown);
