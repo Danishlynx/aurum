@@ -49,7 +49,7 @@ Line length: body under 70 characters; reading blocks under 64.
 
 Spacing: a 4px base. Use 4, 8, 12, 16, 24, 32, 48, 64. Section rhythm on a screen is 32 between sections, 16 between rows, 8 between a label and its content.
 
-Radius: exactly two values plus one shape. radius-sm 6px for chips, fields, buttons. radius-md 12px for product cards and sheets. The capture frame is an oval. Nothing else is rounded; the hero selfie is square cornered.
+Radius: exactly two values plus one shape. radius-sm 6px for chips, fields, buttons. radius-md 12px for product cards and sheets. The capture frame is an oval on a 3:4 stage. Nothing else is rounded; the hero selfie is square cornered.
 
 Elevation: none. No drop shadows anywhere. Depth comes from tonal layering: Obsidian canvas, Basalt surfaces, Umber raised rows, and 1px hairlines in Umber. A selected or focused element gets a 1px Antique gold hairline. That is the whole elevation system.
 

@@ -31,8 +31,10 @@ export const sha256HexSchema = z
   .regex(/^[0-9a-f]{64}$/u, "Expected a 64 character lowercase sha256 digest.");
 
 /**
- * An image edge in pixels. The client downscales to a 1024px long edge before
- * upload, so the ceiling is generous rather than tight.
+ * An image edge in pixels. The client sends the master frame, whose long edge
+ * is capped at 1440 (src/lib/shared/frame-geometry.ts), so the ceiling is
+ * generous rather than tight; the analyze route enforces the engine's own
+ * limits on the stored bytes.
  */
 export const imageDimensionSchema = z
   .number()
@@ -106,7 +108,7 @@ export const captureQualitySchema = z.object({
   faceCoverage: z.number().min(0).max(1).nullable().optional(),
   /**
    * Cheek to cheek over the frame width, which is the ratio the engine gates
-   * on (FACE_WIDTH_RATIO_MIN). Null when there was no face.
+   * on (FACE_WIDTH_ENGINE_MIN). Null when there was no face.
    *
    * Optional because a capture row written by a build from before 2026-09-07 does
    * not carry it, and a stored row has to keep parsing.
@@ -161,7 +163,10 @@ export const captureQualitySchema = z.object({
    * tighter crop the reveal sends back after a framing refusal.
    */
   path: z.enum(["camera", "gallery", "reframe"]).optional(),
-  /** 1 for the frame the person sent, 2 and 3 for the reframes of it. */
+  /**
+   * 1 for the frame the person sent, 2 for the one reframe of it. 3 is kept
+   * so a row from the two step ladder of builds before 2026-09-23 still parses.
+   */
   attempt: z.number().int().min(1).max(3).optional(),
   /** The sensor frame the still was cut from, and the master frame it became. */
   frame: z

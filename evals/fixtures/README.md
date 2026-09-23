@@ -47,8 +47,9 @@ For each face, two captures of the same person on the same day:
 - `<face-id>-window.jpg`: good window light, face toward the light
 - `<face-id>-indoor.jpg`: warm indoor light, the harder case
 
-Both captures at the same resolution the app uploads, a 1024px long edge, EXIF
-already stripped. Suggested id format: `f01` to `f12`.
+Both captures at the frame the app uploads, the 3:4 master frame with its long
+edge at most 1440 (docs/01-user-flow.md section D), EXIF already stripped.
+Suggested id format: `f01` to `f12`.
 
 Add `evals/fixtures/faces/labels.json` with one entry per face id recording the
 human labeled Fitzpatrick type, undertone, and hair type. eval:consistency

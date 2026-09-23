@@ -3,7 +3,14 @@ import { describe, expect, it } from "vitest";
 import { syntheticFace } from "../../../evals/support/synthetic-face";
 import { copy } from "@/lib/shared/copy";
 import { faceReadingFrom, type FaceReading } from "@/lib/shared/face-reading";
-import { GUIDANCE_SAMPLE_LONG_EDGE } from "@/lib/shared/frame-geometry";
+import {
+  BURST_MEASURE_LONG_EDGE,
+  FACE_WIDTH_BORDERLINE_ABOVE,
+  FACE_WIDTH_BORDERLINE_BELOW,
+  FACE_WIDTH_ENGINE_MIN,
+  FRAME_OVAL_WIDTH,
+  GUIDANCE_SAMPLE_LONG_EDGE,
+} from "@/lib/shared/frame-geometry";
 import type { FacePose } from "@/lib/shared/pose";
 import {
   FACE_LUMA_BORDERLINE_ABOVE,
@@ -19,7 +26,6 @@ import {
 import type { Box, GrayscaleImage } from "@/lib/shared/quality";
 
 import {
-  LIVE_FACE_WIDTH_RATIO_MIN,
   MOTION_STILL_AT_OR_BELOW,
   guidanceKey,
   guidanceLine,
@@ -42,7 +48,8 @@ import {
  *
  * Since 2026-09-23 the line reads the same FaceReading the gate reads, so the
  * stats here are built from a synthetic landmarker result rather than from a
- * box and a guessed centre.
+ * box and a guessed centre, and the sample it is read on is the master crop:
+ * 3:4 on every device, the frame the shutter sends.
  */
 
 /** A face filling the oval, square to the lens, eyes open. */
@@ -68,13 +75,20 @@ function withPose(pose: FacePose | null): FaceReading {
   return { ...OVAL_FACE, pose };
 }
 
-/** The preview sample of a portrait phone track, 3 by 4 at the guidance size. */
+/**
+ * The live sample: the master crop at the guidance size, 3 by 4 whatever the
+ * track was. A phone's portrait track and a laptop's landscape track both
+ * hand the line this sample.
+ */
 const PORTRAIT_SAMPLE = {
   width: Math.round((GUIDANCE_SAMPLE_LONG_EDGE * 3) / 4),
   height: GUIDANCE_SAMPLE_LONG_EDGE,
 } as const;
 
-/** The preview sample of a 16 by 9 laptop webcam track. */
+/**
+ * A 16 by 9 sample. No master frame is ever landscape; this exists only to
+ * prove what liveWidthRatioOf would do with one.
+ */
 const LANDSCAPE_SAMPLE = {
   width: GUIDANCE_SAMPLE_LONG_EDGE,
   height: Math.round((GUIDANCE_SAMPLE_LONG_EDGE * 9) / 16),
@@ -244,28 +258,38 @@ describe("guidanceKey", () => {
   });
 
   /**
-   * The framing question is asked about the frame the gate will see, which in
-   * this build is the composed one: autoCropBoxFor lifts a face to 0.66 of the
-   * width from almost anything, so the live line asks only whether there is
-   * enough face to compose. The capture-master-frame PR moves this floor to
-   * the oval's own band.
+   * The framing question is asked about the frame the gate will see, and
+   * since the master frame that is the sample itself: the live crop IS the
+   * frame that is sent. So "Move closer" asks for the oval's own band
+   * (FACE_WIDTH_BORDERLINE_BELOW, 0.64: the engine's 0.60 with the same
+   * margin the oval sits above MODERATE), and a face the gate would merely
+   * offer as too far is one the line still asks to come closer for.
    */
-  it("asks for closer only under the live width floor", () => {
+  it("asks for closer under the oval's band, and says good from the band up", () => {
+    expect(FACE_WIDTH_BORDERLINE_BELOW).toBeGreaterThan(FACE_WIDTH_ENGINE_MIN);
+    expect(FACE_WIDTH_BORDERLINE_BELOW).toBeLessThan(FRAME_OVAL_WIDTH);
     expect(
       guidanceKey({
         ...READY,
-        reading: face({ widthRatio: LIVE_FACE_WIDTH_RATIO_MIN - 0.01 }),
+        reading: face({ widthRatio: FACE_WIDTH_BORDERLINE_BELOW - 0.01 }),
       }),
     ).toBe("closer");
     expect(
       guidanceKey({
         ...READY,
-        reading: face({ widthRatio: LIVE_FACE_WIDTH_RATIO_MIN + 0.001 }),
+        reading: face({ widthRatio: FACE_WIDTH_BORDERLINE_BELOW + 0.001 }),
       }),
     ).toBe("ready");
-    // A face filling the oval on a 3 by 4 preview, and one a little back.
-    expect(guidanceKey({ ...READY, reading: face({ widthRatio: 0.48 }) })).toBe(
+    // A face filling the oval, and one the gate would accept but the line
+    // still asks closer for: the band has a margin the gate does not.
+    expect(guidanceKey({ ...READY, reading: face({ widthRatio: FRAME_OVAL_WIDTH }) })).toBe(
       "ready",
+    );
+    expect(
+      guidanceKey({ ...READY, reading: face({ widthRatio: FACE_WIDTH_ENGINE_MIN + 0.01 }) }),
+    ).toBe("closer");
+    expect(guidanceKey({ ...READY, reading: face({ widthRatio: 0.48 }) })).toBe(
+      "closer",
     );
     expect(guidanceLine({ ...READY, reading: face({ widthRatio: 0.2 }) })).toBe(
       copy.capture.guidance.closer,
@@ -273,46 +297,51 @@ describe("guidanceKey", () => {
   });
 
   /**
-   * The floor is read on the sample's short axis, not its width. A laptop
-   * webcam hands over a landscape track, and a reading's widthRatio is over
-   * the frame width: on a 16 by 9 sample a face at 0.40 of the width has an
-   * oval taller than the frame, so read against the width the line went
-   * closer, then back, and never ready (reviewed 2026-09-23). The composition
-   * step measured the detector's box against the short axis before the
-   * landmarker, and the live floor keeps that parity until the master frame
-   * PR moves the preview onto the frame that is sent.
+   * A laptop webcam hands over a landscape track, and the sample is still the
+   * 3 by 4 master crop of it, so the line reads a laptop exactly as it reads a
+   * phone (reviewed 2026-09-23: until the master frame, a 16 by 9 sample
+   * could never reach ready because the width floor and the top margin
+   * crossed). The only laptop difference left is the pointer: a landscape
+   * track on a fine pointer is not a phone held sideways.
    */
-  it("reaches ready on a laptop's landscape sample, with the floor on the short axis", () => {
+  it("reaches ready on a laptop, whose sample is the same master crop", () => {
     const laptop: LiveFrameStats = {
       ...READY,
-      sample: LANDSCAPE_SAMPLE,
+      sample: PORTRAIT_SAMPLE,
       trackIsLandscape: true,
       coarsePointer: false,
     };
-    const onLaptop = (widthRatio: number) =>
-      face({ widthRatio, center: { x: 0.5, y: 0.47 }, frame: LANDSCAPE_SAMPLE });
-    // 0.28 of the width is 0.50 of the height: over the floor, inside the
-    // margins.
-    expect(guidanceKey({ ...laptop, reading: onLaptop(0.28) })).toBe("ready");
-    expect(guidanceKey({ ...laptop, reading: onLaptop(0.24) })).toBe("ready");
-    // Under the floor on the short axis (0.20 of the width is 0.36 of it).
-    expect(guidanceKey({ ...laptop, reading: onLaptop(0.2) })).toBe("closer");
-    // Past the top margin on a landscape frame, and still "back", not "closer".
-    expect(guidanceKey({ ...laptop, reading: onLaptop(0.36) })).toBe("back");
-    // The same width read on a portrait sample is under the floor.
-    expect(guidanceKey({ ...READY, reading: face({ widthRatio: 0.28 }) })).toBe(
+    expect(guidanceKey(laptop)).toBe("ready");
+    expect(guidanceKey({ ...laptop, reading: face({ widthRatio: 0.66 }) })).toBe(
+      "ready",
+    );
+    expect(guidanceKey({ ...laptop, reading: face({ widthRatio: 0.6 }) })).toBe(
       "closer",
     );
+    expect(guidanceKey({ ...laptop, reading: face({ widthRatio: 0.9 }) })).toBe(
+      "back",
+    );
+    // The same track on a phone is a phone held sideways.
+    expect(guidanceKey({ ...laptop, coarsePointer: true })).toBe("upright");
   });
 
   /**
    * The other side of "Move closer", added 2026-09-23: a face wider than the
-   * band the engine reads, or one whose oval runs into the edge margins, is
-   * refused by the engine as out of boundary and no crop fixes it.
+   * band (FACE_WIDTH_BORDERLINE_ABOVE, a little under the gate's own top, so
+   * the line holds before the gate would flag), or one whose oval runs into
+   * the edge margins, is refused by the engine as out of boundary and no crop
+   * fixes it.
    */
   it("asks for back on a face too wide for the band or touching the edge", () => {
+    expect(FACE_WIDTH_BORDERLINE_ABOVE).toBeLessThanOrEqual(FACE_WIDTH_RATIO_MAX);
     expect(
-      guidanceKey({ ...READY, reading: face({ widthRatio: FACE_WIDTH_RATIO_MAX + 0.01 }) }),
+      guidanceKey({
+        ...READY,
+        reading: face({
+          widthRatio: FACE_WIDTH_BORDERLINE_ABOVE + 0.005,
+          center: { x: 0.5, y: 0.525 },
+        }),
+      }),
     ).toBe("back");
     expect(guidanceLine({ ...READY, reading: face({ widthRatio: 0.9 }) })).toBe(
       copy.capture.guidance.back,
@@ -322,13 +351,13 @@ describe("guidanceKey", () => {
       guidanceKey({ ...READY, reading: face({ center: { x: 0.5, y: 0.2 } }) }),
     ).toBe("back");
     // And one at the top of the band, inside the margins, is fine. At that
-    // width the oval is 0.87 of a 3 by 4 frame's height, so it has to sit at
+    // width the oval is 0.86 of a 3 by 4 frame's height, so it has to sit at
     // 0.525 to keep the 0.08 top margin; centred at the target it touches.
     expect(
       guidanceKey({
         ...READY,
         reading: face({
-          widthRatio: FACE_WIDTH_RATIO_MAX - 0.001,
+          widthRatio: FACE_WIDTH_BORDERLINE_ABOVE - 0.001,
           center: { x: 0.5, y: 0.525 },
         }),
       }),
@@ -436,6 +465,11 @@ describe("guidanceKey", () => {
     ).toBe("light");
   });
 
+  /**
+   * "taking" is the one key guidanceKey never returns: the capture screen
+   * sets it from the ready hold, for the countdown to the auto capture, and
+   * it is listed here because it is a line under the oval like the others.
+   */
   it("has a line for every key it can return", () => {
     const keys = [
       "light",
@@ -447,6 +481,7 @@ describe("guidanceKey", () => {
       "back",
       "hold",
       "ready",
+      "taking",
       "unmeasured",
     ] as const;
     // Built from character codes on purpose, never typed as a literal glyph:
@@ -488,18 +523,18 @@ function ovalBoxIn(width: number, height: number): Box {
 }
 
 /**
- * The two frames the same face arrives in.
+ * The two sizes the same master frame is read at.
  *
- * The preview sample the guidance line is measured off, at the size
- * src/components/capture/CaptureScreen.tsx draws it, and the 1024px capture the
- * gate measures, both at 9 by 16, which is what a front camera hands back in
- * portrait. Same picture, resolutions a factor of two and a half apart.
+ * The preview sample the guidance line is measured off (the master crop at
+ * GUIDANCE_SAMPLE_LONG_EDGE, as src/components/capture/CaptureScreen.tsx draws
+ * it) and the copy the gate measures a burst frame on
+ * (BURST_MEASURE_LONG_EDGE), both 3 by 4. Same picture, two resolutions.
  */
-const PREVIEW = {
-  width: Math.round((GUIDANCE_SAMPLE_LONG_EDGE * 9) / 16),
-  height: GUIDANCE_SAMPLE_LONG_EDGE,
+const PREVIEW = PORTRAIT_SAMPLE;
+const CAPTURE = {
+  width: Math.round((BURST_MEASURE_LONG_EDGE * 3) / 4),
+  height: BURST_MEASURE_LONG_EDGE,
 } as const;
-const CAPTURE = { width: 576, height: 1024 } as const;
 
 const CONTRASTS = [0, 1, 2, 3, 6, 12, 24, 48] as const;
 
@@ -515,7 +550,7 @@ describe("the live line and the gate, on the same face", () => {
     expect(ovalBoxIn(CAPTURE.width, CAPTURE.height).height).toBeGreaterThan(
       SHARPNESS_MEASURE_LONG_EDGE,
     );
-    expect(preview.height * 2).toBeLessThan(capture.height);
+    expect(preview.height).toBeLessThan(capture.height);
   });
 
   it("reads the same sharpness off both, across the whole range", () => {
@@ -571,6 +606,11 @@ describe("the live line and the gate, on the same face", () => {
   });
 });
 
+/**
+ * Kept although no master frame is ever landscape: it states that the floor
+ * is read against the short axis, which is the engine's own rule, and the
+ * test proves the identity on the sample the line actually gets.
+ */
 describe("liveWidthRatioOf", () => {
   it("is the reading's width on a portrait or square sample", () => {
     expect(liveWidthRatioOf(OVAL_FACE, PORTRAIT_SAMPLE)).toBeCloseTo(
