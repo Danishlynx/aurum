@@ -31,6 +31,12 @@ export const messages = {
    */
   providerRefused: copy.errors.readingRefused,
   /**
+   * The stored bytes are not the photo the client registered, found at analyze
+   * before anything is reserved (src/lib/server/capture/validate.ts). Lives in
+   * copy.ts like the other capture lines; this is the re export.
+   */
+  captureUnreadable: copy.errors.captureUnreadable,
+  /**
    * The try on failed state, docs/01-user-flow.md section H. Used whenever a
    * render cannot be produced, so the body carries the same sentence the screen
    * shows and no substitute image is ever implied.

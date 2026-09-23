@@ -122,7 +122,7 @@ Who reaches this screen: a device with a consented session. With open access on,
 
 When an upload does stop, the screen says where and what came back, under the documented line: "Stopped while registering the photo. The server answered 500." or "Stopped while saving the photo. No answer came back from the server." A status code is not a sentence a person acts on, but it is what makes a screenshot a diagnosis.
 
-Quality gate after capture (runs client side; the server side check of the stored bytes is a later PR):
+Quality gate after capture (runs client side only; the server does not recompute it, and instead validates the uploaded bytes at analyze before spending anything: a JPEG whose header dimensions equal the registered ones, at least 480 px on the short side, at most 2560 px on the long side, at most 10 MB, with the registered digest, see docs/04-integrations.md):
 
 - A face is measured by the face model (MediaPipe's FaceLandmarker: 478 landmarks, a solved head pose, the eye blink blendshapes), or the frame is unmeasured because the model did not load. There is nothing in between: no colour rule, no browser detector. An unmeasured frame is never refused; it is offered with "Use it anyway" and the reason "unmeasured", and the engine's own input gate, which is free, decides.
 - On a measured frame, exactly one face. No face, or more than one, is a refusal.

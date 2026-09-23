@@ -757,6 +757,22 @@ export function CaptureScreen({ analysesExhausted = false }: CaptureScreenProps)
           router.push("/welcome");
           return;
         }
+        /*
+         * The server read the stored bytes and would not send them: not a
+         * JPEG, not the registered size, outside the engine's limits, or not
+         * the registered digest (docs/03-architecture.md, "Failure modes").
+         * The app reached the server, so requestFailed would be untrue; it is
+         * the photo that did not arrive as registered, and a retake is the way
+         * out. The step and status line names it.
+         */
+        if (started.kind === "unreadable") {
+          setPhase({
+            name: "failed",
+            message: copy.errors.uploadFailed,
+            failure: { step: "analyze", status: started.status },
+          });
+          return;
+        }
         setPhase({
           name: "failed",
           message: copy.errors.requestFailed,

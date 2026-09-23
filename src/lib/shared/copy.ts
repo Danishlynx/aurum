@@ -998,6 +998,16 @@ export const copy = {
     uploadFailedNoAnswerTemplate:
       "Stopped while {step}. No answer came back from the server.",
     /**
+     * In house. The body of the 409 the analyze route answers when the stored
+     * bytes are not the photo the client registered: not a JPEG, a different
+     * size from the row, outside the engine's size limits, or a different
+     * digest (src/lib/server/capture/validate.ts). The capture screen shows
+     * uploadFailed with the step and status under it, so the person retakes;
+     * this sentence is what the response carries.
+     */
+    captureUnreadable:
+      "The saved photo could not be read as a picture. Take a new one.",
+    /**
      * In house. The engine refused the photo for a reason we have no specific
      * line for. It lived in src/lib/server/http/messages.ts as providerRefused,
      * which still re exports it, and moved here because the reveal shows it on
@@ -1163,6 +1173,7 @@ export const COPY_NOT_IN_FLOW_DOC = [
   "errors.sessionMissing",
   "errors.uploadFailedDetailTemplate",
   "errors.uploadFailedNoAnswerTemplate",
+  "errors.captureUnreadable",
   "common.close",
   "privacy.points.0",
   "privacy.points.1",
